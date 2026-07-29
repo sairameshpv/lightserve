@@ -2,11 +2,12 @@
 # it's project-specific and must never hold the hf_token (pass that via
 # `export TF_VAR_hf_token=hf_xxx` instead).
 
-parent_id      = "project-xxxxxxxxxxxxxxxxx"
-subnet_id      = "vpcsubnet-xxxxxxxxxxxxxxxxx"
-instance_count = 1
-platform       = "gpu-h100-sxm"
-preset         = "1gpu-16vcpu-200gb" # verify against your quota before applying
-boot_disk_size_gb = 200
-public_ip      = true
-model_name     = "meta-llama/Meta-Llama-3-8B-Instruct"
+parent_id          = "project-xxxxxxxxxxxxxxxxx"
+subnet_id          = "vpcsubnet-xxxxxxxxxxxxxxxxx"
+instance_count     = 1
+platform           = "gpu-l40s-a"
+preset             = "1gpu-24vcpu-96gb"
+boot_disk_size_gb  = 200
+public_ip          = true
+model_name         = "meta-llama/Meta-Llama-3-8B-Instruct"
+golden_snapshot_id = "" # set to a pre-baked snapshot ID to skip Docker/toolkit/Nsight install at boot

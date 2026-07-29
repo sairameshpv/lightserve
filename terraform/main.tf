@@ -1,12 +1,21 @@
 resource "nebius_compute_v1_disk" "boot_disk" {
   count = var.instance_count
 
-  parent_id           = var.parent_id
-  name                = "vllm-boot-disk-${count.index}"
-  block_size_bytes    = 4096
-  size_bytes          = 1024 * 1024 * 1024 * var.boot_disk_size_gb
-  type                = "NETWORK_SSD"
-  source_image_family = { image_family = "ubuntu24.04-cuda12" }
+  parent_id        = var.parent_id
+  name             = "vllm-boot-disk-${count.index}"
+  block_size_bytes = 4096
+  size_bytes       = 1024 * 1024 * 1024 * var.boot_disk_size_gb
+  type             = "NETWORK_SSD"
+
+  # Boots from a pre-baked snapshot (Docker + NVIDIA Container Toolkit + Nsight
+  # + vllm/vllm-openai:latest already installed/pulled) instead of the raw
+  # ubuntu24.04-cuda12 image, so instances skip ~5-10min of idle-billed GPU
+  # time on setup. Built via a cheap cpu-e2 instance, not the GPU itself —
+  # see nebius_setup_commands.txt for the build process. Custom "image"
+  # resources are blocked by a 0 quota on this tenant (support ticket needed
+  # to raise it); disk snapshots hit no such limit, so this is the workaround.
+  source_snapshot_id = var.golden_snapshot_id != "" ? var.golden_snapshot_id : null
+  source_image_family = var.golden_snapshot_id == "" ? { image_family = "ubuntu24.04-cuda12" } : null
 }
 
 # Only created when scaling to multiple GPU nodes that need InfiniBand interconnect.
@@ -48,7 +57,8 @@ resource "nebius_compute_v1_instance" "vllm" {
   recovery_policy = "RECOVER"
 
   cloud_init_user_data = templatefile("${path.module}/cloud-init.tftpl", {
-    hf_token   = var.hf_token
-    model_name = var.model_name
+    hf_token          = var.hf_token
+    model_name        = var.model_name
+    bootstrap_tooling = var.golden_snapshot_id == ""
   })
 }

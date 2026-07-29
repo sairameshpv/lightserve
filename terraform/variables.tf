@@ -16,14 +16,20 @@ variable "instance_count" {
 
 variable "platform" {
   type        = string
-  description = "GPU platform, e.g. \"gpu-h100-sxm\". Verify availability/quota for your project via the console before applying."
-  default     = "gpu-h100-sxm"
+  description = "GPU platform. Verified via `nebius capacity resource-advice list` against project-e00k2ff2pr005cst6j72s0 (eu-north1): gpu-l40s-a has usable on-demand quota (limit 32 GPUs tenant-wide); gpu-h100-sxm quota is unrequested (USAGE_STATE_NOT_USED) there."
+  default     = "gpu-l40s-a"
 }
 
 variable "preset" {
   type        = string
-  description = "Resource preset for the chosen platform (vCPU/GPU/RAM bundle). Confirm the exact preset name for your quota — this default is UNVERIFIED, check `nebius compute preset list` or the console before first apply."
-  default     = "1gpu-16vcpu-200gb"
+  description = "Resource preset for the chosen platform (vCPU/GPU/RAM bundle). Verified available for gpu-l40s-a in eu-north1."
+  default     = "1gpu-24vcpu-96gb"
+}
+
+variable "golden_snapshot_id" {
+  type        = string
+  description = "Disk snapshot ID to boot from (pre-baked with Docker/NVIDIA Container Toolkit/Nsight/vLLM image). Leave empty to fall back to the raw ubuntu24.04-cuda12 image (slower first boot, full cloud-init install)."
+  default     = ""
 }
 
 variable "boot_disk_size_gb" {
@@ -48,6 +54,12 @@ variable "model_name" {
   type        = string
   description = "Hugging Face model id to serve."
   default     = "meta-llama/Meta-Llama-3-8B-Instruct"
+}
+
+variable "nebius_token" {
+  type        = string
+  description = "Nebius personal access token for provider auth (quick-start path). Pass via TF_VAR_nebius_token env var — never hardcode or commit. Short-lived (~1hr); re-export before each session."
+  sensitive   = true
 }
 
 variable "hf_token" {

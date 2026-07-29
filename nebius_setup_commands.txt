@@ -110,24 +110,139 @@ ncu --set full -o vllm_kernel_profile docker exec vllm-server <target-process>
 # Runs from the LAPTOP — Terraform only talks to the Nebius API, it doesn't
 # need to be installed on the GPU instance itself.
 
-# One-time: install the Terraform CLI locally, then authenticate to Nebius
-export AUTHKEY_PRIVATE_PATH=/path/to/service-account-private-key.pem
-export AUTHKEY_PUBLIC_ID=<public-key-id>
-export SA_ID=<service-account-id>
-export TF_VAR_hf_token=hf_xxxxxxxxxxxxxxxxxxxx   # never put this in a .tfvars file
+# Terraform CLI installed manually to ~/.local/bin (brew's "terraform" formula
+# was removed upstream; HashiCorp's tap needs newer Command Line Tools than
+# this machine has, so we pulled the binary directly instead):
+curl -fsSL -o terraform.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_darwin_arm64.zip
+unzip -o terraform.zip
+mkdir -p ~/.local/bin && mv terraform ~/.local/bin/terraform && chmod +x ~/.local/bin/terraform
+# Added `export PATH="$HOME/.local/bin:$PATH"` to ~/.zshrc for future shells.
+
+# Quick-start auth (short-lived personal token instead of a service account —
+# see provider.tf for the service-account alternative for long-lived/production use).
+# The nebius CLI is already authenticated (nebius iam whoami), so this just
+# mints a fresh access token each time — re-run before every terraform command
+# since it expires (~1hr):
+export TF_VAR_nebius_token=$(nebius iam get-access-token)
+
+# HF token: export this yourself in your own shell — never paste it into a
+# command Claude runs directly, since it'd land in this log/transcript:
+export TF_VAR_hf_token=hf_xxxxxxxxxxxxxxxxxxxx
 
 cd terraform
-cp terraform.tfvars.example terraform.tfvars   # fill in parent_id / subnet_id
+# terraform.tfvars already filled in with real values (parent_id, subnet_id
+# for default-project-eu-north1; platform=gpu-l40s-a, preset=1gpu-24vcpu-96gb
+# — verified via `nebius capacity resource-advice list` to have real on-demand
+# quota, at $1.35/hr, cheapest GPU option available and only offered in eu-north1)
 terraform init
-terraform plan
-terraform apply
+terraform plan -out=tfplan
+terraform apply "tfplan"
+
+# ---- Applied 2026-07-29 ----
+# Result: 2 added (boot disk + instance), 0 changed, 0 destroyed
+# instance_ids   = ["computeinstance-e00h31w99tprhbrvg9"]
+# instance_names = ["vllm-node-0"]
+# public IP      = 89.169.102.146
+# Billing is now active (~$1.35/hr). vLLM server takes several minutes after
+# apply to actually respond — cloud-init still needs to install Docker/NVIDIA
+# Container Toolkit/Nsight and pull the vLLM image + ~16GB of model weights.
+
+# Check cloud-init/bootstrap progress via SSH:
+ssh <user>@89.169.102.146 "cloud-init status --wait"
+
+# Smoke-test once ready (see step 8 above), against the public IP:
+curl http://89.169.102.146:8000/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "meta-llama/Meta-Llama-3-8B-Instruct", "prompt": "San Francisco is a", "max_tokens": 50}'
 
 # Scale to 2 instances later: bump instance_count in terraform.tfvars, then
-terraform plan
-terraform apply
+terraform plan -out=tfplan
+terraform apply "tfplan"
 
 # Tear down when done (stops billing):
-terraform destroy
+terraform destroy -auto-approve
+
+# ---- Destroyed 2026-07-29 ----
+# Killed the vllm-node-0 instance + boot disk shortly after apply — cloud-init
+# hadn't finished yet, so no golden image was captured. Reason: cloud-init
+# bootstrap (Docker/NVIDIA toolkit/Nsight install + vLLM image pull + ~16GB
+# weight download) leaves the GPU idle but billed for ~5-10min per instance.
+# Plan going forward: bake a golden image (Docker/toolkit/Nsight pre-installed,
+# possibly model weights too) so future instances skip that idle-billed setup
+# window — see conversation for the design discussion before repeating apply.
+
+---------------------------------------------------------------------------
+11. Golden-image build (Docker/NVIDIA Container Toolkit/Nsight/vLLM baked in,
+    built on a cheap CPU instance instead of paying idle GPU rates for it)
+---------------------------------------------------------------------------
+# Nebius custom "image" resources are blocked on this tenant — quota is 0
+# for both compute.image.count and compute.image.size (needs a support
+# ticket to raise). Worked around it with a disk SNAPSHOT instead, which
+# Terraform's disk resource accepts via source_snapshot_id just like an
+# image (see main.tf) and hit no quota issue.
+
+# Cost comparison that motivated this: cpu-e2/2vcpu-8gb + 50GB disk is
+# ~$0.055/hr vs $1.35/hr for the L40S GPU sitting idle during the same
+# ~15-20min install+download — roughly 25x cheaper for the build step.
+
+# 1. Launch a small CPU-only instance from the same base image:
+nebius compute instance create \
+  --parent-id project-e00k2ff2pr005cst6j72s0 \
+  --name vllm-image-builder \
+  --resources-platform cpu-e2 \
+  --resources-preset 2vcpu-8gb \
+  --boot-disk-attach-mode read_write \
+  --boot-disk-managed-disk-name vllm-image-builder-boot-disk \
+  --boot-disk-managed-disk-size-gibibytes 50 \
+  --boot-disk-managed-disk-type network_ssd \
+  --boot-disk-managed-disk-source-image-family-image-family ubuntu24.04-cuda12 \
+  --network-interfaces '[{"name":"eth0","subnet_id":"vpcsubnet-e00na40gt5a1j1x65t","ip_address":{},"public_ip_address":{}}]' \
+  --cloud-init-user-data "$(cat terraform/image-builder-cloud-init.yaml)"
+# cloud-init here = same Docker/NVIDIA Container Toolkit/Nsight install steps
+# as the main cloud-init.tftpl, minus the GPU-dependent `docker run --gpus`
+# launch (no GPU present on a CPU instance) — plus `docker pull
+# vllm/vllm-openai:latest` to pre-cache the ~18.9GB container image too.
+# Ends with `cloud-init clean --logs --seed` so cloud-init re-runs fresh
+# (with the real serving user-data) on instances booted from the resulting
+# snapshot, and a `touch /tmp/golden-image-ready` marker.
+
+# 2. Wait for cloud-init to finish, then verify (don't skip this — install
+#    steps can partially fail silently):
+ssh -i ~/.ssh/nebius_key ubuntu@<builder-ip> "sudo cloud-init status --wait"
+ssh -i ~/.ssh/nebius_key ubuntu@<builder-ip> "
+  sudo docker --version
+  nvidia-ctk --version
+  sudo find / -iname ncu -o -iname nsys 2>/dev/null
+  sudo docker images | grep vllm
+"
+# NOTE: `cloud-init status --wait` reported exit code 2 (degraded) here —
+# turned out to be harmless, caused by `cloud-init clean` running while
+# cloud-init itself was still writing its completion marker (self-inflicted
+# by ending the script with `cloud-init clean`, not a real install failure).
+# Confirmed via the checks above that Docker/toolkit/Nsight/vLLM image were
+# all actually present before trusting the build.
+
+# 3. Stop the instance for a consistent disk state, then snapshot its disk:
+nebius compute instance stop --id <builder-instance-id>
+nebius compute disk-snapshot create \
+  --parent-id project-e00k2ff2pr005cst6j72s0 \
+  --name vllm-l40s-golden-snapshot \
+  --description "ubuntu24.04-cuda12 + Docker + NVIDIA Container Toolkit + Nsight + pre-pulled vllm/vllm-openai:latest" \
+  --source-disk-id <builder-boot-disk-id>
+
+# 4. Delete the builder instance (its inline managed disk is auto-deleted
+#    with it — confirmed via `nebius compute disk list`, nothing orphaned):
+nebius compute instance delete --id <builder-instance-id>
+
+# ---- Built 2026-07-29 ----
+# snapshot_id = computedisksnapshot-e00prdptfqjnzpt982 (vllm-l40s-golden-snapshot)
+# content ~50GB, storage ~40.8GB -> ~$0.004/hr (~$2.90/mo) while it exists,
+# nothing while unused by a running instance.
+# terraform.tfvars: golden_snapshot_id set to this ID. main.tf now boots the
+# serving instance's disk from this snapshot when set (falls back to the raw
+# ubuntu24.04-cuda12 image + full cloud-init install if left empty).
+# cloud-init.tftpl gained a `bootstrap_tooling` conditional so it skips the
+# apt-install block entirely when booting from the golden snapshot.
 
 ---------------------------------------------------------------------------
 (further commands/steps will be appended below as generated)

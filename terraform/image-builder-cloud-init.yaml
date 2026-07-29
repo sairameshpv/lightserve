@@ -1,10 +1,12 @@
 #cloud-config
-# Docker/NVIDIA Container Toolkit/Nsight/vLLM image are pre-baked into the
-# golden snapshot (see nebius_setup_commands.txt) when bootstrap_tooling is
-# false, so this only needs to launch the container. Falls back to installing
-# everything from scratch when booting from the raw ubuntu24.04-cuda12 image.
+# One-off build script for a CPU-only instance — installs Docker/NVIDIA
+# Container Toolkit/Nsight and pre-pulls the vLLM image, WITHOUT launching
+# vLLM itself (no GPU present to launch it against). Snapshot the resulting
+# disk afterward and point terraform.tfvars' golden_snapshot_id at it — see
+# nebius_setup_commands.txt section 11 for the full build/snapshot process.
+ssh_authorized_keys:
+  - <your-ssh-public-key-here> # e.g. contents of ~/.ssh/id_ed25519.pub
 runcmd:
-%{ if bootstrap_tooling ~}
   - apt-get update
   - apt-get install -y ca-certificates curl gnupg
 
@@ -17,7 +19,7 @@ runcmd:
   - apt-get update
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-  # NVIDIA Container Toolkit (GPU access inside Docker)
+  # NVIDIA Container Toolkit (installs fine without a physical GPU present)
   - curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
   - >
     bash -c 'curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list |
@@ -25,6 +27,7 @@ runcmd:
     /etc/apt/sources.list.d/nvidia-container-toolkit.list'
   - apt-get update
   - apt-get install -y nvidia-container-toolkit
+  - nvidia-ctk runtime configure --runtime=docker
 
   # Nsight Systems/Compute
   - wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -O /tmp/cuda-keyring.deb
@@ -32,16 +35,10 @@ runcmd:
   - apt-get update
   - apt-get install -y cuda-nsight-systems cuda-nsight-compute
 
+  # Pre-pull the vLLM image so it's baked into the disk too (saves the largest
+  # download at GPU-instance boot time; only the model weights remain to fetch)
   - docker pull vllm/vllm-openai:latest
-%{ endif ~}
-  - nvidia-ctk runtime configure --runtime=docker
-  - systemctl restart docker
-  - sysctl -w kernel.perf_event_paranoid=1
 
-  # vLLM (Triton ships as a dependency inside the image, no separate install)
-  - >
-    docker run -d --name vllm-server --restart unless-stopped --gpus all
-    -v /root/.cache/huggingface:/root/.cache/huggingface
-    --env HUGGING_FACE_HUB_TOKEN=${hf_token}
-    -p 8000:8000 --ipc=host
-    vllm/vllm-openai:latest --model ${model_name}
+  - apt-get clean
+  - cloud-init clean --logs --seed
+  - touch /tmp/golden-image-ready
