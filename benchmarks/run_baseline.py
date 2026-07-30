@@ -8,6 +8,10 @@ Usage:
 
     # Quick smoke test against a handful of prompts first:
     python3 benchmarks/run_baseline.py --host <ip> --limit 10 --concurrency 5
+
+    # Full baseline, run 3 times sequentially (e.g. to see whether prefix
+    # caching speeds up later passes over the same prompt set):
+    python3 benchmarks/run_baseline.py --host <ip> --repeats 3
 """
 import argparse
 import json
@@ -96,7 +100,7 @@ def send_request(endpoint: str, model: str, record: dict, timeout: float) -> dic
     }
 
 
-def percentile(values, pct):
+def percentile(values: list[float], pct: float):
     if not values:
         return None
     s = sorted(values)
@@ -105,6 +109,56 @@ def percentile(values, pct):
     if f == c:
         return s[f]
     return s[f] + (s[c] - s[f]) * (k - f)
+
+
+def run_pass(records, run_idx, endpoint, model, concurrency, timeout):
+    """Runs one full concurrent pass over `records`. Returns (results, wall_time)."""
+    print(f"--- Run {run_idx}: {len(records)} prompts, concurrency {concurrency} ---")
+    results = []
+    wall_start = time.monotonic()
+    completed = 0
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = {
+            pool.submit(send_request, endpoint, model, record, timeout): record
+            for record in records
+        }
+        for future in as_completed(futures):
+            result = future.result()
+            result["run"] = run_idx
+            results.append(result)
+            completed += 1
+            if completed % 100 == 0 or completed == len(records):
+                print(f"  {completed}/{len(records)} done...")
+
+    wall_time = time.monotonic() - wall_start
+    return results, wall_time
+
+
+def summarize(label, results, wall_time):
+    ok = [r for r in results if r["status"] == "ok"]
+    errors = [r for r in results if r["status"] == "error"]
+    latencies = [r["latency_s"] for r in ok]
+    total_completion_tokens = sum(r["completion_tokens"] or 0 for r in ok)
+    total_prompt_tokens = sum(r["prompt_tokens"] or 0 for r in ok)
+
+    print()
+    print(f"==== {label} ====")
+    print(f"Wall time:           {wall_time:.1f}s")
+    print(f"Requests:            {len(results)} ({len(ok)} ok, {len(errors)} error)")
+    if latencies:
+        print(f"Latency p50/p95/p99: {percentile(latencies,50):.2f}s / {percentile(latencies,95):.2f}s / {percentile(latencies,99):.2f}s")
+        print(f"Latency mean:        {statistics.mean(latencies):.2f}s")
+    print(f"Prompt tokens:       {total_prompt_tokens}")
+    print(f"Completion tokens:   {total_completion_tokens}")
+    if wall_time > 0:
+        print(f"Throughput:          {total_completion_tokens / wall_time:.1f} completion tok/s (aggregate)")
+        print(f"Request rate:        {len(ok) / wall_time:.2f} req/s")
+    if errors:
+        print()
+        print("First few errors:")
+        for r in errors[:5]:
+            print(f"  {r['id']}: {r['error']}")
 
 
 def main():
@@ -116,6 +170,7 @@ def main():
     ap.add_argument("--concurrency", default=50, type=int)
     ap.add_argument("--limit", default=None, type=int, help="Only run the first N prompts")
     ap.add_argument("--timeout", default=120.0, type=float, help="Per-request timeout (s)")
+    ap.add_argument("--repeats", default=1, type=int, help="Run the full prompt set this many times sequentially")
     ap.add_argument("--output", default=None, help="Output JSONL path (default: benchmarks/results_<ts>.jsonl)")
     args = ap.parse_args()
 
@@ -131,56 +186,41 @@ def main():
     print(f"Endpoint:    {endpoint}")
     print(f"Prompts:     {len(records)} (from {prompts_path.name})")
     print(f"Concurrency: {args.concurrency}")
+    print(f"Repeats:     {args.repeats}")
     print(f"Output:      {out_path}")
     print()
 
-    results = []
-    wall_start = time.monotonic()
-    completed = 0
+    all_results = []
+    pass_summaries = []  # (run_idx, results, wall_time) for the per-run comparison table
 
-    with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        futures = {
-            pool.submit(send_request, endpoint, args.model, record, args.timeout): record
-            for record in records
-        }
-        for future in as_completed(futures):
-            result = future.result()
-            results.append(result)
-            completed += 1
-            if completed % 50 == 0 or completed == len(records):
-                print(f"  {completed}/{len(records)} done...")
-
-    wall_time = time.monotonic() - wall_start
+    for run_idx in range(1, args.repeats + 1):
+        results, wall_time = run_pass(records, run_idx, endpoint, args.model, args.concurrency, args.timeout)
+        summarize(f"Run {run_idx}/{args.repeats}", results, wall_time)
+        all_results.extend(results)
+        pass_summaries.append((run_idx, results, wall_time))
 
     with out_path.open("w") as f:
-        for r in results:
+        for r in all_results:
             f.write(json.dumps(r) + "\n")
 
-    ok = [r for r in results if r["status"] == "ok"]
-    errors = [r for r in results if r["status"] == "error"]
-    latencies = [r["latency_s"] for r in ok]
-    total_completion_tokens = sum(r["completion_tokens"] or 0 for r in ok)
-    total_prompt_tokens = sum(r["prompt_tokens"] or 0 for r in ok)
+    if args.repeats > 1:
+        print()
+        print("==== Per-run comparison ====")
+        print(f"{'run':>4} {'wall_s':>8} {'ok':>6} {'err':>5} {'tok/s':>10} {'p50_s':>8} {'p95_s':>8}")
+        for run_idx, results, wall_time in pass_summaries:
+            ok = [r for r in results if r["status"] == "ok"]
+            latencies = [r["latency_s"] for r in ok]
+            tok = sum(r["completion_tokens"] or 0 for r in ok)
+            tput = tok / wall_time if wall_time > 0 else 0
+            p50 = percentile(latencies, 50) or 0
+            p95 = percentile(latencies, 95) or 0
+            print(f"{run_idx:>4} {wall_time:>8.1f} {len(ok):>6} {len(results)-len(ok):>5} {tput:>10.1f} {p50:>8.2f} {p95:>8.2f}")
+
+        combined_wall_time = sum(w for _, _, w in pass_summaries)
+        summarize(f"Combined (all {args.repeats} runs)", all_results, combined_wall_time)
 
     print()
-    print("==== Summary ====")
-    print(f"Wall time:          {wall_time:.1f}s")
-    print(f"Requests:            {len(results)} ({len(ok)} ok, {len(errors)} error)")
-    if latencies:
-        print(f"Latency p50/p95/p99: {percentile(latencies,50):.2f}s / {percentile(latencies,95):.2f}s / {percentile(latencies,99):.2f}s")
-        print(f"Latency mean:        {statistics.mean(latencies):.2f}s")
-    print(f"Prompt tokens:       {total_prompt_tokens}")
-    print(f"Completion tokens:   {total_completion_tokens}")
-    if wall_time > 0:
-        print(f"Throughput:          {total_completion_tokens / wall_time:.1f} completion tok/s (aggregate)")
-        print(f"Request rate:        {len(ok) / wall_time:.2f} req/s")
-    if errors:
-        print()
-        print(f"First few errors:")
-        for r in errors[:5]:
-            print(f"  {r['id']}: {r['error']}")
-    print()
-    print(f"Per-request results written to {out_path}")
+    print(f"All per-request results ({len(all_results)} rows, tagged with 'run') written to {out_path}")
 
 
 if __name__ == "__main__":
