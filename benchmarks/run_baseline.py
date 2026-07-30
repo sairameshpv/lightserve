@@ -21,9 +21,11 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 
 DEFAULT_PROMPTS_FILE = Path(__file__).parent / "baseline_prompts.jsonl"
+DEFAULT_README_FILE = Path(__file__).parent / "README.md"
 
 
 def load_prompts(path: Path, limit: int | None):
@@ -141,24 +143,64 @@ def summarize(label, results, wall_time):
     latencies = [r["latency_s"] for r in ok]
     total_completion_tokens = sum(r["completion_tokens"] or 0 for r in ok)
     total_prompt_tokens = sum(r["prompt_tokens"] or 0 for r in ok)
+    p50 = percentile(latencies, 50)
+    p95 = percentile(latencies, 95)
+    p99 = percentile(latencies, 99)
+    throughput = total_completion_tokens / wall_time if wall_time > 0 else 0.0
 
     print()
     print(f"==== {label} ====")
     print(f"Wall time:           {wall_time:.1f}s")
     print(f"Requests:            {len(results)} ({len(ok)} ok, {len(errors)} error)")
     if latencies:
-        print(f"Latency p50/p95/p99: {percentile(latencies,50):.2f}s / {percentile(latencies,95):.2f}s / {percentile(latencies,99):.2f}s")
+        print(f"Latency p50/p95/p99: {p50:.2f}s / {p95:.2f}s / {p99:.2f}s")
         print(f"Latency mean:        {statistics.mean(latencies):.2f}s")
     print(f"Prompt tokens:       {total_prompt_tokens}")
     print(f"Completion tokens:   {total_completion_tokens}")
     if wall_time > 0:
-        print(f"Throughput:          {total_completion_tokens / wall_time:.1f} completion tok/s (aggregate)")
+        print(f"Throughput:          {throughput:.1f} completion tok/s (aggregate)")
         print(f"Request rate:        {len(ok) / wall_time:.2f} req/s")
     if errors:
         print()
         print("First few errors:")
         for r in errors[:5]:
             print(f"  {r['id']}: {r['error']}")
+
+    return {
+        "wall_time": wall_time,
+        "ok": len(ok),
+        "errors": len(errors),
+        "throughput_tok_s": throughput,
+        "p50": p50,
+        "p95": p95,
+        "p99": p99,
+    }
+
+
+README_TABLE_HEADER = (
+    "| Timestamp (UTC) | Host | Model | Prompts | Concurrency | Repeats "
+    "| Wall (s) | OK | Err | Throughput (tok/s) | p50 (s) | p95 (s) | p99 (s) | Results file |\n"
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+)
+
+
+def append_readme_row(readme_path: Path, meta: dict, stats: dict):
+    is_new = not readme_path.exists()
+    p50 = f"{stats['p50']:.2f}" if stats["p50"] is not None else "-"
+    p95 = f"{stats['p95']:.2f}" if stats["p95"] is not None else "-"
+    p99 = f"{stats['p99']:.2f}" if stats["p99"] is not None else "-"
+    row = (
+        f"| {meta['timestamp']} | {meta['host']} | {meta['model']} | {meta['prompts']} "
+        f"| {meta['concurrency']} | {meta['repeats']} | {stats['wall_time']:.1f} "
+        f"| {stats['ok']} | {stats['errors']} | {stats['throughput_tok_s']:.1f} "
+        f"| {p50} | {p95} | {p99} | {meta['output']} |\n"
+    )
+    with readme_path.open("a") as f:
+        if is_new:
+            f.write("# Baseline benchmark results\n\n")
+            f.write("Auto-appended by `run_baseline.py` after each run.\n\n")
+            f.write(README_TABLE_HEADER)
+        f.write(row)
 
 
 def main():
@@ -172,6 +214,8 @@ def main():
     ap.add_argument("--timeout", default=120.0, type=float, help="Per-request timeout (s)")
     ap.add_argument("--repeats", default=1, type=int, help="Run the full prompt set this many times sequentially")
     ap.add_argument("--output", default=None, help="Output JSONL path (default: benchmarks/results_<ts>.jsonl)")
+    ap.add_argument("--readme-file", default=str(DEFAULT_README_FILE), help="Markdown file to append a results row to")
+    ap.add_argument("--skip-readme", action="store_true", help="Don't append a row to the README summary table")
     args = ap.parse_args()
 
     endpoint = f"http://{args.host}:{args.port}/v1/completions"
@@ -193,9 +237,10 @@ def main():
     all_results = []
     pass_summaries = []  # (run_idx, results, wall_time) for the per-run comparison table
 
+    final_stats = None
     for run_idx in range(1, args.repeats + 1):
         results, wall_time = run_pass(records, run_idx, endpoint, args.model, args.concurrency, args.timeout)
-        summarize(f"Run {run_idx}/{args.repeats}", results, wall_time)
+        final_stats = summarize(f"Run {run_idx}/{args.repeats}", results, wall_time)
         all_results.extend(results)
         pass_summaries.append((run_idx, results, wall_time))
 
@@ -217,10 +262,24 @@ def main():
             print(f"{run_idx:>4} {wall_time:>8.1f} {len(ok):>6} {len(results)-len(ok):>5} {tput:>10.1f} {p50:>8.2f} {p95:>8.2f}")
 
         combined_wall_time = sum(w for _, _, w in pass_summaries)
-        summarize(f"Combined (all {args.repeats} runs)", all_results, combined_wall_time)
+        final_stats = summarize(f"Combined (all {args.repeats} runs)", all_results, combined_wall_time)
 
     print()
     print(f"All per-request results ({len(all_results)} rows, tagged with 'run') written to {out_path}")
+
+    if not args.skip_readme and final_stats is not None:
+        meta = {
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "host": args.host,
+            "model": args.model,
+            "prompts": len(records),
+            "concurrency": args.concurrency,
+            "repeats": args.repeats,
+            "output": out_path.name,
+        }
+        readme_path = Path(args.readme_file)
+        append_readme_row(readme_path, meta, final_stats)
+        print(f"Appended results row to {readme_path}")
 
 
 if __name__ == "__main__":
