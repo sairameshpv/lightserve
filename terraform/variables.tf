@@ -67,3 +67,9 @@ variable "hf_token" {
   description = "Hugging Face access token (must have accepted the Llama-3 license). Pass via TF_VAR_hf_token env var or a secrets manager — never hardcode or commit."
   sensitive   = true
 }
+
+variable "enable_profiling" {
+  type        = bool
+  description = "When true, boot runs the full nvidia-smi dmon + Nsight Systems (nsys, CUDA graphs on) + PyTorch Profiler (--enforce-eager) capture of a prefill-probe and decode-probe request before settling into normal serving, then Terraform pulls the resulting traces down into benchmarks/profiling/traces/. Adds ~15-20 min of GPU-billed boot time (~$0.35-0.45 at current L40S pricing). Leave false for a normal deploy."
+  default     = false
+}

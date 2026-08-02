@@ -11,3 +11,8 @@ boot_disk_size_gb  = 200
 public_ip          = true
 model_name         = "meta-llama/Meta-Llama-3-8B-Instruct"
 golden_snapshot_id = "" # set to a pre-baked snapshot ID to skip Docker/toolkit/Nsight install at boot
+enable_profiling   = false # true = capture nvidia-smi dmon + nsys + torch.profiler traces of a
+                            # prefill/decode probe at boot before settling into normal serving, then
+                            # auto-pull them into benchmarks/profiling/traces/. Adds ~15-20 min of
+                            # GPU-billed boot time (~$0.35-0.45 at current L40S pricing). Needs
+                            # golden_snapshot_id set (relies on nsys already being on the host).
