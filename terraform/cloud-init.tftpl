@@ -3,6 +3,154 @@
 # golden snapshot (see nebius_setup_commands.txt) when bootstrap_tooling is
 # false, so this only needs to launch the container. Falls back to installing
 # everything from scratch when booting from the raw ubuntu24.04-cuda12 image.
+%{ if enable_profiling ~}
+write_files:
+  - path: /root/run_profiling.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Automated capture: nvidia-smi dmon + Nsight Systems (nsys, CUDA graphs
+      # on, NVTX markers via vLLM's built-in scopes) + PyTorch Profiler
+      # (--enforce-eager) of a prefill-probe and a decode-probe request.
+      # Reads MODEL_NAME / HF_TOKEN from the environment (set by the runcmd
+      # invocation) rather than templating them in, so this file is plain
+      # bash with no Terraform interpolation inside it.
+      #
+      # Not 'set -e': a failed profiling step should still fall through to
+      # relaunching the plain production container at the end, so a broken
+      # capture doesn't leave the instance without a server.
+      set -uo pipefail
+
+      TRACES=/tmp/traces
+      PROFILES=/tmp/vllm-profiles
+      mkdir -p "$TRACES" "$PROFILES"
+
+      # 140-token prompt (isolates a near-pure prefill step with max_tokens=1
+      # below); embeds a literal \n\n which curl/JSON decode as a real newline.
+      PREFILL_PROMPT='Summarize the following in 3 bullet points:\n\nVersion control systems is a foundational concept that many teams misunderstand at first. In practice, the core idea behind version control systems can be broken down into a handful of principles that, once internalized, make the rest of the subject much easier to reason about. Engineers new to version control systems often struggle because the terminology overlaps with other fields, and the tradeoffs involved are rarely explained clearly in introductory material. A deeper understanding usually comes from working through concrete examples, observing failure modes firsthand, and comparing how different systems approach the same underlying problem differently, each making distinct tradeoffs between simplicity, performance, and correctness under real-world constraints and operational pressure.'
+
+      log() { echo "[run_profiling] $(date -u +%FT%TZ) $1"; }
+
+      wait_ready() {
+        local timeout_s=$1
+        local waited=0
+        while [ "$waited" -lt "$timeout_s" ]; do
+          if docker logs vllm-server 2>&1 | grep -q "Application startup complete"; then
+            return 0
+          fi
+          if docker logs vllm-server 2>&1 | grep -qi "Traceback"; then
+            log "server crashed during startup:"
+            docker logs --tail 60 vllm-server
+            return 1
+          fi
+          sleep 10
+          waited=$((waited + 10))
+        done
+        log "server not ready after $timeout_s seconds, giving up"
+        return 1
+      }
+
+      fire() {
+        # $1 = prompt, $2 = max_tokens
+        curl -s -o /dev/null http://localhost:8000/v1/completions \
+          -H "Content-Type: application/json" \
+          -d "{\"model\": \"$MODEL_NAME\", \"prompt\": \"$1\", \"max_tokens\": $2}"
+      }
+
+      run_probes() {
+        # $1 = output json path for this session's probe timestamps
+        local outfile="$1"
+        fire "Warmup request." 5
+
+        local prefill_start prefill_end decode_start decode_end
+        prefill_start=$(date +%s.%N)
+        fire "$PREFILL_PROMPT" 1
+        prefill_end=$(date +%s.%N)
+
+        decode_start=$(date +%s.%N)
+        fire "Hi" 200
+        decode_end=$(date +%s.%N)
+
+        printf '{\n  "prefill_start": %s,\n  "prefill_end": %s,\n  "decode_start": %s,\n  "decode_end": %s\n}\n' \
+          "$prefill_start" "$prefill_end" "$decode_start" "$decode_end" > "$outfile"
+      }
+
+      nvidia-smi dmon -s pucvmet -o T -f "$TRACES/dmon.log" &
+      DMON_PID=$!
+
+      NSYS_BIN=$(readlink -f /usr/local/bin/nsys)
+      NSYS_ROOT=$(dirname "$(dirname "$NSYS_BIN")")
+
+      log "session A: launching vllm-server under nsys (CUDA graphs on, NVTX via VLLM_NVTX_SCOPES_FOR_PROFILING)"
+      docker run -d --name vllm-server --gpus all \
+        -v /root/.cache/huggingface:/root/.cache/huggingface \
+        -v "$NSYS_ROOT:$NSYS_ROOT" \
+        -v "$TRACES:$TRACES" \
+        --env HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" \
+        --env VLLM_NVTX_SCOPES_FOR_PROFILING=1 \
+        --env VLLM_CUSTOM_SCOPES_FOR_PROFILING=1 \
+        --env PATH="$NSYS_ROOT/target-linux-x64:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+        --cap-add=SYS_ADMIN --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
+        -p 8000:8000 --ipc=host \
+        --entrypoint "$NSYS_ROOT/target-linux-x64/nsys" \
+        vllm/vllm-openai:latest \
+        profile -o "$TRACES/vllm_session" --session-new=vllm_profiling --trace=cuda,nvtx,osrt --force-overwrite=true \
+        -- vllm serve --model "$MODEL_NAME"
+
+      if wait_ready 600; then
+        run_probes "$TRACES/probe_timestamps.json"
+        docker exec vllm-server nsys stop --session=vllm_profiling
+        sleep 5
+      else
+        log "session A server never became ready, skipping probes"
+      fi
+      docker stop -t 20 vllm-server >/dev/null 2>&1
+      docker rm vllm-server >/dev/null 2>&1
+
+      log "session B: launching vllm-server with --enforce-eager + torch profiler"
+      docker run -d --name vllm-server --gpus all \
+        -v /root/.cache/huggingface:/root/.cache/huggingface \
+        -v "$PROFILES:$PROFILES" \
+        --env HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" \
+        -p 8000:8000 --ipc=host \
+        vllm/vllm-openai:latest --model "$MODEL_NAME" --enforce-eager \
+        --profiler-config.profiler torch --profiler-config.torch_profiler_dir "$PROFILES"
+
+      if wait_ready 600; then
+        curl -s -X POST http://localhost:8000/start_profile >/dev/null
+        fire "$PREFILL_PROMPT" 1
+        curl -s -X POST http://localhost:8000/stop_profile >/dev/null
+        sleep 3
+
+        curl -s -X POST http://localhost:8000/start_profile >/dev/null
+        fire "Hi" 200
+        curl -s -X POST http://localhost:8000/stop_profile >/dev/null
+        sleep 5
+      else
+        log "session B server never became ready, skipping torch profiler probes"
+      fi
+      docker stop -t 20 vllm-server >/dev/null 2>&1
+      docker rm vllm-server >/dev/null 2>&1
+
+      kill "$DMON_PID" 2>/dev/null
+
+      if [ -f "$TRACES/vllm_session.nsys-rep" ]; then
+        log "exporting nsys stats"
+        nsys stats --report cuda_gpu_trace,cuda_gpu_kern_sum,cuda_api_sum,nvtx_pushpop_sum \
+          --format csv --output "$TRACES/session_a" "$TRACES/vllm_session.nsys-rep" || true
+      fi
+
+      chown -R ubuntu:ubuntu "$TRACES" "$PROFILES" || true
+
+      log "relaunching plain production container"
+      docker run -d --name vllm-server --restart unless-stopped --gpus all \
+        -v /root/.cache/huggingface:/root/.cache/huggingface \
+        --env HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" \
+        -p 8000:8000 --ipc=host \
+        vllm/vllm-openai:latest --model "$MODEL_NAME"
+
+      log "done"
+%{ endif ~}
 runcmd:
 %{ if bootstrap_tooling ~}
   - apt-get update
@@ -39,9 +187,16 @@ runcmd:
   - sysctl -w kernel.perf_event_paranoid=1
 
   # vLLM (Triton ships as a dependency inside the image, no separate install)
+%{ if enable_profiling ~}
+  - mkdir -p /tmp/traces
+  - >
+    bash -c 'HF_TOKEN=${hf_token} MODEL_NAME=${model_name} /root/run_profiling.sh
+    > /tmp/traces/run_profiling.log 2>&1'
+%{ else ~}
   - >
     docker run -d --name vllm-server --restart unless-stopped --gpus all
     -v /root/.cache/huggingface:/root/.cache/huggingface
     --env HUGGING_FACE_HUB_TOKEN=${hf_token}
     -p 8000:8000 --ipc=host
     vllm/vllm-openai:latest --model ${model_name}
+%{ endif ~}
