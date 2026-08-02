@@ -1,0 +1,261 @@
+<title>Prefill vs Decode: Where the Milliseconds Go</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --page:           #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --other:          #c3c2b7;
+
+    --s1: #2a78d6; /* blue    - LM-head logits GEMV */
+    --s2: #eb6834; /* orange  - Flash attention */
+    --s3: #1baf7a; /* aqua    - Softmax */
+    --s4: #eda100; /* yellow  - Top-p sampling */
+    --s5: #e87ba4; /* magenta - KV-cache write */
+    --s6: #008300; /* green   - Index/gather */
+    --s7: #4a3aa7; /* violet  - Temperature scaling */
+    --s8: #e34948; /* red     - Output write */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page:           #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --other:          #383835;
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+      --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --page:           #0d0d0d;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --gridline:       #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255,255,255,0.10);
+    --other:          #383835;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .viz-root {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page);
+    color: var(--text-primary);
+    padding: 32px 20px 60px;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  .subtitle { color: var(--text-secondary); font-size: 14px; margin: 0 0 28px; line-height: 1.5; }
+
+  .finding {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 28px;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+  }
+  .finding b { color: var(--text-primary); }
+  .finding .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--s1); margin-right:6px; }
+
+  .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 720px) { .panels { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 20px 8px;
+  }
+  .panel-title { font-size: 15px; font-weight: 600; margin: 0 0 2px; }
+  .panel-meta { font-size: 12px; color: var(--text-muted); margin: 0 0 16px; }
+
+  .headline {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--s1) 10%, transparent);
+    margin-bottom: 18px;
+  }
+  .headline .swatch { width: 12px; height: 12px; border-radius: 3px; background: var(--s1); flex: none; }
+  .headline .htext { font-size: 12.5px; line-height: 1.4; }
+  .headline .htext b { font-size: 14px; }
+
+  .section-label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--text-muted); margin: 0 0 10px;
+  }
+
+  .bar-row { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+  .bar-label {
+    width: 150px; flex: none; font-size: 12px; color: var(--text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .bar-track { flex: 1; position: relative; height: 20px; }
+  .bar-fill {
+    height: 20px; border-radius: 4px; min-width: 4px;
+    display: flex; align-items: center;
+    transition: filter 0.15s;
+  }
+  .bar-fill:hover { filter: brightness(1.12); cursor: default; }
+  .bar-value { width: 108px; flex: none; font-size: 11.5px; color: var(--text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+  .tooltip {
+    position: fixed; pointer-events: none; z-index: 10;
+    background: var(--text-primary); color: var(--surface-1);
+    font-size: 11.5px; padding: 6px 9px; border-radius: 6px;
+    max-width: 240px; line-height: 1.4; opacity: 0; transition: opacity 0.1s;
+  }
+  .tooltip.show { opacity: 0.96; }
+
+  .caption {
+    font-size: 11.5px; color: var(--text-muted); margin: 14px 0 12px; line-height: 1.5;
+  }
+
+  .footer {
+    margin-top: 28px; font-size: 12px; color: var(--text-muted); line-height: 1.6;
+  }
+  .footer code { background: var(--gridline); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+</style>
+
+<div class="viz-root">
+  <div class="wrap">
+    <h1>Prefill vs Decode: Where the Milliseconds Go</h1>
+    <p class="subtitle">
+      GPU kernel time for two isolated probe requests against the vLLM server (Llama-3-8B, L40S, CUDA graphs on) &mdash;
+      prefill: 140→1 tokens · decode: 2→200 tokens, 200 steps. Source: Nsight Systems (<code>nsys</code>) kernel trace.
+    </p>
+
+    <div class="finding">
+      <span class="dot"></span><b>Same kernel dominates both phases.</b> The LM-head vocab-logits GEMV
+      (<code>gemvx::kernel</code>) costs <b>~1.45ms per generation step</b> whether it's the one prefill step or any
+      one of the 200 decode steps &mdash; at batch size 1 it's a memory-bandwidth-bound matrix&ndash;vector product over
+      the full 128k-token vocabulary, not compute-bound attention. Attention itself is only 15% of prefill time and
+      doesn't crack decode's top 5.
+    </div>
+
+    <div class="panels">
+      <div class="panel" id="panel-prefill"></div>
+      <div class="panel" id="panel-decode"></div>
+    </div>
+
+    <div class="footer">
+      Full data: <code>kernel_summary_prefill.csv</code>, <code>kernel_summary_decode.csv</code>,
+      <code>report.md</code>. Raw traces (<code>.nsys-rep</code>, torch.profiler JSON) kept locally, not committed &mdash;
+      see report for how to open them in Nsight Systems / Perfetto for the full-fidelity timeline.
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const DATA = {
+  prefill: {
+    totalMs: 1.917,
+    windowLabel: "140→1 tokens · single forward pass",
+    kernels: [
+      {name:"LM-head logits GEMV", ms:1.4517, pct:75.74, instances:1},
+      {name:"Flash attention (splitkv)", ms:0.2898, pct:15.12, instances:32},
+      {name:"KV-cache write", ms:0.0774, pct:4.04, instances:32},
+      {name:"Softmax", ms:0.0288, pct:1.50, instances:1},
+      {name:"Output write", ms:0.0119, pct:0.62, instances:4},
+      {name:"Top-p sampling", ms:0.0117, pct:0.61, instances:1},
+      {name:"Index/gather", ms:0.0054, pct:0.28, instances:2},
+      {name:"Temperature scaling", ms:0.0043, pct:0.22, instances:1}
+    ]
+  },
+  decode: {
+    totalMs: 306.944,
+    windowLabel: "2→200 tokens · 200 decode steps",
+    kernels: [
+      {name:"LM-head logits GEMV", ms:290.4342, pct:94.62, instances:200},
+      {name:"Softmax", ms:5.7534, pct:1.87, instances:200},
+      {name:"Top-p sampling", ms:2.4930, pct:0.81, instances:200},
+      {name:"Index/gather", ms:1.0290, pct:0.34, instances:400},
+      {name:"Temperature scaling", ms:0.7001, pct:0.23, instances:200},
+      {name:"Index/gather (2)", ms:0.6134, pct:0.20, instances:200},
+      {name:"Post-update kernel", ms:0.5504, pct:0.18, instances:200},
+      {name:"Block-table gather", ms:0.5465, pct:0.18, instances:200}
+    ]
+  }
+};
+
+// fixed color slot per kernel identity, consistent across both panels
+const SLOT_ORDER = [
+  "LM-head logits GEMV", "Flash attention (splitkv)", "Softmax", "Top-p sampling",
+  "KV-cache write", "Index/gather", "Temperature scaling", "Output write"
+];
+const SLOT_VARS = ["--s1","--s2","--s3","--s4","--s5","--s6","--s7","--s8"];
+function colorFor(name) {
+  const idx = SLOT_ORDER.indexOf(name);
+  return idx >= 0 ? `var(${SLOT_VARS[idx]})` : "var(--other)";
+}
+
+function renderPanel(elId, title, d) {
+  const el = document.getElementById(elId);
+  const top = d.kernels[0];
+  const rest = d.kernels.slice(1);
+  const restMax = Math.max(...rest.map(k => k.ms));
+
+  let html = `
+    <p class="panel-title">${title}</p>
+    <p class="panel-meta">${d.windowLabel} &middot; ${d.totalMs.toLocaleString()}ms total GPU-active time</p>
+    <div class="headline" style="background: color-mix(in srgb, ${colorFor(top.name)} 12%, transparent);">
+      <div class="swatch" style="background:${colorFor(top.name)}"></div>
+      <div class="htext"><b>${top.name}</b><br>${top.ms}ms &mdash; ${top.pct}% of this window (${top.instances} call${top.instances>1?'s':''})</div>
+    </div>
+    <p class="section-label">Remaining kernels (bar length scaled within this group; % is still of the full window)</p>
+  `;
+
+  for (const k of rest) {
+    const widthPct = Math.max(3, (k.ms / restMax) * 100);
+    html += `
+      <div class="bar-row" data-tip="${k.name}: ${k.ms}ms (${k.pct}% of window), ${k.instances} call${k.instances>1?'s':''}">
+        <div class="bar-label">${k.name}</div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:${widthPct}%; background:${colorFor(k.name)}"></div>
+        </div>
+        <div class="bar-value">${k.ms}ms &middot; ${k.pct}%</div>
+      </div>
+    `;
+  }
+  el.innerHTML = html;
+}
+
+renderPanel("panel-prefill", "Prefill-probe", DATA.prefill);
+renderPanel("panel-decode", "Decode-probe", DATA.decode);
+
+const tip = document.getElementById("tooltip");
+document.querySelectorAll(".bar-row").forEach(row => {
+  row.addEventListener("mousemove", e => {
+    tip.textContent = row.dataset.tip;
+    tip.style.left = (e.clientX + 14) + "px";
+    tip.style.top = (e.clientY + 14) + "px";
+    tip.classList.add("show");
+  });
+  row.addEventListener("mouseleave", () => tip.classList.remove("show"));
+});
+</script>
