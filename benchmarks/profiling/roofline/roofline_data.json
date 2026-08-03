@@ -1,0 +1,259 @@
+{
+  "l40s_peak_bf16_tflops": 362.0,
+  "l40s_peak_bw_gbs": 864.0,
+  "ridge_point_ai": 418.98,
+  "rows": [
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 1,
+      "flops": 352321536,
+      "bytes": 352432128,
+      "arithmetic_intensity": 0.9997,
+      "attainable_tflops": 0.8637,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 1,
+      "flops": 83886080,
+      "bytes": 83939328,
+      "arithmetic_intensity": 0.9994,
+      "attainable_tflops": 0.8635,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 1,
+      "flops": 16384,
+      "bytes": 20480,
+      "arithmetic_intensity": 0.8,
+      "attainable_tflops": 0.6912,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 1,
+      "flops": 16384,
+      "bytes": 20480,
+      "arithmetic_intensity": 0.8,
+      "attainable_tflops": 0.6912,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 8,
+      "flops": 2818572288,
+      "bytes": 353206272,
+      "arithmetic_intensity": 7.98,
+      "attainable_tflops": 6.8947,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 8,
+      "flops": 671088640,
+      "bytes": 84312064,
+      "arithmetic_intensity": 7.9596,
+      "attainable_tflops": 6.8771,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 8,
+      "flops": 1048576,
+      "bytes": 163840,
+      "arithmetic_intensity": 6.4,
+      "attainable_tflops": 5.5296,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 8,
+      "flops": 131072,
+      "bytes": 49152,
+      "arithmetic_intensity": 2.6667,
+      "attainable_tflops": 2.304,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 32,
+      "flops": 11274289152,
+      "bytes": 355860480,
+      "arithmetic_intensity": 31.6818,
+      "attainable_tflops": 27.373,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 32,
+      "flops": 2684354560,
+      "bytes": 85590016,
+      "arithmetic_intensity": 31.3629,
+      "attainable_tflops": 27.0976,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 32,
+      "flops": 16777216,
+      "bytes": 655360,
+      "arithmetic_intensity": 25.6,
+      "attainable_tflops": 22.1184,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 32,
+      "flops": 524288,
+      "bytes": 147456,
+      "arithmetic_intensity": 3.5556,
+      "attainable_tflops": 3.072,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 128,
+      "flops": 45097156608,
+      "bytes": 366477312,
+      "arithmetic_intensity": 123.0558,
+      "attainable_tflops": 106.3202,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 128,
+      "flops": 10737418240,
+      "bytes": 90701824,
+      "arithmetic_intensity": 118.3815,
+      "attainable_tflops": 102.2816,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 128,
+      "flops": 268435456,
+      "bytes": 2621440,
+      "arithmetic_intensity": 102.4,
+      "attainable_tflops": 88.4736,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 128,
+      "flops": 2097152,
+      "bytes": 540672,
+      "arithmetic_intensity": 3.8788,
+      "attainable_tflops": 3.3513,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 512,
+      "flops": 180388626432,
+      "bytes": 408944640,
+      "arithmetic_intensity": 441.1077,
+      "attainable_tflops": 362.0,
+      "classification": "compute-bound"
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 512,
+      "flops": 42949672960,
+      "bytes": 111149056,
+      "arithmetic_intensity": 386.4151,
+      "attainable_tflops": 333.8626,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 512,
+      "flops": 4294967296,
+      "bytes": 10485760,
+      "arithmetic_intensity": 409.6,
+      "attainable_tflops": 353.8944,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 512,
+      "flops": 8388608,
+      "bytes": 2113536,
+      "arithmetic_intensity": 3.969,
+      "attainable_tflops": 3.4292,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 2048,
+      "flops": 721554505728,
+      "bytes": 578813952,
+      "arithmetic_intensity": 1246.6087,
+      "attainable_tflops": 362.0,
+      "classification": "compute-bound"
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 2048,
+      "flops": 171798691840,
+      "bytes": 192937984,
+      "arithmetic_intensity": 890.4348,
+      "attainable_tflops": 362.0,
+      "classification": "compute-bound"
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 2048,
+      "flops": 68719476736,
+      "bytes": 41943040,
+      "arithmetic_intensity": 1638.4,
+      "attainable_tflops": 362.0,
+      "classification": "compute-bound"
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 2048,
+      "flops": 33554432,
+      "bytes": 8404992,
+      "arithmetic_intensity": 3.9922,
+      "attainable_tflops": 3.4493,
+      "classification": "memory-bound"
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 8192,
+      "flops": 2886218022912,
+      "bytes": 1258291200,
+      "arithmetic_intensity": 2293.76,
+      "attainable_tflops": 362.0,
+      "classification": "compute-bound"
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 8192,
+      "flops": 687194767360,
+      "bytes": 520093696,
+      "arithmetic_intensity": 1321.2903,
+      "attainable_tflops": 362.0,
+      "classification": "compute-bound"
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 8192,
+      "flops": 1099511627776,
+      "bytes": 167772160,
+      "arithmetic_intensity": 6553.6,
+      "attainable_tflops": 362.0,
+      "classification": "compute-bound"
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 8192,
+      "flops": 134217728,
+      "bytes": 33570816,
+      "arithmetic_intensity": 3.998,
+      "attainable_tflops": 3.4543,
+      "classification": "memory-bound"
+    }
+  ]
+}

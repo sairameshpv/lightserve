@@ -1,0 +1,289 @@
+<title>Roofline: Attention &amp; FFN on L40S</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --page:           #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+
+    --s1: #2a78d6; /* blue    - FFN */
+    --s2: #eb6834; /* orange  - Attention QKVO proj */
+    --s3: #1baf7a; /* aqua    - Attention score (prefill) */
+    --s4: #eda100; /* yellow  - Attention score (decode) */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page:           #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --page:           #0d0d0d;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --gridline:       #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255,255,255,0.10);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .viz-root {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page);
+    color: var(--text-primary);
+    padding: 32px 20px 60px;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  .subtitle { color: var(--text-secondary); font-size: 14px; margin: 0 0 24px; line-height: 1.5; }
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 14px 0 4px; font-size: 12.5px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); }
+  .legend-swatch { width: 20px; height: 3px; border-radius: 2px; flex: none; }
+  .legend-swatch.roof { background: repeating-linear-gradient(90deg, var(--text-muted) 0 4px, transparent 4px 7px); height: 2px; }
+
+  .axis-label { font-size: 11px; fill: var(--text-muted); }
+  .tick-label { font-size: 10px; fill: var(--text-muted); }
+  .grid-line { stroke: var(--gridline); stroke-width: 1; }
+  .roof-line { stroke: var(--text-muted); stroke-width: 1.5; stroke-dasharray: 5 4; fill: none; }
+  .ridge-line { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.6; }
+  .region-label { font-size: 11px; fill: var(--text-muted); font-style: italic; }
+  .series-path { fill: none; stroke-width: 2; }
+  .series-dot { stroke: var(--surface-1); stroke-width: 2; cursor: default; }
+  .series-dot:hover { filter: brightness(1.2); }
+
+  .finding {
+    font-size: 13.5px; line-height: 1.6; color: var(--text-secondary);
+    margin-top: 16px;
+  }
+  .finding b { color: var(--text-primary); }
+
+  .tooltip {
+    position: fixed; pointer-events: none; z-index: 10;
+    background: var(--text-primary); color: var(--surface-1);
+    font-size: 11.5px; padding: 7px 10px; border-radius: 6px;
+    max-width: 240px; line-height: 1.5; opacity: 0; transition: opacity 0.1s;
+  }
+  .tooltip.show { opacity: 0.97; }
+
+  .footer { margin-top: 20px; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+  .footer code { background: var(--gridline); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+</style>
+
+<div class="viz-root">
+  <div class="wrap">
+    <h1>Roofline: Attention &amp; FFN on L40S</h1>
+    <p class="subtitle">
+      Analytical arithmetic intensity (FLOPs/byte) for Llama-3-8B's core ops across sequence lengths,
+      plotted against the L40S's bf16 roofline (362 TFLOPS peak, 864 GB/s bandwidth,
+      ridge point at 419 FLOPs/byte). Each point sits at its op's ceiling performance given its
+      arithmetic intensity &mdash; below the ridge, that ceiling is set by memory bandwidth; above it, by compute.
+    </p>
+
+    <div class="card">
+      <svg id="chart" viewBox="0 0 820 480" style="width:100%; height:auto;"></svg>
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <div class="finding">
+      <b>Decode-phase attention never leaves the memory-bound region</b> &mdash; its arithmetic intensity
+      saturates around <b>4 FLOPs/byte</b> regardless of how long the KV-cache grows (both its FLOPs and
+      its bytes scale linearly with cache length, so the ratio converges). Every other op starts
+      memory-bound at short sequence lengths but crosses into compute-bound territory once the batched
+      sequence length reaches a few hundred to a couple thousand tokens &mdash; FFN crosses first (~512 tokens),
+      matching the classic result that MLP/FFN layers are the most "GEMM-like" (easiest to make compute-bound)
+      part of a transformer.
+    </div>
+
+    <div class="footer">
+      Full data: <code>roofline_data.csv</code> / <code>roofline_data.json</code>, generated by
+      <code>compute_roofline.py</code> &mdash; a pure analytical FLOP/byte model (no GPU run required),
+      cross-checked against the empirical LM-head-GEMV finding in <code>../report.md</code> (batch=1
+      GEMV there is the same memory-bound regime as decode-phase attention/projections here).
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const PEAK_TFLOPS = 362;
+const PEAK_BW_GBS = 864;
+const RIDGE_AI = PEAK_TFLOPS * 1000 / PEAK_BW_GBS; // FLOPs/byte
+
+const SERIES = [
+  {
+    key: "ffn", name: "FFN (gate+up+down)", color: "var(--s1)",
+    points: [
+      {s:1, ai:1.00, tflops:0.86}, {s:8, ai:7.98, tflops:6.89}, {s:32, ai:31.68, tflops:27.37},
+      {s:128, ai:123.06, tflops:106.32}, {s:512, ai:441.11, tflops:362.00},
+      {s:2048, ai:1246.61, tflops:362.00}, {s:8192, ai:2293.76, tflops:362.00}
+    ]
+  },
+  {
+    key: "qkvo", name: "Attention QKVO proj", color: "var(--s2)",
+    points: [
+      {s:1, ai:1.00, tflops:0.86}, {s:8, ai:7.96, tflops:6.88}, {s:32, ai:31.36, tflops:27.10},
+      {s:128, ai:118.38, tflops:102.28}, {s:512, ai:386.42, tflops:333.86},
+      {s:2048, ai:890.43, tflops:362.00}, {s:8192, ai:1321.29, tflops:362.00}
+    ]
+  },
+  {
+    key: "attn_prefill", name: "Attention score (prefill)", color: "var(--s3)",
+    points: [
+      {s:1, ai:0.80, tflops:0.69}, {s:8, ai:6.40, tflops:5.53}, {s:32, ai:25.60, tflops:22.12},
+      {s:128, ai:102.40, tflops:88.47}, {s:512, ai:409.60, tflops:353.89},
+      {s:2048, ai:1638.40, tflops:362.00}, {s:8192, ai:6553.60, tflops:362.00}
+    ]
+  },
+  {
+    key: "attn_decode", name: "Attention score (decode, vs KV-cache len)", color: "var(--s4)",
+    points: [
+      {s:1, ai:0.80, tflops:0.69}, {s:8, ai:2.67, tflops:2.30}, {s:32, ai:3.56, tflops:3.07},
+      {s:128, ai:3.88, tflops:3.35}, {s:512, ai:3.97, tflops:3.43},
+      {s:2048, ai:3.99, tflops:3.45}, {s:8192, ai:4.00, tflops:3.45}
+    ]
+  }
+];
+
+const X_MIN = 0.5, X_MAX = 10000;
+const Y_MIN = 0.3, Y_MAX = 500;
+const MARGIN = {left: 60, right: 20, top: 20, bottom: 46};
+const W = 820, H = 480;
+const plotW = W - MARGIN.left - MARGIN.right;
+const plotH = H - MARGIN.top - MARGIN.bottom;
+
+function xPix(ai) {
+  const t = (Math.log10(ai) - Math.log10(X_MIN)) / (Math.log10(X_MAX) - Math.log10(X_MIN));
+  return MARGIN.left + t * plotW;
+}
+function yPix(tflops) {
+  const t = (Math.log10(tflops) - Math.log10(Y_MIN)) / (Math.log10(Y_MAX) - Math.log10(Y_MIN));
+  return MARGIN.top + (1 - t) * plotH;
+}
+
+function decadeTicks(min, max) {
+  const ticks = [];
+  let p = Math.floor(Math.log10(min));
+  const pMax = Math.ceil(Math.log10(max));
+  for (; p <= pMax; p++) {
+    const v = Math.pow(10, p);
+    if (v >= min && v <= max) ticks.push(v);
+  }
+  return ticks;
+}
+
+const svg = document.getElementById("chart");
+const ns = "http://www.w3.org/2000/svg";
+function el(tag, attrs) {
+  const e = document.createElementNS(ns, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  return e;
+}
+
+// gridlines + ticks
+for (const v of decadeTicks(X_MIN, X_MAX)) {
+  const x = xPix(v);
+  svg.appendChild(el("line", {x1:x, y1:MARGIN.top, x2:x, y2:MARGIN.top+plotH, class:"grid-line"}));
+  const label = v >= 1 ? v.toLocaleString() : v;
+  const t = el("text", {x, y: MARGIN.top+plotH+18, class:"tick-label", "text-anchor":"middle"});
+  t.textContent = label;
+  svg.appendChild(t);
+}
+for (const v of decadeTicks(Y_MIN, Y_MAX)) {
+  const y = yPix(v);
+  svg.appendChild(el("line", {x1:MARGIN.left, y1:y, x2:MARGIN.left+plotW, y2:y, class:"grid-line"}));
+  const t = el("text", {x: MARGIN.left-8, y: y+3, class:"tick-label", "text-anchor":"end"});
+  t.textContent = v >= 1 ? v.toLocaleString() : v;
+  svg.appendChild(t);
+}
+
+// axis labels
+const xlabel = el("text", {x: MARGIN.left+plotW/2, y: H-6, class:"axis-label", "text-anchor":"middle"});
+xlabel.textContent = "Arithmetic Intensity (FLOPs / byte, log scale)";
+svg.appendChild(xlabel);
+const ylabel = el("text", {x: -(MARGIN.top+plotH/2), y: 16, class:"axis-label", "text-anchor":"middle", transform:"rotate(-90)"});
+ylabel.textContent = "Attainable Performance (TFLOPS, log scale)";
+svg.appendChild(ylabel);
+
+// roofline: diagonal (memory roof) from X_MIN up to ridge, then horizontal (compute roof)
+const ridgeY = PEAK_TFLOPS;
+const diagPath = `M ${xPix(X_MIN)} ${yPix(Math.min(Y_MAX, X_MIN*PEAK_BW_GBS/1000))} L ${xPix(RIDGE_AI)} ${yPix(ridgeY)}`;
+const flatPath = `M ${xPix(RIDGE_AI)} ${yPix(ridgeY)} L ${xPix(X_MAX)} ${yPix(ridgeY)}`;
+svg.appendChild(el("path", {d: diagPath, class:"roof-line"}));
+svg.appendChild(el("path", {d: flatPath, class:"roof-line"}));
+
+// ridge point vertical guide + region labels
+svg.appendChild(el("line", {x1:xPix(RIDGE_AI), y1:MARGIN.top, x2:xPix(RIDGE_AI), y2:MARGIN.top+plotH, class:"ridge-line"}));
+const memLabel = el("text", {x: xPix(2), y: MARGIN.top+16, class:"region-label"});
+memLabel.textContent = "← memory-bound";
+svg.appendChild(memLabel);
+const compLabel = el("text", {x: xPix(RIDGE_AI*1.3), y: MARGIN.top+16, class:"region-label"});
+compLabel.textContent = "compute-bound →";
+svg.appendChild(compLabel);
+
+const tip = document.getElementById("tooltip");
+function showTip(e, html) {
+  tip.innerHTML = html;
+  tip.style.left = (e.clientX + 14) + "px";
+  tip.style.top = (e.clientY + 14) + "px";
+  tip.classList.add("show");
+}
+function hideTip() { tip.classList.remove("show"); }
+
+// series paths + dots
+for (const series of SERIES) {
+  const d = series.points.map((p, i) => `${i===0?"M":"L"} ${xPix(p.ai)} ${yPix(p.tflops)}`).join(" ");
+  svg.appendChild(el("path", {d, class:"series-path", stroke: series.color}));
+  for (const p of series.points) {
+    const dot = el("circle", {
+      cx: xPix(p.ai), cy: yPix(p.tflops), r: 5,
+      fill: series.color, class: "series-dot"
+    });
+    dot.addEventListener("mousemove", (e) => showTip(e,
+      `<b>${series.name}</b><br>S=${p.s} &middot; AI ${p.ai.toFixed(2)} FLOP/B &middot; ${p.tflops.toFixed(2)} TFLOPS<br>${p.ai < RIDGE_AI ? "memory-bound" : "compute-bound"}`
+    ));
+    dot.addEventListener("mouseleave", hideTip);
+    svg.appendChild(dot);
+  }
+}
+
+// legend
+const legend = document.getElementById("legend");
+for (const series of SERIES) {
+  const item = document.createElement("div");
+  item.className = "legend-item";
+  item.innerHTML = `<span class="legend-swatch" style="background:${series.color}"></span>${series.name}`;
+  legend.appendChild(item);
+}
+const roofItem = document.createElement("div");
+roofItem.className = "legend-item";
+roofItem.innerHTML = `<span class="legend-swatch roof"></span>L40S roofline (362 TFLOPS / 864 GB/s)`;
+legend.appendChild(roofItem);
+</script>

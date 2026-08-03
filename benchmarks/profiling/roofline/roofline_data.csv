@@ -1,0 +1,29 @@
+op,seq_len,flops,bytes,arithmetic_intensity,attainable_tflops,classification
+FFN (gate+up+down),1,352321536,352432128,0.9997,0.8637,memory-bound
+Attention QKVO proj,1,83886080,83939328,0.9994,0.8635,memory-bound
+"Attention score (prefill, QK^T+AV)",1,16384,20480,0.8,0.6912,memory-bound
+"Attention score (decode, 1 query vs cache)",1,16384,20480,0.8,0.6912,memory-bound
+FFN (gate+up+down),8,2818572288,353206272,7.98,6.8947,memory-bound
+Attention QKVO proj,8,671088640,84312064,7.9596,6.8771,memory-bound
+"Attention score (prefill, QK^T+AV)",8,1048576,163840,6.4,5.5296,memory-bound
+"Attention score (decode, 1 query vs cache)",8,131072,49152,2.6667,2.304,memory-bound
+FFN (gate+up+down),32,11274289152,355860480,31.6818,27.373,memory-bound
+Attention QKVO proj,32,2684354560,85590016,31.3629,27.0976,memory-bound
+"Attention score (prefill, QK^T+AV)",32,16777216,655360,25.6,22.1184,memory-bound
+"Attention score (decode, 1 query vs cache)",32,524288,147456,3.5556,3.072,memory-bound
+FFN (gate+up+down),128,45097156608,366477312,123.0558,106.3202,memory-bound
+Attention QKVO proj,128,10737418240,90701824,118.3815,102.2816,memory-bound
+"Attention score (prefill, QK^T+AV)",128,268435456,2621440,102.4,88.4736,memory-bound
+"Attention score (decode, 1 query vs cache)",128,2097152,540672,3.8788,3.3513,memory-bound
+FFN (gate+up+down),512,180388626432,408944640,441.1077,362.0,compute-bound
+Attention QKVO proj,512,42949672960,111149056,386.4151,333.8626,memory-bound
+"Attention score (prefill, QK^T+AV)",512,4294967296,10485760,409.6,353.8944,memory-bound
+"Attention score (decode, 1 query vs cache)",512,8388608,2113536,3.969,3.4292,memory-bound
+FFN (gate+up+down),2048,721554505728,578813952,1246.6087,362.0,compute-bound
+Attention QKVO proj,2048,171798691840,192937984,890.4348,362.0,compute-bound
+"Attention score (prefill, QK^T+AV)",2048,68719476736,41943040,1638.4,362.0,compute-bound
+"Attention score (decode, 1 query vs cache)",2048,33554432,8404992,3.9922,3.4493,memory-bound
+FFN (gate+up+down),8192,2886218022912,1258291200,2293.76,362.0,compute-bound
+Attention QKVO proj,8192,687194767360,520093696,1321.2903,362.0,compute-bound
+"Attention score (prefill, QK^T+AV)",8192,1099511627776,167772160,6553.6,362.0,compute-bound
+"Attention score (decode, 1 query vs cache)",8192,134217728,33570816,3.998,3.4543,memory-bound
