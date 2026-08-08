@@ -1,0 +1,34 @@
+{
+  "gpu": "NVIDIA L40S",
+  "torch_version": "2.11.0+cu130",
+  "dtype": "bfloat16",
+  "rows": [
+    {
+      "size": "1024x1024x1024",
+      "ours_ms": 0.04281,
+      "cublas_ms": 0.01406,
+      "ours_tflops": 50.2,
+      "cublas_tflops": 152.8,
+      "efficiency_pct": 32.8,
+      "pct_of_l40s_peak": 13.9
+    },
+    {
+      "size": "4096x4096x4096",
+      "ours_ms": 0.64675,
+      "cublas_ms": 0.57525,
+      "ours_tflops": 212.5,
+      "cublas_tflops": 238.9,
+      "efficiency_pct": 88.9,
+      "pct_of_l40s_peak": 58.7
+    },
+    {
+      "size": "8192x8192x8192",
+      "ours_ms": 5.90514,
+      "cublas_ms": 6.81465,
+      "ours_tflops": 186.2,
+      "cublas_tflops": 161.3,
+      "efficiency_pct": 115.4,
+      "pct_of_l40s_peak": 51.4
+    }
+  ]
+}

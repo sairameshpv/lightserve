@@ -179,6 +179,85 @@ gets dragged down by tiny `[M,1]` reduction-output kernels (variance+eps,
 rsqrt) that land at 0.5-0.6% of peak, pure latency-bound overhead fusion
 sidesteps entirely by keeping that math in registers.
 
+## Kernel 3: tiled GEMM (C = A @ B), tensor cores + shared memory
+
+`tiled_matmul.py` computes `C = A @ B` for `A: [M, K]`, `B: [K, N]`, tiling
+both operands into on-chip blocks that `tl.dot` reduces against — the payoff
+here isn't fewer kernel launches (kernels 1 and 2's story), it's *reuse*:
+every element loaded gets used for `BLOCK_M` or `BLOCK_N` multiply-adds
+before it's evicted, instead of being re-streamed from HBM per output
+element. Two things beyond kernels 1/2's model: `tl.dot` compiles to real
+Tensor Core MMA instructions on this GPU (Ada) when operands are bf16/fp16,
+and the grid uses an L2-locality "swizzle" (`GROUP_M`) so consecutive thread
+blocks reuse the same handful of A-tiles instead of thrashing L2 with a
+naive row-major tile order. 4 `@triton.autotune` configs, not an exhaustive
+search — see `matmul_ncu_report.md` for what that leaves on the table
+against cuBLAS.
+
+### Correctness
+
+`tests/test_tiled_matmul.py` checks against `torch.matmul` (cuBLAS) across
+LLM-real shapes (square and FFN-rectangular), non-block-multiple boundary
+cases on M/N *and* K, non-contiguous inputs, and dtype/shape-mismatch
+rejection. Two real bugs turned up writing this kernel, both fixed and
+worth naming: the K-loop's boundary mask only covered the K edge, not the
+M/N edge, so edge tiles were reading past the tensor's actual allocation on
+every K-step (silently discarded by the masked final store, but still
+genuine undefined behavior); and `tl.dot` defaults to TF32 (truncated
+mantissa) for fp32 operands while this PyTorch/driver's `torch.matmul`
+fp32 default is strict IEEE, so the two weren't computing the same thing
+until the kernel passed `input_precision="ieee"` explicitly. Run for real
+on the same L40S:
+
+```
+$ python3 -m pytest kernels/tests/ -v
+...
+67 passed in 76.44s
+```
+
+(46 from kernels 1+2, 21 new: 3 dtypes × 6 shapes + non-contiguous + 2
+CPU-only validation tests.)
+
+### Benchmark: ours vs. cuBLAS
+
+`benchmark_tiled_matmul.py`, bf16, 3 square sizes (the dtype/peak-spec every
+other number in this repo is quoted against — see the roofline analysis).
+CUDA-event wall-clock, median of 5×30-iter blocks, allclose-verified before
+every timed size:
+
+| size | ours | cuBLAS | efficiency (ours/cuBLAS) | ours, % of 362 TFLOPS peak |
+|---|--:|--:|--:|--:|
+| 1024³ | 50.2 TFLOPS | 152.8 TFLOPS | 32.8% | 13.9% |
+| 4096³ | 212.5 TFLOPS | 238.9 TFLOPS | 88.9% | 58.7% |
+| 8192³ | 186.2 TFLOPS | 161.3 TFLOPS | **115.4%** | 51.4% |
+
+Full data: `benchmark_matmul_results.json`.
+
+**cuBLAS does not win at every size tested here** — the honest result,
+re-confirmed independently at 8192³ with a different seed (185.6 vs 169.2
+TFLOPS). It wins decisively small, is nearly matched at 4096, and we're
+reproducibly ~10-20% *ahead* at 8192. `ncu` (below) explains why: at 1024³,
+cuBLAS's kernel spawns 2x more thread blocks than our autotuned tile size
+does, which matters enormously there because 64 blocks can't fill the
+L40S's 142 SMs regardless of per-block efficiency; by 8192³ there's enough
+total work that this stops being the deciding factor, and a narrow 4-config
+autotune search can land on a shape-specific answer cuBLAS's
+heuristic-driven kernel selection didn't happen to pick for this exact size.
+
+### Nsight Compute: why cuBLAS wins (and where it doesn't)
+
+Full writeup with per-size `ncu` metrics (Tensor Core pipe utilization,
+occupancy, register pressure, grid/block size) for both kernels:
+**[`matmul_ncu_report.md`](matmul_ncu_report.md)**. Headline: at 1024³,
+cuBLAS reaches 58.0% Tensor Core utilization against our 31.6% because its
+kernel launches 128 thread blocks to our autotune-picked 64 — a
+wave-quantization gap, not a "not using tensor cores" gap (`ncu` confirms
+real HMMA instructions on both). At 8192³ the same block-count story
+inverts what it predicts: cuBLAS still runs more blocks (4096 vs 2048) and
+reaches higher Tensor Core utilization (96.9% vs 83.9%), yet our kernel
+reaches 2x higher occupancy (16.7% vs 8.3%) and the two wall-clock
+benchmarks above both measured us ahead regardless.
+
 ## CI
 
 `.github/workflows/kernels-ci.yml` runs `pytest kernels/tests/` on every push
@@ -207,3 +286,13 @@ GPU runner wired up yet.
 - `profile_rmsnorm_ncu.py` / `ncu_rmsnorm_report.txt` /
   `rmsnorm_ncu_report.md` — kernel 2's Nsight Compute profiling target,
   raw output, and writeup.
+- `tiled_matmul.py` — kernel 3, with inline commentary on tiling-for-reuse
+  and the L2-locality grid swizzle.
+- `tests/test_tiled_matmul.py` — kernel 3 correctness tests (allclose vs.
+  `torch.matmul`/cuBLAS).
+- `benchmark_tiled_matmul.py` — kernel 3 ours-vs-cuBLAS TFLOPS + efficiency
+  %, at 3 square sizes.
+- `benchmark_matmul_results.json` — kernel 3 raw benchmark output.
+- `profile_matmul_ncu.py` / `ncu_matmul_report.txt` / `matmul_ncu_report.md`
+  — kernel 3's Nsight Compute profiling target, raw output, and the
+  why-cuBLAS-wins (and doesn't) writeup.

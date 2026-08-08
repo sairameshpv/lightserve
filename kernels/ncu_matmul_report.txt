@@ -1,0 +1,112 @@
+=== size=1024 mode=ours ===
+==PROF== Connected to process 55 (/usr/bin/python3.12)
+==PROF== Profiling "_matmul_kernel" - 0: 0%....50%....100% - 8 passes
+==PROF== Disconnected from process 55
+[55] python3.12@127.0.0.1
+  _matmul_kernel (64, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 55:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    ----------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                 Metric Unit Metric Value
+    ----------------------------------------------------------------------- --------------- ------------
+    dram__throughput.avg.pct_of_peak_sustained_elapsed                                    %        14.42
+    gpu__time_duration.sum                                                               us        43.97
+    launch__block_size                                                                               128
+    launch__grid_size                                                                                 64
+    launch__occupancy_limit_registers                                                 block            2
+    launch__occupancy_limit_shared_mem                                                block            2
+    launch__occupancy_limit_warps                                                     block           12
+    launch__registers_per_thread                                            register/thread          254
+    sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_elapsed               %        31.57
+    sm__throughput.avg.pct_of_peak_sustained_elapsed                                      %        31.57
+    sm__warps_active.avg.pct_of_peak_sustained_active                                     %         8.33
+    ----------------------------------------------------------------------- --------------- ------------
+
+
+=== size=1024 mode=cublas ===
+==PROF== Connected to process 56 (/usr/bin/python3.12)
+==PROF== Profiling "Kernel2" - 0: 0%....50%....100% - 8 passes
+==PROF== Disconnected from process 56
+[56] python3.12@127.0.0.1
+  void Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x64_32x6_nn_align8>(Params) (128, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    ----------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                 Metric Unit Metric Value
+    ----------------------------------------------------------------------- --------------- ------------
+    dram__throughput.avg.pct_of_peak_sustained_elapsed                                    %        24.86
+    gpu__time_duration.sum                                                               us        23.97
+    launch__block_size                                                                               128
+    launch__grid_size                                                                                128
+    launch__occupancy_limit_registers                                                 block            3
+    launch__occupancy_limit_shared_mem                                                block            1
+    launch__occupancy_limit_warps                                                     block           12
+    launch__registers_per_thread                                            register/thread          142
+    sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_elapsed               %        57.95
+    sm__throughput.avg.pct_of_peak_sustained_elapsed                                      %        57.95
+    sm__warps_active.avg.pct_of_peak_sustained_active                                     %         8.33
+    ----------------------------------------------------------------------- --------------- ------------
+
+
+=== size=8192 mode=ours ===
+==PROF== Connected to process 56 (/usr/bin/python3.12)
+==PROF== Profiling "_matmul_kernel" - 0: 0%....50%....100% - 8 passes
+==PROF== Disconnected from process 56
+[56] python3.12@127.0.0.1
+  _matmul_kernel (2048, 1, 1)x(256, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    ----------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                 Metric Unit Metric Value
+    ----------------------------------------------------------------------- --------------- ------------
+    dram__throughput.avg.pct_of_peak_sustained_elapsed                                    %        23.10
+    gpu__time_duration.sum                                                               ms         8.46
+    launch__block_size                                                                               256
+    launch__grid_size                                                                               2048
+    launch__occupancy_limit_registers                                                 block            1
+    launch__occupancy_limit_shared_mem                                                block            1
+    launch__occupancy_limit_warps                                                     block            6
+    launch__registers_per_thread                                            register/thread          233
+    sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_elapsed               %        83.93
+    sm__throughput.avg.pct_of_peak_sustained_elapsed                                      %        83.93
+    sm__warps_active.avg.pct_of_peak_sustained_active                                     %        16.66
+    ----------------------------------------------------------------------- --------------- ------------
+
+
+=== size=8192 mode=cublas ===
+==PROF== Connected to process 56 (/usr/bin/python3.12)
+==PROF== Profiling "Kernel2" - 0: 0%....50%....100% - 8 passes
+==PROF== Disconnected from process 56
+[56] python3.12@127.0.0.1
+  void Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x128_32x4_nn_align8>(Params) (512, 8, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    ----------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                 Metric Unit Metric Value
+    ----------------------------------------------------------------------- --------------- ------------
+    dram__throughput.avg.pct_of_peak_sustained_elapsed                                    %        26.36
+    gpu__time_duration.sum                                                               ms         7.32
+    launch__block_size                                                                               128
+    launch__grid_size                                                                               4096
+    launch__occupancy_limit_registers                                                 block            2
+    launch__occupancy_limit_shared_mem                                                block            1
+    launch__occupancy_limit_warps                                                     block           12
+    launch__registers_per_thread                                            register/thread          224
+    sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_elapsed               %        96.93
+    sm__throughput.avg.pct_of_peak_sustained_elapsed                                      %        96.93
+    sm__warps_active.avg.pct_of_peak_sustained_active                                     %         8.33
+    ----------------------------------------------------------------------- --------------- ------------
+
+
