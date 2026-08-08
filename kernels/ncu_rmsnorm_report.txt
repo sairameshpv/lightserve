@@ -1,0 +1,360 @@
+=== fused bfloat16 ===
+==PROF== Connected to process 56 (/usr/bin/python3.12)
+==PROF== Profiling "_fused_add_rmsnorm_kernel" - 0: 0%....50%....100% - 7 passes
+==PROF== Disconnected from process 56
+[56] python3.12@127.0.0.1
+  _fused_add_rmsnorm_kernel (2048, 1, 1)x(512, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        37.83
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        86.23
+    gpu__time_duration.sum                                      us        50.88
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        35.88
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %        17.64
+    -------------------------------------------------- ----------- ------------
+
+
+=== fused float32 ===
+==PROF== Connected to process 56 (/usr/bin/python3.12)
+==PROF== Profiling "_fused_add_rmsnorm_kernel" - 0: 0%....50%....100% - 7 passes
+==PROF== Disconnected from process 56
+[56] python3.12@127.0.0.1
+  _fused_add_rmsnorm_kernel (2048, 1, 1)x(512, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        93.18
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        91.24
+    gpu__time_duration.sum                                      us       118.37
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        30.33
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %         8.79
+    -------------------------------------------------- ----------- ------------
+
+
+=== naive bfloat16 ===
+==PROF== Connected to process 56 (/usr/bin/python3.12)
+==PROF== Profiling "vectorized_elementwise_kernel" - 0: 0%....50%....100% - 7 passes
+==PROF== Profiling "unrolled_elementwise_kernel" - 1: 0%....50%....100% - 7 passes
+==PROF== Profiling "vectorized_elementwise_kernel" - 2: 0%....50%....100% - 7 passes
+==PROF== Profiling "reduce_kernel" - 3: 0%....50%....100% - 7 passes
+==PROF== Profiling "unrolled_elementwise_kernel" - 4: 0%....50%....100% - 7 passes
+==PROF== Profiling "vectorized_elementwise_kernel" - 5: 0%....50%....100% - 7 passes
+==PROF== Profiling "vectorized_elementwise_kernel" - 6: 0%....50%....100% - 7 passes
+==PROF== Profiling "elementwise_kernel" - 7: 0%....50%....100% - 7 passes
+==PROF== Profiling "unrolled_elementwise_kernel" - 8: 0%....50%....100% - 7 passes
+==PROF== Profiling "elementwise_kernel" - 9: 0%....50%....100% - 7 passes
+==PROF== Profiling "vectorized_elementwise_kernel" - 10: 0%....50%....100% - 7 passes
+==PROF== Disconnected from process 56
+[56] python3.12@127.0.0.1
+  void vectorized_elementwise_kernel<4, CUDAFunctor_add<c10::BFloat16>, std::array<char *, 3>>(int, T2, T3) (8192, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        37.99
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        91.68
+    gpu__time_duration.sum                                      us        48.06
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        32.49
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %         6.32
+    -------------------------------------------------- ----------- ------------
+
+  void unrolled_elementwise_kernel<direct_copy_kernel_cuda(TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 7)]::operator ()() const::[lambda(float) (instance 1)], std::array<char *, 2>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, memory::LoadWithCast<1>, memory::StoreWithCast<1>>(int, T1, T2, T4, T5, T6, T7) (16384, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        20.46
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        59.38
+    gpu__time_duration.sum                                      us        39.97
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        47.33
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %        51.97
+    -------------------------------------------------- ----------- ------------
+
+  void vectorized_elementwise_kernel<4, void unnamed>::pow_tensor_scalar_kernel_impl<float, float>(TensorIteratorBase &, T2)::[lambda(float) (instance 1)], std::array<char *, 2>>(int, T2, T3) (8192, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        38.14
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        90.25
+    gpu__time_duration.sum                                      us        49.02
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        36.76
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %         4.43
+    -------------------------------------------------- ----------- ------------
+
+  void reduce_kernel<512, 1, ReduceOp<float, MeanOps<float, float, float, float>, unsigned int, float, 4, 4>>(T3) (128, 1, 1)x(32, 16, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        38.51
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        84.60
+    gpu__time_duration.sum                                      us        52.77
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        29.42
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %         3.31
+    -------------------------------------------------- ----------- ------------
+
+  void unrolled_elementwise_kernel<direct_copy_kernel_cuda(TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 7)]::operator ()() const::[lambda(float) (instance 1)], std::array<char *, 2>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, memory::LoadWithCast<1>, memory::StoreWithCast<1>>(int, T1, T2, T4, T5, T6, T7) (16384, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        20.48
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        59.58
+    gpu__time_duration.sum                                      us        39.90
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        47.09
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %        52.09
+    -------------------------------------------------- ----------- ------------
+
+  void vectorized_elementwise_kernel<4, CUDAFunctorOnSelf_add<float>, std::array<char *, 2>>(int, T2, T3) (2, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Kbyte        14.59
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %         0.54
+    gpu__time_duration.sum                                      us         3.17
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %         0.65
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %         0.02
+    -------------------------------------------------- ----------- ------------
+
+  void vectorized_elementwise_kernel<4, rsqrt_kernel_cuda(TensorIteratorBase &)::[lambda() (instance 2)]::operator ()() const::[lambda() (instance 2)]::operator ()() const::[lambda(float) (instance 1)], std::array<char *, 2>>(int, T2, T3) (2, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Kbyte        16.51
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %         0.60
+    gpu__time_duration.sum                                      us         3.23
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %         0.76
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %         0.03
+    -------------------------------------------------- ----------- ------------
+
+  void elementwise_kernel<128, 2, void gpu_kernel_impl_nocast<BinaryFunctor<float, float, float, binary_internal::MulFunctor<float>>>(TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3) (32768, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        38.30
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        89.92
+    gpu__time_duration.sum                                      us        49.41
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        39.93
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %        37.75
+    -------------------------------------------------- ----------- ------------
+
+  void unrolled_elementwise_kernel<direct_copy_kernel_cuda(TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 7)]::operator ()() const::[lambda(float) (instance 1)], std::array<char *, 2>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, memory::LoadWithCast<1>, memory::StoreWithCast<1>>(int, T1, T2, T4, T5, T6, T7) (8, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Kbyte        45.57
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %         0.81
+    gpu__time_duration.sum                                      us         6.66
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %         1.50
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %         0.16
+    -------------------------------------------------- ----------- ------------
+
+  void elementwise_kernel<128, 2, void gpu_kernel_impl_nocast<BinaryFunctor<float, float, float, binary_internal::MulFunctor<float>>>(TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3) (32768, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        38.22
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        90.28
+    gpu__time_duration.sum                                      us        49.12
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        40.18
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %        37.98
+    -------------------------------------------------- ----------- ------------
+
+  void vectorized_elementwise_kernel<4, bfloat16_copy_kernel_cuda(TensorIteratorBase &)::[lambda(float) (instance 1)], std::array<char *, 2>>(int, T2, T3) (8192, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        37.90
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        91.52
+    gpu__time_duration.sum                                      us           48
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        32.50
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %         4.52
+    -------------------------------------------------- ----------- ------------
+
+
+=== naive float32 ===
+==PROF== Connected to process 56 (/usr/bin/python3.12)
+==PROF== Profiling "vectorized_elementwise_kernel" - 0: 0%....50%....100% - 7 passes
+==PROF== Profiling "vectorized_elementwise_kernel" - 1: 0%....50%....100% - 7 passes
+==PROF== Profiling "reduce_kernel" - 2: 0%....50%....100% - 7 passes
+==PROF== Profiling "vectorized_elementwise_kernel" - 3: 0%....50%....100% - 7 passes
+==PROF== Profiling "vectorized_elementwise_kernel" - 4: 0%....50%....100% - 7 passes
+==PROF== Profiling "elementwise_kernel" - 5: 0%....50%....100% - 7 passes
+==PROF== Profiling "elementwise_kernel" - 6: 0%....50%....100% - 7 passes
+==PROF== Disconnected from process 56
+[56] python3.12@127.0.0.1
+  void vectorized_elementwise_kernel<4, CUDAFunctor_add<float>, std::array<char *, 3>>(int, T2, T3) (8192, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        79.81
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        93.86
+    gpu__time_duration.sum                                      us        98.56
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        31.42
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %         3.08
+    -------------------------------------------------- ----------- ------------
+
+  void vectorized_elementwise_kernel<4, void unnamed>::pow_tensor_scalar_kernel_impl<float, float>(TensorIteratorBase &, T2)::[lambda(float) (instance 1)], std::array<char *, 2>>(int, T2, T3) (8192, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        38.10
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        91.34
+    gpu__time_duration.sum                                      us        48.42
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        37.38
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %         4.48
+    -------------------------------------------------- ----------- ------------
+
+  void reduce_kernel<512, 1, ReduceOp<float, MeanOps<float, float, float, float>, unsigned int, float, 4, 4>>(T3) (128, 1, 1)x(32, 16, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        38.51
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        84.35
+    gpu__time_duration.sum                                      us        52.96
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        29.36
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %         3.30
+    -------------------------------------------------- ----------- ------------
+
+  void vectorized_elementwise_kernel<4, CUDAFunctorOnSelf_add<float>, std::array<char *, 2>>(int, T2, T3) (2, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Kbyte        14.72
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %         0.56
+    gpu__time_duration.sum                                      us         3.14
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %         0.66
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %         0.02
+    -------------------------------------------------- ----------- ------------
+
+  void vectorized_elementwise_kernel<4, rsqrt_kernel_cuda(TensorIteratorBase &)::[lambda() (instance 2)]::operator ()() const::[lambda() (instance 2)]::operator ()() const::[lambda(float) (instance 1)], std::array<char *, 2>>(int, T2, T3) (2, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Kbyte        16.38
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %         0.60
+    gpu__time_duration.sum                                      us         3.23
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %         0.78
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %         0.03
+    -------------------------------------------------- ----------- ------------
+
+  void elementwise_kernel<128, 2, void gpu_kernel_impl_nocast<BinaryFunctor<float, float, float, binary_internal::MulFunctor<float>>>(TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3) (32768, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        38.26
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        89.67
+    gpu__time_duration.sum                                      us        49.50
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        39.58
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %        37.68
+    -------------------------------------------------- ----------- ------------
+
+  void elementwise_kernel<128, 2, void gpu_kernel_impl_nocast<BinaryFunctor<float, float, float, binary_internal::MulFunctor<float>>>(TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3) (32768, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    -------------------------------------------------- ----------- ------------
+    Metric Name                                        Metric Unit Metric Value
+    -------------------------------------------------- ----------- ------------
+    dram__bytes.sum                                          Mbyte        38.27
+    dram__throughput.avg.pct_of_peak_sustained_elapsed           %        90.60
+    gpu__time_duration.sum                                      us        48.99
+    lts__throughput.avg.pct_of_peak_sustained_elapsed            %        40.31
+    sm__throughput.avg.pct_of_peak_sustained_elapsed             %        38.07
+    -------------------------------------------------- ----------- ------------
+
+

@@ -87,6 +87,98 @@ Full data: `benchmark_results.json`.
    with real HBM throughput — confirming it's a cache-residency effect, not
    a measurement error.
 
+## Kernel 2: fused residual-add + RMSNorm
+
+`fused_rmsnorm_residual.py` computes, for `x`/`residual: [M, N]`,
+`weight: [N]`:
+
+```
+h   = x + residual
+out = h / sqrt(mean(h**2, dim=-1) + eps) * weight
+```
+
+returning `(out, h)` — `h` is the new residual, carried forward into the
+next sublayer, matching the pre-norm decoder-layer boundary in every
+LLaMA-family model. Unlike kernel 1's pure tile-parallel elementwise op,
+RMSNorm needs a per-row *reduction* first, so the tiling strategy is
+different: one Triton program per row, each loading and reducing its whole
+row in one shot (`BLOCK_N = triton.next_power_of_2(N)`, masked). Variance is
+accumulated in fp32 regardless of input dtype — same numerical-stability
+convention LLaMA's own RMSNorm uses.
+
+### Correctness
+
+`tests/test_fused_rmsnorm_residual.py` checks both outputs against a
+PyTorch-eager reference (fp32-accumulated variance, same as the kernel)
+across LLaMA-real hidden sizes (4096, 8192) and non-power-of-2 widths, plus
+a direct unit-RMS sanity check (`weight=1` ⇒ `mean(out**2) == 1` by
+definition), a zero-row/eps-stability check, and rejection of shape
+mismatches and non-contiguous inputs (the whole-row-at-stride-1 load
+strategy requires contiguity, unlike kernel 1). Run for real on the same
+L40S:
+
+```
+$ python3 -m pytest kernels/tests/ -v
+...
+46 passed in 4.63s
+```
+
+(24 from kernel 1 + 22 new: 3 dtypes × 6 shapes + 3 targeted checks + the
+2 CPU-only validation tests.)
+
+### Benchmark
+
+`benchmark_fused_rmsnorm_residual.py`, same re-verify-then-time methodology
+as kernel 1, across LLaMA-real hidden sizes (4096, 8192) and batch sizes
+spanning decode (M=1) to prefill (M=2048):
+
+| shape | dtype | fused ms | naive ms | speedup | fused GB/s | naive GB/s |
+|---|---|--:|--:|--:|--:|--:|
+| 1×4096 | fp32 | 0.0281 | 0.0582 | 2.07x | 2.3 | 2.3 |
+| 1×4096 | bf16 | 0.0266 | 0.0916 | 3.44x | 1.2 | 1.0 |
+| 8×4096 | fp32 | 0.0270 | 0.0577 | 2.14x | 19.4 | 18.2 |
+| 8×4096 | bf16 | 0.0264 | 0.0917 | 3.48x | 9.9 | 7.9 |
+| 128×4096 | fp32 | 0.0263 | 0.0579 | 2.20x | 319.1 | 289.7 |
+| 128×4096 | bf16 | 0.0264 | 0.0923 | 3.50x | 159.1 | 125.0 |
+| 2048×4096 | fp32 | 0.1923 | 0.2513 | 1.31x | 697.8 | 1068.1 |
+| 2048×4096 | bf16 | 0.0268 | 0.2033 | **7.60x** | 2507.7 | 907.8 |
+| 1×8192 | fp32 | 0.0264 | 0.0591 | 2.24x | 5.0 | 4.4 |
+| 1×8192 | bf16 | 0.0267 | 0.0937 | 3.52x | 2.5 | 1.9 |
+| 128×8192 | fp32 | 0.0264 | 0.0585 | 2.22x | 636.0 | 573.6 |
+| 128×8192 | bf16 | 0.0264 | 0.0918 | 3.47x | 317.4 | 251.3 |
+| 2048×8192 | fp32 | 0.4314 | 0.7921 | 1.84x | 622.2 | 677.8 |
+| 2048×8192 | bf16 | 0.1916 | 0.8814 | 4.60x | 700.4 | 418.8 |
+
+Full data: `benchmark_rmsnorm_results.json`.
+
+**Unlike kernel 1, fused wins at every single shape/dtype tested here** —
+1.3x to 7.6x, including the smallest (M=1, decode-shaped) cases. The
+difference from kernel 1's small-shape story: naive add+RMSNorm launches
+~7-11 separate kernels (add, upcast, pow, reduce, `+eps`, rsqrt, 2 multiplies,
+downcast — see the Nsight Compute breakdown below), so its per-launch
+overhead compounds far more than kernel 1's 2-launch naive path, enough to
+outweigh fusion's overhead disadvantage even at M=1.
+
+### Nsight Compute: memory bandwidth utilization vs. eager
+
+Full writeup, including per-kernel `dram__throughput.avg.pct_of_peak_sustained_elapsed`
+breakdown and how `ncu` was actually gotten to run in this environment (host
+vs. container, DCGM's profiling-counter lock): **[`rmsnorm_ncu_report.md`](rmsnorm_ncu_report.md)**.
+Headline, at M=2048×N=4096:
+
+| dtype | path | kernels | achieved BW | % of 864 GB/s peak |
+|---|---|--:|--:|--:|
+| bf16 | **fused** | **1** | **743.5 GB/s** | **86.1%** |
+| bf16 | naive | 11 | 693.7 GB/s | 80.3% |
+| fp32 | **fused** | **1** | **787.2 GB/s** | **91.1%** |
+| fp32 | naive | 7 | 764.4 GB/s | 88.5% |
+
+The fused kernel reaches a *higher* fraction of peak HBM bandwidth than
+naive's own blended average, not just less total traffic — naive's average
+gets dragged down by tiny `[M,1]` reduction-output kernels (variance+eps,
+rsqrt) that land at 0.5-0.6% of peak, pure latency-bound overhead fusion
+sidesteps entirely by keeping that math in registers.
+
 ## CI
 
 `.github/workflows/kernels-ci.yml` runs `pytest kernels/tests/` on every push
@@ -99,10 +191,19 @@ GPU runner wired up yet.
 
 ## Files
 
-- `fused_bias_relu.py` — the kernel, with inline commentary on the
-  block/tile model.
-- `tests/test_fused_bias_relu.py` — correctness tests (allclose vs.
+- `fused_bias_relu.py` — kernel 1, with inline commentary on the block/tile
+  model.
+- `tests/test_fused_bias_relu.py` — kernel 1 correctness tests (allclose vs.
   `torch.relu(x + bias)`).
-- `benchmark_fused_bias_relu.py` — fused vs. naive timing + bandwidth,
-  re-verifies allclose before every timed shape.
-- `benchmark_results.json` — raw output from the L40S run above.
+- `benchmark_fused_bias_relu.py` — kernel 1 fused vs. naive timing +
+  bandwidth, re-verifies allclose before every timed shape.
+- `benchmark_results.json` — kernel 1 raw output from the L40S run above.
+- `fused_rmsnorm_residual.py` — kernel 2, with inline commentary on the
+  row-reduction tiling strategy.
+- `tests/test_fused_rmsnorm_residual.py` — kernel 2 correctness tests.
+- `benchmark_fused_rmsnorm_residual.py` — kernel 2 fused vs. naive timing +
+  bandwidth.
+- `benchmark_rmsnorm_results.json` — kernel 2 raw benchmark output.
+- `profile_rmsnorm_ncu.py` / `ncu_rmsnorm_report.txt` /
+  `rmsnorm_ncu_report.md` — kernel 2's Nsight Compute profiling target,
+  raw output, and writeup.
