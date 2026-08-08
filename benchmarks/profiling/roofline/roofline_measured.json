@@ -1,0 +1,259 @@
+{
+  "gpu": "NVIDIA L40S",
+  "torch_version": "2.11.0+cu130",
+  "gqa_native": true,
+  "rows": [
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 1,
+      "elapsed_ms": 0.48951,
+      "flops": 352321536,
+      "bytes": 352432128,
+      "achieved_tflops": 0.7198,
+      "achieved_gbs": 719.98
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 8,
+      "elapsed_ms": 0.50655,
+      "flops": 2818572288,
+      "bytes": 353206272,
+      "achieved_tflops": 5.5643,
+      "achieved_gbs": 697.28
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 32,
+      "elapsed_ms": 0.50565,
+      "flops": 11274289152,
+      "bytes": 355860480,
+      "achieved_tflops": 22.2965,
+      "achieved_gbs": 703.76
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 128,
+      "elapsed_ms": 0.52496,
+      "flops": 45097156608,
+      "bytes": 366477312,
+      "achieved_tflops": 85.9057,
+      "achieved_gbs": 698.1
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 512,
+      "elapsed_ms": 0.95606,
+      "flops": 180388626432,
+      "bytes": 408944640,
+      "achieved_tflops": 188.6794,
+      "achieved_gbs": 427.74
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 2048,
+      "elapsed_ms": 3.8577,
+      "flops": 721554505728,
+      "bytes": 578813952,
+      "achieved_tflops": 187.0427,
+      "achieved_gbs": 150.04
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 8192,
+      "elapsed_ms": 18.85898,
+      "flops": 2886218022912,
+      "bytes": 1258291200,
+      "achieved_tflops": 153.0421,
+      "achieved_gbs": 66.72
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 1,
+      "elapsed_ms": 0.16023,
+      "flops": 83886080,
+      "bytes": 83939328,
+      "achieved_tflops": 0.5235,
+      "achieved_gbs": 523.87
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 8,
+      "elapsed_ms": 0.07042,
+      "flops": 671088640,
+      "bytes": 84312064,
+      "achieved_tflops": 9.5298,
+      "achieved_gbs": 1197.28
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 32,
+      "elapsed_ms": 0.08246,
+      "flops": 2684354560,
+      "bytes": 85590016,
+      "achieved_tflops": 32.5551,
+      "achieved_gbs": 1038.01
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 128,
+      "elapsed_ms": 0.08199,
+      "flops": 10737418240,
+      "bytes": 90701824,
+      "achieved_tflops": 130.9656,
+      "achieved_gbs": 1106.3
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 512,
+      "elapsed_ms": 0.18926,
+      "flops": 42949672960,
+      "bytes": 111149056,
+      "achieved_tflops": 226.9399,
+      "achieved_gbs": 587.3
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 2048,
+      "elapsed_ms": 0.77437,
+      "flops": 171798691840,
+      "bytes": 192937984,
+      "achieved_tflops": 221.8567,
+      "achieved_gbs": 249.16
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 8192,
+      "elapsed_ms": 3.55567,
+      "flops": 687194767360,
+      "bytes": 520093696,
+      "achieved_tflops": 193.2673,
+      "achieved_gbs": 146.27
+    },
+    {
+      "op": "Attention score (prefill)",
+      "seq_len": 1,
+      "elapsed_ms": 0.0223,
+      "flops": 16384,
+      "bytes": 20480,
+      "achieved_tflops": 0.0007,
+      "achieved_gbs": 0.92
+    },
+    {
+      "op": "Attention score (prefill)",
+      "seq_len": 8,
+      "elapsed_ms": 0.02123,
+      "flops": 1048576,
+      "bytes": 163840,
+      "achieved_tflops": 0.0494,
+      "achieved_gbs": 7.72
+    },
+    {
+      "op": "Attention score (prefill)",
+      "seq_len": 32,
+      "elapsed_ms": 0.02092,
+      "flops": 16777216,
+      "bytes": 655360,
+      "achieved_tflops": 0.8021,
+      "achieved_gbs": 31.33
+    },
+    {
+      "op": "Attention score (prefill)",
+      "seq_len": 128,
+      "elapsed_ms": 0.021,
+      "flops": 268435456,
+      "bytes": 2621440,
+      "achieved_tflops": 12.7824,
+      "achieved_gbs": 124.83
+    },
+    {
+      "op": "Attention score (prefill)",
+      "seq_len": 512,
+      "elapsed_ms": 0.02063,
+      "flops": 4294967296,
+      "bytes": 10485760,
+      "achieved_tflops": 208.2186,
+      "achieved_gbs": 508.35
+    },
+    {
+      "op": "Attention score (prefill)",
+      "seq_len": 2048,
+      "elapsed_ms": 0.1959,
+      "flops": 68719476736,
+      "bytes": 41943040,
+      "achieved_tflops": 350.7917,
+      "achieved_gbs": 214.11
+    },
+    {
+      "op": "Attention score (prefill)",
+      "seq_len": 8192,
+      "elapsed_ms": 3.38388,
+      "flops": 1099511627776,
+      "bytes": 167772160,
+      "achieved_tflops": 324.9258,
+      "achieved_gbs": 49.58
+    },
+    {
+      "op": "Attention score (decode, vs KV-cache len)",
+      "seq_len": 1,
+      "elapsed_ms": 0.02302,
+      "flops": 16384,
+      "bytes": 20480,
+      "achieved_tflops": 0.0007,
+      "achieved_gbs": 0.89
+    },
+    {
+      "op": "Attention score (decode, vs KV-cache len)",
+      "seq_len": 8,
+      "elapsed_ms": 0.0229,
+      "flops": 131072,
+      "bytes": 49152,
+      "achieved_tflops": 0.0057,
+      "achieved_gbs": 2.15
+    },
+    {
+      "op": "Attention score (decode, vs KV-cache len)",
+      "seq_len": 32,
+      "elapsed_ms": 0.02315,
+      "flops": 524288,
+      "bytes": 147456,
+      "achieved_tflops": 0.0226,
+      "achieved_gbs": 6.37
+    },
+    {
+      "op": "Attention score (decode, vs KV-cache len)",
+      "seq_len": 128,
+      "elapsed_ms": 0.02297,
+      "flops": 2097152,
+      "bytes": 540672,
+      "achieved_tflops": 0.0913,
+      "achieved_gbs": 23.54
+    },
+    {
+      "op": "Attention score (decode, vs KV-cache len)",
+      "seq_len": 512,
+      "elapsed_ms": 0.02929,
+      "flops": 8388608,
+      "bytes": 2113536,
+      "achieved_tflops": 0.2864,
+      "achieved_gbs": 72.17
+    },
+    {
+      "op": "Attention score (decode, vs KV-cache len)",
+      "seq_len": 2048,
+      "elapsed_ms": 0.03197,
+      "flops": 33554432,
+      "bytes": 8404992,
+      "achieved_tflops": 1.0494,
+      "achieved_gbs": 262.87
+    },
+    {
+      "op": "Attention score (decode, vs KV-cache len)",
+      "seq_len": 8192,
+      "elapsed_ms": 0.02903,
+      "flops": 134217728,
+      "bytes": 33570816,
+      "achieved_tflops": 4.6234,
+      "achieved_gbs": 1156.4
+    }
+  ]
+}

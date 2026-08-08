@@ -75,10 +75,59 @@ point, or the flat compute-bound ceiling above it).
    attention (not FFN) tends to be the harder part of LLM serving to keep
    compute-bound at scale.
 
+## Empirical validation (real L40S)
+
+The analytical ceiling is only ever a model. `measure_roofline.py` times the
+identical shapes for real via CUDA-event timing, run inside the `vllm-openai`
+container on `vllm-node-0` (the same Terraform-provisioned L40S from
+`../report.md`), while the vLLM server sat idle:
+
+```
+nebius compute v1 instance start --id <instance-id>
+scp measure_roofline.py ubuntu@<host>:/tmp/
+ssh ubuntu@<host> sudo docker cp /tmp/measure_roofline.py vllm-server:/measure_roofline.py
+ssh ubuntu@<host> sudo docker exec vllm-server python3 /measure_roofline.py > roofline_measured.json
+nebius compute v1 instance stop --id <instance-id>   # stop promptly, GPU billing is hourly
+```
+
+`compare_measured.py` merges the result against the analytical model
+(`roofline_comparison.json`). Three things stand out:
+
+1. **The ceiling itself is optimistic.** Peak achieved was **350.8 TFLOPS**
+   (attention-score prefill, S=2048) — 97% of the 362 TFLOPS spec, the closest
+   anything gets. But FFN, despite being "compute-bound" by arithmetic
+   intensity from S=512 onward, only reaches **42–52% of its theoretical
+   ceiling**, and that efficiency *keeps dropping* as S grows (81% at S=128 →
+   42% at S=8192) — crossing the ridge point doesn't guarantee you get
+   anywhere near peak FLOPS.
+2. **Tiny shapes are latency-bound, a regime the roofline model doesn't
+   capture at all.** At S=1–32, attention/QKVO ops hit only 0.1–15% of their
+   (already tiny) memory-bound ceiling — fixed per-kernel launch overhead
+   dominates when there's too little work to hide it behind.
+3. **Decode attention at S=8192 measures 1156 GB/s** — above the L40S's 864
+   GB/s HBM spec — because its ~34MB of K/V cache fits inside the L40S's L2
+   cache and gets served from there across the timed loop's repeated calls.
+   Doesn't change the qualitative finding (still deep in the memory-bound
+   region relative to the ridge point), but it's a reminder that "bytes" in
+   the model means HBM traffic, not what a warm cache actually delivers.
+
+Bottom line: the classification (which ops are memory- vs compute-bound, and
+where the crossover happens) holds up empirically — but treat the analytical
+model's *absolute* attainable-TFLOPS numbers as an upper bound, not a
+prediction, especially for large GEMMs (~50% real efficiency) and tiny/latency-
+bound shapes (<15% real efficiency).
+
 ## Files
 
 - `compute_roofline.py` — the analytical model, run with no arguments.
-- `roofline_data.csv` / `roofline_data.json` — full computed data (FLOPs,
-  bytes, arithmetic intensity, attainable TFLOPS, classification) for every
-  op × sequence length.
-- `roofline.html` — source for the published interactive chart.
+- `roofline_data.csv` / `roofline_data.json` — full computed analytical data
+  (FLOPs, bytes, arithmetic intensity, attainable TFLOPS, classification) for
+  every op × sequence length.
+- `measure_roofline.py` — empirical CUDA-event timing of the same shapes;
+  meant to run inside the vllm-openai container on a real L40S.
+- `roofline_measured.json` — raw measured results (elapsed_ms, achieved
+  TFLOPS/GB-s) from the run described above.
+- `compare_measured.py` — merges measured vs. analytical into
+  `roofline_comparison.json` and prints a side-by-side efficiency table.
+- `roofline.html` — source for the published interactive chart (now overlays
+  measured points as open rings against the analytical filled-dot ceiling).

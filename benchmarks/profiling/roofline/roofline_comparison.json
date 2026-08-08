@@ -1,0 +1,289 @@
+{
+  "gpu": "NVIDIA L40S",
+  "torch_version": "2.11.0+cu130",
+  "l40s_peak_bf16_tflops": 362.0,
+  "l40s_peak_bw_gbs": 864.0,
+  "ridge_point_ai": 418.98,
+  "rows": [
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 1,
+      "arithmetic_intensity": 0.9997,
+      "classification": "memory-bound",
+      "attainable_tflops": 0.8637,
+      "achieved_tflops": 0.7198,
+      "achieved_gbs": 719.98,
+      "roofline_efficiency": 0.833
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 8,
+      "arithmetic_intensity": 7.98,
+      "classification": "memory-bound",
+      "attainable_tflops": 6.8947,
+      "achieved_tflops": 5.5643,
+      "achieved_gbs": 697.28,
+      "roofline_efficiency": 0.807
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 32,
+      "arithmetic_intensity": 31.6818,
+      "classification": "memory-bound",
+      "attainable_tflops": 27.373,
+      "achieved_tflops": 22.2965,
+      "achieved_gbs": 703.76,
+      "roofline_efficiency": 0.815
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 128,
+      "arithmetic_intensity": 123.0558,
+      "classification": "memory-bound",
+      "attainable_tflops": 106.3202,
+      "achieved_tflops": 85.9057,
+      "achieved_gbs": 698.1,
+      "roofline_efficiency": 0.808
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 512,
+      "arithmetic_intensity": 441.1077,
+      "classification": "compute-bound",
+      "attainable_tflops": 362.0,
+      "achieved_tflops": 188.6794,
+      "achieved_gbs": 427.74,
+      "roofline_efficiency": 0.521
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 2048,
+      "arithmetic_intensity": 1246.6087,
+      "classification": "compute-bound",
+      "attainable_tflops": 362.0,
+      "achieved_tflops": 187.0427,
+      "achieved_gbs": 150.04,
+      "roofline_efficiency": 0.517
+    },
+    {
+      "op": "FFN (gate+up+down)",
+      "seq_len": 8192,
+      "arithmetic_intensity": 2293.76,
+      "classification": "compute-bound",
+      "attainable_tflops": 362.0,
+      "achieved_tflops": 153.0421,
+      "achieved_gbs": 66.72,
+      "roofline_efficiency": 0.423
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 1,
+      "arithmetic_intensity": 0.9994,
+      "classification": "memory-bound",
+      "attainable_tflops": 0.8635,
+      "achieved_tflops": 0.5235,
+      "achieved_gbs": 523.87,
+      "roofline_efficiency": 0.606
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 8,
+      "arithmetic_intensity": 7.9596,
+      "classification": "memory-bound",
+      "attainable_tflops": 6.8771,
+      "achieved_tflops": 9.5298,
+      "achieved_gbs": 1197.28,
+      "roofline_efficiency": 1.386
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 32,
+      "arithmetic_intensity": 31.3629,
+      "classification": "memory-bound",
+      "attainable_tflops": 27.0976,
+      "achieved_tflops": 32.5551,
+      "achieved_gbs": 1038.01,
+      "roofline_efficiency": 1.201
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 128,
+      "arithmetic_intensity": 118.3815,
+      "classification": "memory-bound",
+      "attainable_tflops": 102.2816,
+      "achieved_tflops": 130.9656,
+      "achieved_gbs": 1106.3,
+      "roofline_efficiency": 1.28
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 512,
+      "arithmetic_intensity": 386.4151,
+      "classification": "memory-bound",
+      "attainable_tflops": 333.8626,
+      "achieved_tflops": 226.9399,
+      "achieved_gbs": 587.3,
+      "roofline_efficiency": 0.68
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 2048,
+      "arithmetic_intensity": 890.4348,
+      "classification": "compute-bound",
+      "attainable_tflops": 362.0,
+      "achieved_tflops": 221.8567,
+      "achieved_gbs": 249.16,
+      "roofline_efficiency": 0.613
+    },
+    {
+      "op": "Attention QKVO proj",
+      "seq_len": 8192,
+      "arithmetic_intensity": 1321.2903,
+      "classification": "compute-bound",
+      "attainable_tflops": 362.0,
+      "achieved_tflops": 193.2673,
+      "achieved_gbs": 146.27,
+      "roofline_efficiency": 0.534
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 1,
+      "arithmetic_intensity": 0.8,
+      "classification": "memory-bound",
+      "attainable_tflops": 0.6912,
+      "achieved_tflops": 0.0007,
+      "achieved_gbs": 0.92,
+      "roofline_efficiency": 0.001
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 8,
+      "arithmetic_intensity": 6.4,
+      "classification": "memory-bound",
+      "attainable_tflops": 5.5296,
+      "achieved_tflops": 0.0494,
+      "achieved_gbs": 7.72,
+      "roofline_efficiency": 0.009
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 32,
+      "arithmetic_intensity": 25.6,
+      "classification": "memory-bound",
+      "attainable_tflops": 22.1184,
+      "achieved_tflops": 0.8021,
+      "achieved_gbs": 31.33,
+      "roofline_efficiency": 0.036
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 128,
+      "arithmetic_intensity": 102.4,
+      "classification": "memory-bound",
+      "attainable_tflops": 88.4736,
+      "achieved_tflops": 12.7824,
+      "achieved_gbs": 124.83,
+      "roofline_efficiency": 0.144
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 512,
+      "arithmetic_intensity": 409.6,
+      "classification": "memory-bound",
+      "attainable_tflops": 353.8944,
+      "achieved_tflops": 208.2186,
+      "achieved_gbs": 508.35,
+      "roofline_efficiency": 0.588
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 2048,
+      "arithmetic_intensity": 1638.4,
+      "classification": "compute-bound",
+      "attainable_tflops": 362.0,
+      "achieved_tflops": 350.7917,
+      "achieved_gbs": 214.11,
+      "roofline_efficiency": 0.969
+    },
+    {
+      "op": "Attention score (prefill, QK^T+AV)",
+      "seq_len": 8192,
+      "arithmetic_intensity": 6553.6,
+      "classification": "compute-bound",
+      "attainable_tflops": 362.0,
+      "achieved_tflops": 324.9258,
+      "achieved_gbs": 49.58,
+      "roofline_efficiency": 0.898
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 1,
+      "arithmetic_intensity": 0.8,
+      "classification": "memory-bound",
+      "attainable_tflops": 0.6912,
+      "achieved_tflops": 0.0007,
+      "achieved_gbs": 0.89,
+      "roofline_efficiency": 0.001
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 8,
+      "arithmetic_intensity": 2.6667,
+      "classification": "memory-bound",
+      "attainable_tflops": 2.304,
+      "achieved_tflops": 0.0057,
+      "achieved_gbs": 2.15,
+      "roofline_efficiency": 0.002
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 32,
+      "arithmetic_intensity": 3.5556,
+      "classification": "memory-bound",
+      "attainable_tflops": 3.072,
+      "achieved_tflops": 0.0226,
+      "achieved_gbs": 6.37,
+      "roofline_efficiency": 0.007
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 128,
+      "arithmetic_intensity": 3.8788,
+      "classification": "memory-bound",
+      "attainable_tflops": 3.3513,
+      "achieved_tflops": 0.0913,
+      "achieved_gbs": 23.54,
+      "roofline_efficiency": 0.027
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 512,
+      "arithmetic_intensity": 3.969,
+      "classification": "memory-bound",
+      "attainable_tflops": 3.4292,
+      "achieved_tflops": 0.2864,
+      "achieved_gbs": 72.17,
+      "roofline_efficiency": 0.084
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 2048,
+      "arithmetic_intensity": 3.9922,
+      "classification": "memory-bound",
+      "attainable_tflops": 3.4493,
+      "achieved_tflops": 1.0494,
+      "achieved_gbs": 262.87,
+      "roofline_efficiency": 0.304
+    },
+    {
+      "op": "Attention score (decode, 1 query vs cache)",
+      "seq_len": 8192,
+      "arithmetic_intensity": 3.998,
+      "classification": "memory-bound",
+      "attainable_tflops": 3.4543,
+      "achieved_tflops": 4.6234,
+      "achieved_gbs": 1156.4,
+      "roofline_efficiency": 1.338
+    }
+  ]
+}
