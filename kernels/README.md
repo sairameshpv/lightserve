@@ -258,6 +258,79 @@ reaches higher Tensor Core utilization (96.9% vs 83.9%), yet our kernel
 reaches 2x higher occupancy (16.7% vs 8.3%) and the two wall-clock
 benchmarks above both measured us ahead regardless.
 
+## Kernel 4: FlashAttention forward pass (v1 — correctness, not speed)
+
+`flash_attention.py` computes `O = softmax(Q @ K^T / sqrt(D)) @ V` for
+`q, k, v: [B, H, N, D]`, without ever materializing the `[N, N]` score
+matrix. One Triton program owns one query tile and sweeps the *entire* K/V
+sequence for its `(batch, head)` sequentially — unlike kernel 3's grid
+(every program independent), FlashAttention's inner loop carries state
+(`m_i`/`l_i`/`acc`) from one K/V tile to the next via **online softmax**:
+each step folds in a new tile, rescales the running output accumulator by
+how much the running row-max moved (`alpha = exp(m_i - m_new)`), and only
+normalizes once, after the loop, instead of needing the whole row up front
+the way an untiled softmax would. Optional `causal` flag masks the upper
+triangle (no early-exit skip yet — a real ~2x FLOPs win, deliberately
+deferred to v2 as a speed change, not a correctness one). This is
+explicitly v1: fixed block sizes (no `@triton.autotune`), fp32 only, no
+backward pass — the only goal was getting the loop structure and
+online-softmax accumulation right, allclose-verified against PyTorch's
+SDPA, before touching anything performance-related.
+
+Tile sizes default to `block_m = block_n = 32`, deliberately conservative
+rather than tuned. `D` itself isn't tiled (`BLOCK_D = next_power_of_2(D)`,
+whole head dim resident on-chip per tile, same whole-row approach as kernel
+2's `BLOCK_N`) — one of this repo's earlier planning docs estimated
+Br=Bc=64 would fit the L40S's ~99KB/CTA shared-memory cap at a real D=128
+head dim with room to spare (~96KB by hand); that estimate turned out
+optimistic on real hardware. It didn't account for Triton's own
+load/compute pipelining overhead on top of the Q/K/V/O/S working set — see
+below.
+
+### Correctness
+
+`tests/test_flash_attention.py` checks against
+`torch.nn.functional.scaled_dot_product_attention` (SDPA) via
+`torch.testing.assert_close` at fp32, across both `causal=False` and
+`causal=True`, 6 `(B, H, N, D)` shapes spanning degenerate (`N=1`),
+non-block-multiple `N`, a non-power-of-2 `D`, and real LLaMA-ish head dims
+(64, 128), plus a non-contiguous (transposed-heads) input and
+shape/dtype-mismatch rejection.
+
+Two real bugs turned up running this on the L40S, both compile-time
+failures Triton itself raised, not silent wrong answers:
+
+1. **`tl.dot` requires its contraction dim ≥16.** The `D=8` test shape gave
+   `BLOCK_D = next_power_of_2(8) = 8`, which is the K-dimension of the
+   `Q @ K^T` dot and violates that minimum —
+   `AssertionError: Input shapes should have M >= 1, N >= 1 and K >= 16`.
+   Fixed by clamping `BLOCK_D = max(16, next_power_of_2(D))`.
+2. **`BLOCK_M=BLOCK_N=64` at `D=128` exceeded shared memory**:
+   `OutOfResources: Required: 180480, Hardware limit: 101376` (99KB/CTA on
+   this Ada GPU). This is exactly the SRAM-budget question the loop
+   structure was planned around, just with a real number attached — fixed
+   by dropping the defaults to `block_m=block_n=32`, which fits at every
+   `D` tested here. Bigger tiles are a real speed lever, bounded by this
+   same cap, for a v2 `@triton.autotune` sweep.
+
+Run for real on the same L40S (inside the vllm-openai container):
+
+```
+$ python3 -m pytest kernels/tests/test_flash_attention.py -v
+...
+15 passed in 12.57s
+$ python3 -m pytest kernels/tests/ -v
+...
+82 passed in 84.91s
+```
+
+All 82 across kernels 1-4 pass — no regressions from the 67 kernels 1-3
+already had.
+
+No benchmark or `ncu` section yet: v1 was scoped to correctness only, per
+the plan. bf16/fp16 (tensor-core) dtypes, autotuned tile sizes, and a
+causal early-exit are the natural v2 follow-ups, in that order.
+
 ## CI
 
 `.github/workflows/kernels-ci.yml` runs `pytest kernels/tests/` on every push
@@ -296,3 +369,8 @@ GPU runner wired up yet.
 - `profile_matmul_ncu.py` / `ncu_matmul_report.txt` / `matmul_ncu_report.md`
   — kernel 3's Nsight Compute profiling target, raw output, and the
   why-cuBLAS-wins (and doesn't) writeup.
+- `flash_attention.py` — kernel 4 (v1), with inline commentary on the
+  online-softmax loop structure.
+- `tests/test_flash_attention.py` — kernel 4 correctness tests (allclose
+  vs. `torch.nn.functional.scaled_dot_product_attention`, causal +
+  non-causal).
