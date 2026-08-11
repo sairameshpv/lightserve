@@ -443,6 +443,77 @@ conflicts aren't the bottleneck either; root-causing the store conflicts
 further would mean reading generated SASS, flagged as real follow-up, not
 done here.
 
+### Backward pass (recomputation strategy)
+
+`flash_attention_backward.py` adds a backward pass on top of the forward
+kernel above -- gradients w.r.t. Q, K, V, computed without ever
+materializing the `[N, N]` score/probability matrix either. "Recomputation
+strategy" (the FlashAttention paper's term): the forward pass saves only
+`O` and one extra scalar per row (`L`, that row's log-sum-exp), and the
+backward pass recomputes each `S_ij`/`P_ij` tile from `Q`/`K` on the fly
+using that saved scalar, instead of ever having stored the full matrix.
+Standard FlashAttention-2 backward algorithm: one program per K/V tile,
+sweeping every Q tile, `dK`/`dV` accumulated locally and stored once,
+`dQ` accumulated across programs via `tl.atomic_add` into a float32
+buffer. Full derivation and scope notes (plain MHA, no causal early-exit,
+fixed non-autotuned tile size) are in that file's module docstring.
+
+#### Correctness
+
+`tests/test_flash_attention_backward.py`: `torch.autograd.gradcheck`
+(numerical vs. analytical gradients, float32, independent of any reference
+attention implementation) plus dQ/dK/dV vs. PyTorch's own autograd through
+SDPA (fp32 + bf16, LLM-real shapes) -- same "two independent verification
+methods" habit as the forward kernel's own test file.
+
+**A real bug turned up running this on the L40S**: the backward kernel
+keeps more tiles resident per program (K, V, plus each step's Q, dO -- 4
+big tiles) than the forward-only kernel (Q resident + streamed K, V --
+effectively 3), so the 32x32 tile size proven safe for fp32/D=128 in this
+file's own v1 section above wasn't safe here --
+`OutOfResources: Required 107008, Hardware limit 101376` at fp32/D=128.
+Fixed with a dtype/head-dim-aware tile size (`_pick_block_sizes`: 16x16
+for fp32 at D>64, 32x32 otherwise) instead of one fixed constant.
+
+```
+$ python3 -m pytest kernels/tests/test_flash_attention_backward.py -v
+...
+23 passed in 32.52s   # includes all 4 test_gradcheck cases
+```
+
+#### Benchmark: ours vs. PyTorch's real FlashAttention-2 backward
+
+`benchmark_flash_attention_backward.py`, same FA2-forcing method as the
+forward benchmark, extended to `.backward()`. Unlike the forward kernel's
+v2, this backward kernel is still "v1" by its own docstring -- fixed tile
+size, no `@triton.autotune` -- so a real gap against FA2's tuned backward
+is the expected result here, not a bug:
+
+| shape (B,H,N,D) | causal | ours TFLOPS | FA2 TFLOPS | % of FA2 | % of 362 TFLOPS peak |
+|---|---|--:|--:|--:|--:|
+| 1x32x512x128 | False | 14.3 | 90.5 | 15.8% | 3.9% |
+| 1x32x512x128 | True | 11.4 | 44.5 | 25.5% | 3.1% |
+| 1x32x1024x128 | False | 15.4 | 137.2 | 11.2% | 4.2% |
+| 1x32x1024x128 | True | 13.9 | 100.2 | 13.8% | 3.8% |
+| 1x32x2048x128 | False | 16.0 | 142.6 | 11.2% | 4.4% |
+| 1x32x2048x128 | True | 15.0 | 122.4 | 12.2% | 4.1% |
+| 1x32x4096x128 | False | 16.2 | 157.7 | 10.2% | 4.5% |
+| 1x32x4096x128 | True | 15.6 | 138.1 | 11.3% | 4.3% |
+
+Gradients verified allclose against SDPA-flash before every timed pair.
+Full data: `benchmark_flash_attention_backward_results.json`.
+
+**Ours plateaus around 14-16 TFLOPS regardless of N; FA2 scales up to
+157.7** -- exactly what a fixed-tile, non-autotuned kernel looks like next
+to a tuned one: no tile-size lever to pull as the problem grows, so it
+stays flat while FA2's larger effective tiles and better pipelining keep
+extracting more throughput at bigger N. This is the same gap kernel 4's
+own *forward* v1 would have shown against FA2 had it been benchmarked
+(it wasn't -- v1 was scoped to correctness only, see above); an autotuned
+backward v2 (bigger tiles, `@triton.autotune` over them, possibly a causal
+early-exit on the K/V-tile loop bound) is the natural follow-up, not done
+here.
+
 ### A capacity note, unrelated to the kernel
 
 This tuning session ran on a **preemptible** L40S node, not the on-demand
@@ -455,13 +526,13 @@ capacity frees up) for next time this happens.
 
 ## CI
 
-`.github/workflows/kernels-ci.yml` runs `pytest kernels/tests/` on every push
-touching `kernels/**`. GitHub-hosted runners have no GPU, so every
-`requires_cuda`-marked case is skipped there — the CI job's job is to catch
-import errors, shape-validation regressions, and packaging breakage, not to
-re-verify numerics. Full correctness (the allclose-vs-PyTorch result above)
-is verified by hand against a real GPU (see above); there is no self-hosted
-GPU runner wired up yet.
+`.github/workflows/kernels-ci.yml` runs `pytest kernels/tests/ model/tests/`
+on every push touching `kernels/**` or `model/**`. GitHub-hosted runners
+have no GPU, so every `requires_cuda`-marked case is skipped there — the CI
+job's job is to catch import errors, shape-validation regressions, and
+packaging breakage, not to re-verify numerics. Full correctness (the
+allclose-vs-PyTorch result above) is verified by hand against a real GPU
+(see above); there is no self-hosted GPU runner wired up yet.
 
 ## Files
 
@@ -504,3 +575,13 @@ GPU runner wired up yet.
 - `profile_flash_attention_ncu.py` / `ncu_flash_attention_report.txt` /
   `ncu_flash_attention_report.md` — kernel 4 v2's Nsight Compute profiling
   target, raw output, and the occupancy/bank-conflict writeup.
+- `flash_attention_backward.py` — kernel 4b, the backward pass
+  (recomputation strategy) built on top of kernel 4's forward.
+- `tests/test_flash_attention_backward.py` — kernel 4b correctness tests
+  (`torch.autograd.gradcheck` + dQ/dK/dV vs. PyTorch's autograd through
+  SDPA).
+- `benchmark_flash_attention_backward.py` — kernel 4b ours-vs-PyTorch's-
+  real-FA2-backward TFLOPS + % of FA2, across 4 sequence lengths x
+  causal/non-causal.
+- `benchmark_flash_attention_backward_results.json` — kernel 4b raw
+  benchmark output.

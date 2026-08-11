@@ -5,20 +5,24 @@ on:
     branches: [main]
     paths:
       - "kernels/**"
+      - "model/**"
       - ".github/workflows/kernels-ci.yml"
   pull_request:
     paths:
       - "kernels/**"
+      - "model/**"
       - ".github/workflows/kernels-ci.yml"
 
 jobs:
   test:
     # GitHub-hosted runners have no GPU, so the CUDA-only cases in
-    # kernels/tests are skipped here (see requires_cuda in that file) --
-    # this job still catches import errors, shape-validation regressions,
-    # and anything else that doesn't need a real device. Full correctness
-    # (allclose vs the PyTorch reference) is verified on a real L40S; see
-    # kernels/README.md.
+    # kernels/tests and model/tests are skipped here (see requires_cuda in
+    # those files) -- this job still catches import errors, shape-
+    # validation regressions, and anything else that doesn't need a real
+    # device. model/minimal_llama.py imports straight from kernels/, so it
+    # exercises the same CPU-only-triton-import path kernels/tests already
+    # relies on. Full correctness (allclose vs the PyTorch reference) is
+    # verified on a real L40S; see kernels/README.md.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,5 +36,5 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install triton pytest
 
-      - name: Run kernel tests
-        run: pytest kernels/tests/ -v
+      - name: Run kernel and model tests
+        run: pytest kernels/tests/ model/tests/ -v

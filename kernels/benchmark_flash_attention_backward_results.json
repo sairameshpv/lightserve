@@ -1,0 +1,87 @@
+{
+  "gpu": "NVIDIA L40S",
+  "torch_version": "2.11.0+cu130",
+  "dtype": "bfloat16",
+  "rows": [
+    {
+      "shape": "1x32x512x128",
+      "causal": false,
+      "ours_ms": 0.7529,
+      "fa2_ms": 0.11868,
+      "ours_tflops": 14.3,
+      "fa2_tflops": 90.5,
+      "pct_of_fa2": 15.8,
+      "pct_of_l40s_peak": 3.9
+    },
+    {
+      "shape": "1x32x512x128",
+      "causal": true,
+      "ours_ms": 0.47254,
+      "fa2_ms": 0.12052,
+      "ours_tflops": 11.4,
+      "fa2_tflops": 44.5,
+      "pct_of_fa2": 25.5,
+      "pct_of_l40s_peak": 3.1
+    },
+    {
+      "shape": "1x32x1024x128",
+      "causal": false,
+      "ours_ms": 2.79773,
+      "fa2_ms": 0.31295,
+      "ours_tflops": 15.4,
+      "fa2_tflops": 137.2,
+      "pct_of_fa2": 11.2,
+      "pct_of_l40s_peak": 4.2
+    },
+    {
+      "shape": "1x32x1024x128",
+      "causal": true,
+      "ours_ms": 1.55008,
+      "fa2_ms": 0.21426,
+      "ours_tflops": 13.9,
+      "fa2_tflops": 100.2,
+      "pct_of_fa2": 13.8,
+      "pct_of_l40s_peak": 3.8
+    },
+    {
+      "shape": "1x32x2048x128",
+      "causal": false,
+      "ours_ms": 10.75973,
+      "fa2_ms": 1.20464,
+      "ours_tflops": 16.0,
+      "fa2_tflops": 142.6,
+      "pct_of_fa2": 11.2,
+      "pct_of_l40s_peak": 4.4
+    },
+    {
+      "shape": "1x32x2048x128",
+      "causal": true,
+      "ours_ms": 5.73405,
+      "fa2_ms": 0.70161,
+      "ours_tflops": 15.0,
+      "fa2_tflops": 122.4,
+      "pct_of_fa2": 12.2,
+      "pct_of_l40s_peak": 4.1
+    },
+    {
+      "shape": "1x32x4096x128",
+      "causal": false,
+      "ours_ms": 42.53607,
+      "fa2_ms": 4.35758,
+      "ours_tflops": 16.2,
+      "fa2_tflops": 157.7,
+      "pct_of_fa2": 10.2,
+      "pct_of_l40s_peak": 4.5
+    },
+    {
+      "shape": "1x32x4096x128",
+      "causal": true,
+      "ours_ms": 21.96035,
+      "fa2_ms": 2.48832,
+      "ours_tflops": 15.6,
+      "fa2_tflops": 138.1,
+      "pct_of_fa2": 11.3,
+      "pct_of_l40s_peak": 4.3
+    }
+  ]
+}
