@@ -44,6 +44,12 @@ variable "fabric" {
   default     = ""
 }
 
+variable "preemptible" {
+  type        = bool
+  description = "Preemptible (spot) pricing -- cheaper, but the instance can be reclaimed by Nebius on short notice. On-demand gpu-l40s-a capacity in eu-north1 can hit tenant-wide LIMIT_REACHED (check `nebius capacity resource-advice list --parent-id <tenant-id> --all`); when it does, this is often the only way to get a node at all. Worth it for short (~10-15min) interactive sessions where a reclaim just means retrying, not for anything long-running/unattended."
+  default     = false
+}
+
 variable "public_ip" {
   type        = bool
   description = "Attach a public IP. In production, prefer false + access via bastion/VPN; true is simplest to get started."

@@ -1,41 +1,85 @@
-"""Triton kernel 4: FlashAttention forward pass (v1 — correctness, not speed).
+"""Triton kernel 4: FlashAttention forward pass.
 
-Computes O = softmax(Q @ K^T * scale) @ V for q, k, v: [B, H, N, D], without
-ever materializing the [N, N] score matrix — see the plan this implements
-(tile sizes / SRAM budget / loop structure) for the derivation. This file is
-deliberately v1: fixed block sizes (no `@triton.autotune`), fp32 in/out, no
-backward pass. The whole point of v1 is getting the online-softmax loop
-structure correct and allclose-verified against PyTorch's SDPA before
-touching anything performance-related (tensor-core dtypes, causal
-early-exit, autotuned tile sizes) in a v2.
+v1 (see git history / kernels/README.md) was correctness-only: fixed 32x32
+tile, fp32 in/out, no causal early-exit -- the point was getting the
+online-softmax loop structure right before touching anything
+performance-related. This is v2, the performance pass, on top of the exact
+same loop structure:
 
-Loop structure, one Triton program per query tile:
+  - `@triton.autotune` over BLOCK_M, BLOCK_N, num_warps, num_stages (a
+    handful of configs, not an exhaustive search -- same "genuinely tuned,
+    not cuBLAS-level engineering effort" spirit as kernel 3's autotune).
+  - Causal early-exit: the K/V loop now stops once past a query tile's
+    diagonal (`hi = min(N, (pid_m+1)*BLOCK_M)`) instead of sweeping the
+    full sequence and masking the upper triangle away after the fact --
+    roughly halves FLOPs for causal (prefill-shaped) attention, matching
+    what FlashAttention-2 itself does and what a fair TFLOPS-vs-FA2
+    comparison requires.
+  - bf16 is the dtype this is actually tuned for (tensor-core `tl.dot`,
+    fp32 accumulate) -- v1's fp32 path still works (same kernel, dtype-
+    generic) but was SRAM-constrained: fp32 Q/K/V tiles are 2x the bytes
+    of bf16 ones, which is *why* v1 was capped at 32x32. bf16 tiles free up
+    that same 99KB/CTA budget for the bigger tiles this file tunes over.
 
-    load Q_i                                    # [BLOCK_M, D], resident whole loop
-    m_i, l_i, acc = -inf, 0, 0                   # running max / softmax denom / output accumulator
-    for each K/V tile (BLOCK_N wide), sequentially:
-        S_ij  = Q_i @ K_j^T * scale              # tl.dot -> [BLOCK_M, BLOCK_N]
-        m_new = max(m_i, rowmax(S_ij))
-        P_ij  = exp(S_ij - m_new)                # unnormalized probs, this tile only
-        alpha = exp(m_i - m_new)                 # rescale factor for the *old* accumulator
-        l_i   = alpha * l_i + rowsum(P_ij)
-        acc   = alpha * acc + P_ij @ V_j          # second tl.dot
-        m_i   = m_new
-    O_i = acc / l_i                              # single normalization at the end
-
-This is the "online softmax" trick: because softmax needs the max/sum over
-the *whole* row before it can normalize anything, and that whole row would
-be an [N] value we don't have yet after only one K/V tile, each step folds
-in a new tile's contribution and *rescales* the running accumulator by how
-much the running max moved -- so the accumulator is always consistent with
-"softmax so far," and the final division is the only place normalization
-actually happens.
+Loop structure and online-softmax math are UNCHANGED from v1 -- see that
+docstring (in git history) or kernels/README.md kernel 4 section for the
+derivation. This file's docstring only covers what's new.
 """
 import torch
 import triton
 import triton.language as tl
 
 
+# A handful of tile-size/pipelining configs, not an exhaustive search -- see
+# kernel 3's _CONFIGS comment for the same reasoning. BLOCK_M/BLOCK_N/
+# num_stages/num_warps span the usual tile-size-vs-occupancy-vs-pipelining
+# tradeoff kernel 3's ncu report already explored for a plain GEMM.
+# {"BLOCK_M": 32, "BLOCK_N": 32} (stages=2) is the one deliberately-small
+# entry: it's the fp32 safety net (see _prune_by_shared_mem below) --
+# without it, no config here fits an fp32 call at a real D=128 head dim at
+# all, and autotune would crash outright instead of falling back to
+# something merely slow.
+_CONFIGS = [
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_stages=4, num_warps=4),
+    triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_stages=4, num_warps=4),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_M": 64, "BLOCK_N": 32}, num_stages=4, num_warps=4),
+    triton.Config({"BLOCK_M": 32, "BLOCK_N": 64}, num_stages=4, num_warps=4),
+    triton.Config({"BLOCK_M": 32, "BLOCK_N": 32}, num_stages=2, num_warps=4),
+]
+
+
+def _prune_by_shared_mem(configs, named_args, **kwargs):
+    """Filters _CONFIGS down to ones that actually fit the L40S's 99KB/CTA
+    shared-memory cap for this call's dtype and head dim.
+
+    This has to exist because triton.autotune does NOT skip a config that
+    fails to compile -- it raises OutOfResources and crashes the whole
+    search the first time it tries one, same failure v1 hit at a single
+    fixed tile size (see kernels/README.md). Every config here was tuned
+    for bf16 at real head dims; fp32 tiles are 2x the bytes (same v1
+    lesson, one more time at v2's larger tile sizes), so most of them don't
+    fit fp32 *at all* once BLOCK_D (next_power_of_2(D), clamped >=16)
+    exceeds 64 -- confirmed by actually compiling every (config, dtype,
+    BLOCK_D) combination on the real GPU rather than hand-estimating (the
+    v1 estimate undercounted Triton's own pipelining overhead once already;
+    no reason to trust a second hand-estimate at bigger tiles). Full
+    probe table is in kernels/README.md's v2 section.
+    """
+    itemsize = named_args["q_ptr"].element_size()  # 4 = fp32, 2 = bf16/fp16
+    block_d = max(16, triton.next_power_of_2(named_args["D"]))
+    if itemsize >= 4:  # fp32: only the dedicated small safety-net config fits at all once BLOCK_D>64
+        safe = {(32, 32)}
+    elif block_d <= 64:  # bf16, small head dim: everything but 64x128 fits
+        safe = {(128, 64), (128, 128), (64, 64), (64, 32), (32, 64), (32, 32)}
+    else:  # bf16, real D=128-class head dim
+        safe = {(128, 64), (64, 32), (32, 32)}
+    kept = [c for c in configs if (c.kwargs["BLOCK_M"], c.kwargs["BLOCK_N"]) in safe]
+    return kept or configs[-1:]  # never return empty; fall back to the smallest config over crashing
+
+
+@triton.autotune(configs=_CONFIGS, key=["N", "D"], prune_configs_by={"early_config_prune": _prune_by_shared_mem})
 @triton.jit
 def _flash_attn_fwd_kernel(
     q_ptr, k_ptr, v_ptr, o_ptr,
@@ -49,11 +93,11 @@ def _flash_attn_fwd_kernel(
     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_D: tl.constexpr,
 ):
     # Grid is (query_tile, batch*head) -- one program owns one BLOCK_M-tall
-    # slice of one (batch, head)'s queries, and sweeps the *entire* K/V
-    # sequence for that (batch, head) sequentially in the loop below. Unlike
-    # kernel 3's grid (which tiles both output axes so every program is
-    # independent), FlashAttention's inner loop is inherently sequential --
-    # each step's rescale depends on the previous step's m_i/l_i/acc.
+    # slice of one (batch, head)'s queries, and sweeps K/V for that
+    # (batch, head) sequentially in the loop below. Unlike kernel 3's grid
+    # (every program independent), FlashAttention's inner loop is inherently
+    # sequential -- each step's rescale depends on the previous step's
+    # m_i/l_i/acc.
     pid_m = tl.program_id(0)
     pid_bh = tl.program_id(1)
     b = pid_bh // H
@@ -78,23 +122,29 @@ def _flash_attn_fwd_kernel(
     l_i = tl.zeros((BLOCK_M,), dtype=tl.float32)
     acc = tl.zeros((BLOCK_M, BLOCK_D), dtype=tl.float32)
 
-    # v1: loop over the FULL key sequence every time, even for causal, and
-    # let the score mask below zero out the upper-triangular tiles. A causal
-    # early-exit (stop once start_n > this tile's query range, per the plan)
-    # is a real ~2x FLOPs win but it's a speed change, not a correctness
-    # one -- deliberately deferred to v2 so this loop has exactly one job
-    # (get online softmax right) at a time.
-    for start_n in range(0, N, BLOCK_N):
+    # Causal early-exit: any key tile entirely past this query tile's
+    # diagonal is 100% masked anyway (every offs_m in this program is <
+    # hi <= every offs_n a later tile would have), so skip it instead of
+    # computing two tl.dots' worth of work just to multiply the result by
+    # zero. The boundary tile (the one straddling the diagonal) is still
+    # visited -- it still needs the per-element mask below, unchanged from
+    # v1. This is the only behavioral difference from v1's loop; softmax
+    # correctness doesn't depend on it (v1 got the same answer, slower).
+    hi = tl.minimum(N, (pid_m + 1) * BLOCK_M) if CAUSAL else N
+
+    for start_n in range(0, hi, BLOCK_N):
         offs_n = start_n + tl.arange(0, BLOCK_N)
 
         k_ptrs = k_ptr + offs_n[:, None] * stride_kn + offs_d[None, :] * stride_kd
         k_mask = (offs_n[:, None] < N) & (offs_d[None, :] < D)
         k = tl.load(k_ptrs, mask=k_mask, other=0.0)
 
-        # input_precision="ieee": same reasoning as kernel 3 -- tl.dot's
-        # default for fp32 operands is TF32 (truncated mantissa), which
-        # would not match torch's SDPA reference at the tolerances this v1
-        # is verified against. bf16/fp16 (v2) have no such ambiguity.
+        # input_precision="ieee" only matters for fp32 operands (forces
+        # strict IEEE instead of tl.dot's TF32-truncated default, needed to
+        # match an fp32 SDPA reference -- see kernel 3). It's a no-op for
+        # bf16/fp16, which is the dtype this file is actually tuned for --
+        # tl.dot compiles to real Tensor Core MMA there, fp32-accumulated
+        # either way.
         s = tl.dot(q, tl.trans(k), input_precision="ieee") * scale  # [BLOCK_M, BLOCK_N]
 
         score_mask = (offs_m[:, None] < N) & (offs_n[None, :] < N)
@@ -102,15 +152,8 @@ def _flash_attn_fwd_kernel(
             score_mask &= offs_m[:, None] >= offs_n[None, :]
         s = tl.where(score_mask, s, float("-inf"))
 
-        # Online softmax update. For a fully-out-of-bounds query row (only
-        # possible when N isn't a multiple of BLOCK_M, i.e. offs_m >= N)
-        # every s in that row is -inf on every tile, so m_i/m_new both stay
-        # -inf and alpha/p below evaluate to NaN for that row specifically.
-        # That's fine, not UB: no memory is touched out of bounds (loads are
-        # masked with other=0.0), the NaN is pure register arithmetic, and
-        # the final store below masks that row out before it ever reaches
-        # HBM -- same "compute garbage, never store it" pattern kernel 3
-        # uses for its edge tiles.
+        # Online softmax update -- see v1 docstring (git history) for the
+        # full derivation and the NaN-on-padding-rows note, unchanged here.
         m_ij = tl.max(s, axis=1)
         m_new = tl.maximum(m_i, m_ij)
         p = tl.exp(s - m_new[:, None])
@@ -125,13 +168,10 @@ def _flash_attn_fwd_kernel(
         acc = acc * alpha[:, None] + tl.dot(p.to(v.dtype), v, input_precision="ieee")
         m_i = m_new
 
-    # No divide-by-zero guard needed here: every *valid* query row (offs_m <
-    # N) has l_i > 0 -- causal always keeps the diagonal key (offs_n ==
-    # offs_m) unmasked, non-causal keeps every in-bounds key unmasked, so
-    # rowsum(p) is never all-zero for a real row. Padding rows (offs_m >= N)
-    # get NaN here (-inf - -inf = NaN propagates from m_i through alpha and
-    # p, same as the loop comment above), not a clean 0/0 -- but they're
-    # masked out at the store below, so it never reaches HBM.
+    # No divide-by-zero guard needed: every valid query row has l_i > 0
+    # (causal always keeps the diagonal key unmasked, non-causal keeps
+    # every in-bounds key unmasked). Padding rows get NaN, masked out below
+    # before it reaches HBM -- see v1 docstring for why.
     acc = acc / l_i[:, None]
 
     o_ptrs = o_ptr + offs_m[:, None] * stride_om + offs_d[None, :] * stride_od
@@ -139,28 +179,15 @@ def _flash_attn_fwd_kernel(
     tl.store(o_ptrs, acc.to(o_ptr.dtype.element_ty), mask=o_mask)
 
 
-def flash_attention_forward(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    causal: bool = False,
-    block_m: int = 32,
-    block_n: int = 32,
-) -> torch.Tensor:
+def flash_attention_forward(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, causal: bool = False) -> torch.Tensor:
     """O = softmax(Q @ K^T / sqrt(D)) @ V, tiled with online-softmax accumulation.
 
-    q, k, v: [B, H, N, D], same shape, same dtype, all on CUDA. v1: fixed
-    block sizes, no autotune, correctness-only -- see module docstring.
-
-    Defaults (block_m=block_n=32) are deliberately conservative, not tuned --
-    picked to fit the L40S's 99KB/CTA shared-memory cap (`OutOfResources`
-    from Triton itself otherwise) up through D=128 real head dims, per the
-    SRAM-budget plan this kernel implements. 64x64 at D=128 measured at
-    ~176KB required vs 99KB available; the plan's hand-estimate (96KB at
-    Br=Bc=64) was optimistic because it didn't account for Triton's own
-    pipelining/staging overhead on top of the Q/K/V/O/S working set. Bigger
-    tiles are a real speed lever for v2's autotune sweep, bounded by this
-    same cap.
+    q, k, v: [B, H, N, D], same shape, same dtype, all on CUDA. Tile sizes,
+    num_warps, and num_stages are autotuned (see _CONFIGS) -- bf16 is the
+    dtype this is tuned for (Tensor Core tl.dot); fp32 still works
+    (correctness path, same as v1) but wasn't part of the tuning sweep and
+    will be slower relative to its own peak than the bf16 numbers in
+    kernels/README.md.
     """
     assert q.ndim == 4 and k.ndim == 4 and v.ndim == 4, (
         f"expected q/k/v as [B, H, N, D], got {q.ndim}D/{k.ndim}D/{v.ndim}D"
@@ -175,13 +202,12 @@ def flash_attention_forward(
     o = torch.empty_like(q)
     scale = 1.0 / (D ** 0.5)
     # D isn't tiled (see the plan) -- one program loads/keeps the whole head
-    # dim on-chip, same whole-row-at-once approach as kernel 2's BLOCK_N.
-    # Clamped to >=16: tl.dot requires its contraction dim >= 16 (Q@K^T
-    # contracts over D), so a small real head dim (e.g. D=8) would otherwise
+    # dim on-chip. Clamped to >=16: tl.dot requires its contraction dim >=
+    # 16 (Q@K^T contracts over D), so a small real head dim would otherwise
     # violate that and fail to compile, not just run inefficiently.
     BLOCK_D = max(16, triton.next_power_of_2(D))
 
-    grid = (triton.cdiv(N, block_m), B * H)
+    grid = lambda meta: (triton.cdiv(N, meta["BLOCK_M"]), B * H)
     _flash_attn_fwd_kernel[grid](
         q, k, v, o,
         q.stride(0), q.stride(1), q.stride(2), q.stride(3),
@@ -191,6 +217,6 @@ def flash_attention_forward(
         H, N, D,
         scale,
         CAUSAL=causal,
-        BLOCK_M=block_m, BLOCK_N=block_n, BLOCK_D=BLOCK_D,
+        BLOCK_D=BLOCK_D,
     )
     return o

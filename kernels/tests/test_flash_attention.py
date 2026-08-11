@@ -1,9 +1,10 @@
 """Correctness tests for kernels/flash_attention.py.
 
 Reference is torch.nn.functional.scaled_dot_product_attention (SDPA) with
-its default scale (1/sqrt(D)), matching this kernel's default. v1 is fp32
-only -- see the module docstring for why (correctness-first, no tensor-core
-dtype path yet). Skipped on machines without a CUDA GPU, same as kernels
+its default scale (1/sqrt(D)), matching this kernel's default. v1 was fp32
+only; v2 added bf16 (the dtype _CONFIGS in flash_attention.py is actually
+tuned for -- see that module's docstring) and the causal early-exit, both
+covered here now. Skipped on machines without a CUDA GPU, same as kernels
 1-3.
 """
 import pytest
@@ -18,8 +19,8 @@ requires_cuda = pytest.mark.skipif(
 
 # (B, H, N, D) shapes: a couple of LLM-real head dims (64, 128) at
 # block-aligned N, plus small/non-block-multiple N to exercise the
-# boundary-masking path (BLOCK_M/BLOCK_N default to 64), plus a
-# non-power-of-2 D to exercise BLOCK_D's masking path independently of N's.
+# boundary-masking path, plus a non-power-of-2 D to exercise BLOCK_D's
+# masking path independently of N's.
 SHAPES = [
     (1, 1, 1, 8),
     (1, 1, 17, 32),
@@ -29,23 +30,35 @@ SHAPES = [
     (1, 2, 100, 96),
 ]
 
+DTYPES = [torch.float32, torch.bfloat16]
+
 
 @requires_cuda
 @pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("B,H,N,D", SHAPES)
-def test_matches_sdpa_reference(B, H, N, D, causal):
+def test_matches_sdpa_reference(B, H, N, D, dtype, causal):
     torch.manual_seed(0)
-    q = torch.randn(B, H, N, D, device="cuda", dtype=torch.float32)
-    k = torch.randn(B, H, N, D, device="cuda", dtype=torch.float32)
-    v = torch.randn(B, H, N, D, device="cuda", dtype=torch.float32)
+    q = torch.randn(B, H, N, D, device="cuda", dtype=dtype)
+    k = torch.randn(B, H, N, D, device="cuda", dtype=dtype)
+    v = torch.randn(B, H, N, D, device="cuda", dtype=dtype)
 
     actual = flash_attention_forward(q, k, v, causal=causal)
     expected = F.scaled_dot_product_attention(q, k, v, is_causal=causal)
 
-    # fp32, IEEE tl.dot (not TF32) on both matmuls -- same tight tolerance
-    # kernel 3 uses for its fp32 path, since we're matching the same
-    # precision mode SDPA computes in, not approximating it.
-    torch.testing.assert_close(actual, expected, atol=1e-3, rtol=1e-3)
+    if dtype == torch.float32:
+        # IEEE tl.dot (not TF32) on both matmuls -- same tight tolerance
+        # kernel 3 uses for its fp32 path, since we're matching the same
+        # precision mode SDPA computes in, not approximating it.
+        atol, rtol = 1e-3, 1e-3
+    else:
+        # bf16: coarse ~7-bit mantissa, and this reduction is over N (up to
+        # 256 here, more in the benchmark) accumulated online across tiles
+        # rather than in one shot -- same order-of-summation-differs-from-
+        # reference story as kernel 3's bf16 tolerance, not a correctness
+        # gap.
+        atol, rtol = 2e-2, 2e-2
+    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
 
 @requires_cuda

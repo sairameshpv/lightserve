@@ -1,0 +1,107 @@
+{
+  "gpu": "NVIDIA L40S",
+  "torch_version": "2.11.0+cu130",
+  "dtype": "bfloat16",
+  "rows": [
+    {
+      "shape": "1x32x512x128",
+      "causal": false,
+      "ours_ms": 0.05327,
+      "fa2_ms": 0.04423,
+      "ours_tflops": 80.6,
+      "fa2_tflops": 97.1,
+      "pct_of_fa2": 83.0,
+      "pct_of_l40s_peak": 22.3
+    },
+    {
+      "shape": "1x32x512x128",
+      "causal": true,
+      "ours_ms": 0.05249,
+      "fa2_ms": 0.04497,
+      "ours_tflops": 40.9,
+      "fa2_tflops": 47.7,
+      "pct_of_fa2": 85.7,
+      "pct_of_l40s_peak": 11.3
+    },
+    {
+      "shape": "1x32x1024x128",
+      "causal": false,
+      "ours_ms": 0.09963,
+      "fa2_ms": 0.08213,
+      "ours_tflops": 172.4,
+      "fa2_tflops": 209.2,
+      "pct_of_fa2": 82.4,
+      "pct_of_l40s_peak": 47.6
+    },
+    {
+      "shape": "1x32x1024x128",
+      "causal": true,
+      "ours_ms": 0.08419,
+      "fa2_ms": 0.0624,
+      "ours_tflops": 102.0,
+      "fa2_tflops": 137.6,
+      "pct_of_fa2": 74.1,
+      "pct_of_l40s_peak": 28.2
+    },
+    {
+      "shape": "1x32x2048x128",
+      "causal": false,
+      "ours_ms": 0.37801,
+      "fa2_ms": 0.31941,
+      "ours_tflops": 181.8,
+      "fa2_tflops": 215.1,
+      "pct_of_fa2": 84.5,
+      "pct_of_l40s_peak": 50.2
+    },
+    {
+      "shape": "1x32x2048x128",
+      "causal": true,
+      "ours_ms": 0.2736,
+      "fa2_ms": 0.19852,
+      "ours_tflops": 125.6,
+      "fa2_tflops": 173.1,
+      "pct_of_fa2": 72.6,
+      "pct_of_l40s_peak": 34.7
+    },
+    {
+      "shape": "1x32x4096x128",
+      "causal": false,
+      "ours_ms": 1.54625,
+      "fa2_ms": 1.50145,
+      "ours_tflops": 177.8,
+      "fa2_tflops": 183.1,
+      "pct_of_fa2": 97.1,
+      "pct_of_l40s_peak": 49.1
+    },
+    {
+      "shape": "1x32x4096x128",
+      "causal": true,
+      "ours_ms": 0.94018,
+      "fa2_ms": 0.93627,
+      "ours_tflops": 146.2,
+      "fa2_tflops": 146.8,
+      "pct_of_fa2": 99.6,
+      "pct_of_l40s_peak": 40.4
+    },
+    {
+      "shape": "1x32x8192x128",
+      "causal": false,
+      "ours_ms": 5.97499,
+      "fa2_ms": 5.67952,
+      "ours_tflops": 184.0,
+      "fa2_tflops": 193.6,
+      "pct_of_fa2": 95.1,
+      "pct_of_l40s_peak": 50.8
+    },
+    {
+      "shape": "1x32x8192x128",
+      "causal": true,
+      "ours_ms": 3.30066,
+      "fa2_ms": 3.5308,
+      "ours_tflops": 166.6,
+      "fa2_tflops": 155.7,
+      "pct_of_fa2": 107.0,
+      "pct_of_l40s_peak": 46.0
+    }
+  ]
+}

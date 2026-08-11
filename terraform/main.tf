@@ -47,6 +47,12 @@ resource "nebius_compute_v1_instance" "vllm" {
     preset   = var.preset
   }
 
+  # Nebius's schema: include this block to get a preemptible VM, omit
+  # (null) for a regular one -- not a plain bool despite var.preemptible
+  # being one. on_preemption="STOP" is the only supported value (Nebius
+  # stops rather than deletes/restarts the VM when it reclaims capacity).
+  preemptible = var.preemptible ? { on_preemption = "STOP" } : null
+
   boot_disk = {
     attach_mode   = "READ_WRITE"
     existing_disk = nebius_compute_v1_disk.boot_disk[count.index]

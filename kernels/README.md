@@ -258,7 +258,7 @@ reaches higher Tensor Core utilization (96.9% vs 83.9%), yet our kernel
 reaches 2x higher occupancy (16.7% vs 8.3%) and the two wall-clock
 benchmarks above both measured us ahead regardless.
 
-## Kernel 4: FlashAttention forward pass (v1 — correctness, not speed)
+## Kernel 4: FlashAttention forward pass
 
 `flash_attention.py` computes `O = softmax(Q @ K^T / sqrt(D)) @ V` for
 `q, k, v: [B, H, N, D]`, without ever materializing the `[N, N]` score
@@ -270,20 +270,24 @@ each step folds in a new tile, rescales the running output accumulator by
 how much the running row-max moved (`alpha = exp(m_i - m_new)`), and only
 normalizes once, after the loop, instead of needing the whole row up front
 the way an untiled softmax would. Optional `causal` flag masks the upper
-triangle (no early-exit skip yet — a real ~2x FLOPs win, deliberately
-deferred to v2 as a speed change, not a correctness one). This is
-explicitly v1: fixed block sizes (no `@triton.autotune`), fp32 only, no
-backward pass — the only goal was getting the loop structure and
-online-softmax accumulation right, allclose-verified against PyTorch's
-SDPA, before touching anything performance-related.
+triangle. No backward pass (forward-only throughout).
 
-Tile sizes default to `block_m = block_n = 32`, deliberately conservative
-rather than tuned. `D` itself isn't tiled (`BLOCK_D = next_power_of_2(D)`,
-whole head dim resident on-chip per tile, same whole-row approach as kernel
-2's `BLOCK_N`) — one of this repo's earlier planning docs estimated
-Br=Bc=64 would fit the L40S's ~99KB/CTA shared-memory cap at a real D=128
-head dim with room to spare (~96KB by hand); that estimate turned out
-optimistic on real hardware. It didn't account for Triton's own
+`D` itself isn't tiled (`BLOCK_D = next_power_of_2(D)`, whole head dim
+resident on-chip per tile, same whole-row approach as kernel 2's
+`BLOCK_N`).
+
+### v1: correctness, not speed
+
+v1 (superseded by v2 below, kept here for the history) used fixed
+`block_m=block_n=32` tiles, fp32 only, no `@triton.autotune`, and no causal
+early-exit (masked the upper triangle but still swept the full K/V
+sequence) — the only goal was getting the loop structure and
+online-softmax accumulation right, allclose-verified against PyTorch's
+SDPA, before touching anything performance-related. 32x32 was deliberately
+conservative rather than tuned: one of this repo's earlier planning docs
+estimated `Br=Bc=64` would fit the L40S's ~99KB/CTA shared-memory cap at a
+real D=128 head dim with room to spare (~96KB by hand); that estimate
+turned out optimistic on real hardware, underestimating Triton's own
 load/compute pipelining overhead on top of the Q/K/V/O/S working set — see
 below.
 
@@ -327,9 +331,127 @@ $ python3 -m pytest kernels/tests/ -v
 All 82 across kernels 1-4 pass — no regressions from the 67 kernels 1-3
 already had.
 
-No benchmark or `ncu` section yet: v1 was scoped to correctness only, per
-the plan. bf16/fp16 (tensor-core) dtypes, autotuned tile sizes, and a
-causal early-exit are the natural v2 follow-ups, in that order.
+No benchmark or `ncu` section for v1: it was scoped to correctness only,
+per the plan. bf16/fp16 (tensor-core) dtypes, autotuned tile sizes, and a
+causal early-exit were the natural v2 follow-ups — below.
+
+### v2: autotuned tile sizes, causal early-exit, bf16 — tuned for speed
+
+Same loop structure and online-softmax math as v1 (unchanged), three
+additions on top:
+
+1. **`@triton.autotune`** over `BLOCK_M`, `BLOCK_N`, `num_warps`,
+   `num_stages` (7 configs, not exhaustive — same spirit as kernel 3's
+   autotune).
+2. **Causal early-exit**: the K/V loop now stops once past a query tile's
+   diagonal (`hi = min(N, (pid_m+1)*BLOCK_M)`) instead of sweeping the full
+   sequence and masking the upper triangle away after the fact — roughly
+   halves FLOPs for causal attention, matching what FlashAttention-2 itself
+   does and what a fair TFLOPS-vs-FA2 comparison requires.
+3. **bf16** is the dtype these configs are actually tuned for (tensor-core
+   `tl.dot`, fp32 accumulate) — fp32 still works (same dtype-generic
+   kernel) but wasn't part of the tuning sweep.
+
+**A real bug this surfaced**: `triton.autotune` does not skip a config that
+fails to compile — it raises `OutOfResources` and crashes the *entire*
+search the first time it hits one, same failure mode v1 hit at its single
+fixed tile size, just now inside a search over 7. Since these configs were
+picked for bf16, most of them don't fit an fp32 call at all once
+`BLOCK_D` (`next_power_of_2(D)`, clamped ≥16) exceeds 64 — fp32 tiles are
+2x the bytes of bf16 (the same v1 lesson, again, at bigger tiles). Rather
+than hand-estimate a second time (v1's hand-estimate already undercounted
+Triton's real pipelining overhead once), every `(config, dtype, BLOCK_D)`
+combination was actually compiled on the L40S to get ground truth, which is
+now baked into `_prune_by_shared_mem` (a `prune_configs_by={"early_config_prune":
+...}` hook) — e.g. at a real `D=128` bf16 call, only 3 of the 7 configs fit
+at all; at fp32/`D=128`, only the dedicated small safety-net config
+(`BLOCK_M=BLOCK_N=32`) does. Without this, the fp32 correctness tests at
+`D=96`/`128` fail outright with the same `OutOfResources` error, not a
+slow-but-working result.
+
+#### Correctness (v2)
+
+`tests/test_flash_attention.py` now also parametrizes over `dtype` (fp32,
+bf16) on top of v1's shapes/causal matrix — 27 cases total (was 15).
+Run for real (on a preemptible L40S node this session — see below):
+
+```
+$ python3 -m pytest kernels/tests/test_flash_attention.py -v
+...
+27 passed in 30.69s
+$ python3 -m pytest kernels/tests/ -v
+...
+94 passed in 102.53s
+```
+
+All 94 across kernels 1-4 pass — no regressions from the 67 kernels 1-3 had.
+
+#### Benchmark: ours vs. PyTorch's real FlashAttention-2
+
+`benchmark_flash_attention.py` compares against
+`scaled_dot_product_attention` forced onto the `FLASH_ATTENTION` backend via
+`torch.nn.attention.sdpa_kernel` — this *is* FA2 (whatever version this
+torch build vendors), not an approximation of it, same "ours vs. the real
+thing" shape as kernel 3's ours-vs-cuBLAS benchmark. bf16, `B=1, H=32,
+D=128` (LLaMA-3-8B's real head count/dim), CUDA-event wall-clock, median of
+5×30-iter blocks, allclose-verified before every timed shape:
+
+| shape (B,H,N,D) | causal | ours TFLOPS | FA2 TFLOPS | % of FA2 | % of 362 TFLOPS peak |
+|---|---|--:|--:|--:|--:|
+| 1x32x512x128 | False | 80.6 | 97.1 | 83.0% | 22.3% |
+| 1x32x512x128 | True | 40.9 | 47.7 | 85.7% | 11.3% |
+| 1x32x1024x128 | False | 172.4 | 209.2 | 82.4% | 47.6% |
+| 1x32x1024x128 | True | 102.0 | 137.6 | 74.1% | 28.2% |
+| 1x32x2048x128 | False | 181.8 | 215.1 | 84.5% | 50.2% |
+| 1x32x2048x128 | True | 125.6 | 173.1 | 72.6% | 34.7% |
+| 1x32x4096x128 | False | 177.8 | 183.1 | 97.1% | 49.1% |
+| 1x32x4096x128 | True | 146.2 | 146.8 | **99.6%** | 40.4% |
+| 1x32x8192x128 | False | 184.0 | 193.6 | 95.1% | 50.8% |
+| 1x32x8192x128 | True | 166.6 | 155.7 | **107.0%** | 46.0% |
+
+Full data: `benchmark_flash_attention_results.json`.
+
+**Every shape clears the >=60% of FA2 target, by a wide margin** — the
+worst case (N=1024, causal) is still at 74.1%, and by N=4096/8192 we're at
+parity-or-ahead of FA2 (99.6% and 107.0% causal). Same shape-dependent
+story as kernel 3 vs cuBLAS: FA2's more numerous, hand-tuned configs (and a
+real CUTLASS-hand-written inner loop, not a 7-config Triton sweep) win
+decisively at small problem sizes where per-block/per-launch overhead
+dominates; more total work amortizes that gap, and by 8192 tokens we're
+reproducibly ahead.
+
+#### Nsight Compute: occupancy and shared-memory bank conflicts
+
+Full writeup with per-size `ncu` metrics (Tensor Core utilization,
+occupancy, register pressure, shared-memory bank conflicts) for both
+kernels: **[`ncu_flash_attention_report.md`](ncu_flash_attention_report.md)**.
+Headline: **occupancy is a wash, not the story** — FA2 fits 2 resident
+blocks/SM against our 1 (both register- and shared-memory-limited), but
+FA2's blocks are half the threads (128 vs our 256), so both land at ~8
+resident warps/SM either way, and measured `sm__warps_active` comes out
+essentially tied (ours is a hair ahead at both N=1024 and N=8192). The real
+gap is **Tensor Core pipe utilization** (33.4% vs 45.9% at N=1024, 57.6% vs
+76.9% at N=8192) — FA2's hand-written CUTLASS inner loop schedules
+tensor-core instructions more efficiently per cycle than a 7-config Triton
+autotune sweep reaches, the same kind of engineering-effort gap kernel 3
+found against cuBLAS. **Bank conflicts**: `ncu` confirms **zero** shared-
+memory load conflicts for our kernel at both sizes (the Q/K/V tile-load
+pointer arithmetic doesn't collide across banks) — store-side conflicts are
+real and scale with the K/V loop's trip count, but FA2's kernel has *more*
+total bank conflicts (both load and store) and still wins on wall-clock, so
+conflicts aren't the bottleneck either; root-causing the store conflicts
+further would mean reading generated SASS, flagged as real follow-up, not
+done here.
+
+### A capacity note, unrelated to the kernel
+
+This tuning session ran on a **preemptible** L40S node, not the on-demand
+`vllm-node-0` used for kernels 1-3 and v1: on-demand `gpu-l40s-a` capacity
+in `eu-north1` hit tenant-wide `LIMIT_REACHED` (confirmed via `nebius
+capacity resource-advice list`, not just a retry-and-hope guess) at the
+time. `terraform/variables.tf` now has a `preemptible` variable
+(`terraform.tfvars` has it set to `true` with a comment to flip back once
+capacity frees up) for next time this happens.
 
 ## CI
 
@@ -369,8 +491,16 @@ GPU runner wired up yet.
 - `profile_matmul_ncu.py` / `ncu_matmul_report.txt` / `matmul_ncu_report.md`
   — kernel 3's Nsight Compute profiling target, raw output, and the
   why-cuBLAS-wins (and doesn't) writeup.
-- `flash_attention.py` — kernel 4 (v1), with inline commentary on the
-  online-softmax loop structure.
+- `flash_attention.py` — kernel 4, with inline commentary on the
+  online-softmax loop structure (v1) and the autotune/causal-early-exit/
+  bf16 tuning pass (v2).
 - `tests/test_flash_attention.py` — kernel 4 correctness tests (allclose
   vs. `torch.nn.functional.scaled_dot_product_attention`, causal +
-  non-causal).
+  non-causal, fp32 + bf16).
+- `benchmark_flash_attention.py` — kernel 4 v2 ours-vs-PyTorch's-real-FA2
+  TFLOPS + % of FA2, across 5 sequence lengths x causal/non-causal.
+- `benchmark_flash_attention_results.json` — kernel 4 v2 raw benchmark
+  output.
+- `profile_flash_attention_ncu.py` / `ncu_flash_attention_report.txt` /
+  `ncu_flash_attention_report.md` — kernel 4 v2's Nsight Compute profiling
+  target, raw output, and the occupancy/bank-conflict writeup.

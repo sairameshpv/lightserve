@@ -1,0 +1,120 @@
+=== N=1024 mode=ours causal=True ===
+==PROF== Connected to process 56 (/usr/bin/python3.12)
+==PROF== Profiling "_flash_attn_fwd_kernel" - 0: 0%....50%....100% - 8 passes
+==PROF== Disconnected from process 56
+[56] python3.12@127.0.0.1
+  _flash_attn_fwd_kernel (8, 32, 1)x(256, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    ----------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                 Metric Unit Metric Value
+    ----------------------------------------------------------------------- --------------- ------------
+    dram__throughput.avg.pct_of_peak_sustained_elapsed                                    %        17.63
+    gpu__time_duration.sum                                                               us       186.69
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum                                           0
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum                                        7714
+    launch__block_size                                                                               256
+    launch__grid_size                                                                                256
+    launch__occupancy_limit_registers                                                 block            1
+    launch__occupancy_limit_shared_mem                                                block            1
+    launch__occupancy_limit_warps                                                     block            6
+    launch__registers_per_thread                                            register/thread          201
+    sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_elapsed               %        33.44
+    sm__throughput.avg.pct_of_peak_sustained_elapsed                                      %        33.44
+    sm__warps_active.avg.pct_of_peak_sustained_active                                     %        16.64
+    ----------------------------------------------------------------------- --------------- ------------
+
+
+=== N=1024 mode=sdpa causal=True ===
+==PROF== Connected to process 56 (/usr/bin/python3.12)
+==PROF== Profiling "flash_fwd_kernel" - 0: 0%....50%....100% - 8 passes
+==PROF== Disconnected from process 56
+[56] python3.12@127.0.0.1
+  void flash_fwd_kernel<Flash_fwd_kernel_traits<128, 64, 64, 4, 0, 0, bfloat16_t, Flash_kernel_traits<128, 64, 64, 4, bfloat16_t>>, 0, 1, 0, 0, 1, 1, 0, 0>(Flash_fwd_params) (16, 1, 32)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    ----------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                 Metric Unit Metric Value
+    ----------------------------------------------------------------------- --------------- ------------
+    dram__throughput.avg.pct_of_peak_sustained_elapsed                                    %        25.53
+    gpu__time_duration.sum                                                               us       128.48
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum                                       18724
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum                                        6063
+    launch__block_size                                                                               128
+    launch__grid_size                                                                                512
+    launch__occupancy_limit_registers                                                 block            2
+    launch__occupancy_limit_shared_mem                                                block            2
+    launch__occupancy_limit_warps                                                     block           12
+    launch__registers_per_thread                                            register/thread          184
+    sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_elapsed               %        45.90
+    sm__throughput.avg.pct_of_peak_sustained_elapsed                                      %        45.90
+    sm__warps_active.avg.pct_of_peak_sustained_active                                     %        14.92
+    ----------------------------------------------------------------------- --------------- ------------
+
+
+=== N=8192 mode=ours causal=True ===
+==PROF== Connected to process 55 (/usr/bin/python3.12)
+==PROF== Profiling "_flash_attn_fwd_kernel" - 0: 0%....50%....100% - 8 passes
+==PROF== Disconnected from process 55
+[55] python3.12@127.0.0.1
+  _flash_attn_fwd_kernel (64, 32, 1)x(256, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 55:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    ----------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                 Metric Unit Metric Value
+    ----------------------------------------------------------------------- --------------- ------------
+    dram__throughput.avg.pct_of_peak_sustained_elapsed                                    %         5.18
+    gpu__time_duration.sum                                                               ms         6.26
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum                                           0
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum                                      101691
+    launch__block_size                                                                               256
+    launch__grid_size                                                                               2048
+    launch__occupancy_limit_registers                                                 block            1
+    launch__occupancy_limit_shared_mem                                                block            1
+    launch__occupancy_limit_warps                                                     block            6
+    launch__registers_per_thread                                            register/thread          201
+    sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_elapsed               %        57.62
+    sm__throughput.avg.pct_of_peak_sustained_elapsed                                      %        57.62
+    sm__warps_active.avg.pct_of_peak_sustained_active                                     %        16.66
+    ----------------------------------------------------------------------- --------------- ------------
+
+
+=== N=8192 mode=sdpa causal=True ===
+==PROF== Connected to process 56 (/usr/bin/python3.12)
+==PROF== Profiling "flash_fwd_kernel" - 0: 0%....50%....100% - 8 passes
+==PROF== Disconnected from process 56
+[56] python3.12@127.0.0.1
+  void flash_fwd_kernel<Flash_fwd_kernel_traits<128, 64, 64, 4, 0, 0, bfloat16_t, Flash_kernel_traits<128, 64, 64, 4, bfloat16_t>>, 0, 1, 0, 0, 1, 1, 0, 0>(Flash_fwd_params) (128, 1, 32)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 8.9
+
+    NVTX Push/Pop Stack for Thread 56:
+      <default domain>
+        <0,PROFILE_TARGET>
+    Section: Command line profiler metrics
+    ----------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                 Metric Unit Metric Value
+    ----------------------------------------------------------------------- --------------- ------------
+    dram__throughput.avg.pct_of_peak_sustained_elapsed                                    %         7.03
+    gpu__time_duration.sum                                                               ms         4.65
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum                                      136569
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum                                      158506
+    launch__block_size                                                                               128
+    launch__grid_size                                                                               4096
+    launch__occupancy_limit_registers                                                 block            2
+    launch__occupancy_limit_shared_mem                                                block            2
+    launch__occupancy_limit_warps                                                     block           12
+    launch__registers_per_thread                                            register/thread          184
+    sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_elapsed               %        76.94
+    sm__throughput.avg.pct_of_peak_sustained_elapsed                                      %        76.94
+    sm__warps_active.avg.pct_of_peak_sustained_active                                     %        16.38
+    ----------------------------------------------------------------------- --------------- ------------
+
+
