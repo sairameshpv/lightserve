@@ -1,0 +1,245 @@
+"""Continuous-batching scheduler -- decides, once per engine step, which
+requests get a forward pass this step and how many new tokens each gets KV
+computed for. Mirrors vLLM's own split (a `SchedulerInterface` ABC in
+vllm/v1/core/sched/interface.py, concretely implemented by `Scheduler` in
+vllm/v1/core/sched/scheduler.py, delegating block accounting to a
+KVCacheManager/BlockPool) at a scope that fits this repo: one GPU, no
+speculative decoding, no multimodal encoder cache, no distributed KV
+connector, no chunked prefill, no priority scheduling, no prefix caching --
+see block_manager.py's module docstring and engine/README.md for the full
+list of what's cut and why.
+
+Simplification vLLM itself doesn't make, flagged here rather than left
+implicit: this Scheduler is synchronous. schedule() both decides the batch
+*and* immediately advances Request.num_computed_tokens / BlockManager's
+block tables for it, as if the model runner is guaranteed to honor exactly
+that decision this step. Real vLLM splits this into SchedulerOutput (what to
+run) and a separate update_from_output(model_runner_output) call after the
+forward pass actually completes -- what lets it pipeline scheduling for step
+N+1 while step N's forward pass is still running on the GPU (async
+scheduling). Wiring a real model runner (this repo's kernels don't yet
+support the Nq=1-against-paged-Nkv decode shape that would call into -- see
+README.md's "What's not wired up") is the natural point to split those
+apart; premature here.
+"""
+from collections import deque
+from dataclasses import dataclass, field
+
+from engine.block_manager import BlockManager
+from engine.config import CacheConfig, SchedulerConfig
+from engine.request import Request, RequestStatus
+
+
+@dataclass
+class ScheduledRequest:
+    """One request's slice of a SchedulerOutput: which request, and how many
+    of its tokens get KV computed this step. num_scheduled_tokens > 1 means
+    this is a prefill-shaped step (request.is_prefill() was True going in);
+    == 1 means a steady-state decode step -- the distinction a future
+    model-runner needs to pick which of this repo's attention-kernel call
+    shapes applies (see engine/README.md).
+    """
+    request: Request
+    num_scheduled_tokens: int
+
+
+@dataclass
+class SchedulerOutput:
+    """What one schedule() call decided.
+
+    scheduled_new: requests admitted from `waiting` this step -- their first
+    (or, after a preemption, first-since-being-requeued) scheduled step, a
+    full-sequence prefill.
+    scheduled_running: requests that were already RUNNING and got scheduled
+    again this step (steady-state decode, almost always num_scheduled_tokens
+    == 1).
+    preempted: requests bumped from `running` back to `waiting` this step to
+    free blocks for someone else. The caller doesn't need to *do* anything
+    about these beyond not expecting output from them this step -- Scheduler
+    has already updated their state and freed their blocks.
+    """
+    scheduled_new: list = field(default_factory=list)
+    scheduled_running: list = field(default_factory=list)
+    preempted: list = field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.scheduled_new or self.scheduled_running)
+
+    @property
+    def total_num_scheduled_tokens(self) -> int:
+        return sum(sr.num_scheduled_tokens for sr in self.scheduled_new + self.scheduled_running)
+
+
+class Scheduler:
+    """See engine/README.md's "Request lifecycle" and "Scheduler" sections
+    for the full picture this class implements. `waiting` is FIFO (arrival
+    order, preempted requests requeued at the front -- see _preempt);
+    priority scheduling (vLLM supports a `priority` policy alongside FIFO)
+    is a documented non-goal here.
+    """
+
+    def __init__(self, cache_config: CacheConfig, scheduler_config: SchedulerConfig):
+        self.cache_config = cache_config
+        self.scheduler_config = scheduler_config
+        self.block_manager = BlockManager(
+            block_size=cache_config.block_size,
+            num_gpu_blocks=cache_config.num_gpu_blocks,
+            watermark_blocks=cache_config.watermark_blocks,
+        )
+        self.waiting: deque = deque()
+        self.running: list = []
+        self.requests: dict = {}
+
+    def add_request(self, request: Request) -> None:
+        if request.request_id in self.requests:
+            raise ValueError(f"duplicate request_id {request.request_id!r}")
+        request.status = RequestStatus.WAITING
+        self.requests[request.request_id] = request
+        self.waiting.append(request)
+
+    def get_num_unfinished_requests(self) -> int:
+        return len(self.waiting) + len(self.running)
+
+    def has_unfinished_requests(self) -> bool:
+        return self.get_num_unfinished_requests() > 0
+
+    # -- The main decision ---------------------------------------------------
+
+    def schedule(self) -> SchedulerOutput:
+        output = SchedulerOutput()
+        token_budget = self.scheduler_config.max_num_batched_tokens
+
+        token_budget = self._schedule_running(output, token_budget)
+        # Only admit new requests if nothing was preempted this step -- same
+        # rule vLLM's Scheduler follows: a step that just freed blocks under
+        # memory pressure shouldn't immediately hand them to a brand-new
+        # request and risk preempting it right back next step (thrashing).
+        if not output.preempted:
+            self._schedule_waiting(output, token_budget)
+        return output
+
+    def _schedule_running(self, output: SchedulerOutput, token_budget: int) -> int:
+        # `pending`: running requests not yet decided this step, in
+        # priority order (arrival order -- self.running's existing order).
+        # Preemption victims are popped from pending's *tail* (lowest
+        # priority among those not yet processed this step), never from
+        # requests already scheduled earlier in this same loop -- so a
+        # scheduling decision, once made, is never undone later in the same
+        # step.
+        pending = deque(self.running)
+        scheduled = []
+        while pending:
+            request = pending.popleft()
+            num_new = request.get_num_new_tokens()
+            if num_new <= 0:
+                # Nothing new to compute -- shouldn't normally happen for a
+                # RUNNING request, but harmless if it does. Keep it running,
+                # skip it this step.
+                scheduled.append(request)
+                continue
+            if num_new > token_budget:
+                # Out of token budget for this step, not out of blocks --
+                # leave it RUNNING, retry next schedule() call. Only matters
+                # for a request still mid-prefill re-entering this path;
+                # steady-state decode's num_new is always 1.
+                scheduled.append(request)
+                continue
+            while not self.block_manager.can_append_slot(request):
+                if pending:
+                    self._preempt(pending.pop(), output)
+                else:
+                    self._preempt(request, output)
+                    break
+            else:
+                self.block_manager.append_slot(request)
+                request.num_computed_tokens = request.get_len()
+                output.scheduled_running.append(ScheduledRequest(request, num_new))
+                token_budget -= num_new
+                scheduled.append(request)
+        self.running = scheduled
+        return token_budget
+
+    def _schedule_waiting(self, output: SchedulerOutput, token_budget: int) -> int:
+        still_waiting: deque = deque()
+        while self.waiting:
+            request = self.waiting.popleft()
+            num_new = request.get_num_new_tokens()  # full sequence-so-far on (re-)admission
+            fits_seq_budget = len(self.running) < self.scheduler_config.max_num_seqs
+            if (
+                not fits_seq_budget
+                or num_new > token_budget
+                or not self.block_manager.can_allocate(request)
+            ):
+                still_waiting.append(request)
+                # FIFO: if the head of the line can't be admitted, nothing
+                # behind it should jump ahead of it either -- stop scanning
+                # rather than admitting a smaller request out of order.
+                break
+            self.block_manager.allocate(request)
+            request.status = RequestStatus.RUNNING
+            request.num_computed_tokens = request.get_len()
+            output.scheduled_new.append(ScheduledRequest(request, num_new))
+            token_budget -= num_new
+            self.running.append(request)
+        still_waiting.extend(self.waiting)  # whatever wasn't popped before the break
+        self.waiting = still_waiting
+        return token_budget
+
+    def _preempt(self, request: Request, output: SchedulerOutput) -> None:
+        """Recompute-based preemption (see block_manager.py's module
+        docstring on why not swap-to-CPU): free every physical block this
+        request owns and reset num_computed_tokens to 0, so its next
+        admission redoes the whole sequence-so-far as a fresh prefill rather
+        than trying to resume mid-sequence against a KV cache that's gone.
+        Requeued at the *front* of `waiting`, not the back, so it's first in
+        line once space frees up -- ahead of requests that arrived later but
+        were never running.
+        """
+        self.block_manager.free(request)
+        request.num_computed_tokens = 0
+        request.status = RequestStatus.PREEMPTED
+        self.waiting.appendleft(request)
+        output.preempted.append(request)
+
+    # -- Teardown --------------------------------------------------------------
+
+    def free_finished_requests(self) -> list:
+        """Call once per engine step, after processing model output and
+        marking finished requests' status via Request.maybe_finish() (both
+        out of scope here -- see this module's docstring). Returns the freed
+        requests so the caller can do whatever "return this response to the
+        client" step needs.
+        """
+        finished = [r for r in self.running if r.is_finished()]
+        if finished:
+            self.running = [r for r in self.running if not r.is_finished()]
+            for r in finished:
+                self.block_manager.free(r)
+                del self.requests[r.request_id]
+        return finished
+
+    def abort_requests(self, request_ids) -> list:
+        """Cancel requests regardless of lifecycle stage: still WAITING
+        (never allocated -- block_manager.free is a no-op for these, see its
+        docstring), RUNNING (blocks freed here), or already finished
+        (ignored). Returns the newly-aborted requests.
+        """
+        ids = set(request_ids)
+        aborted = []
+
+        still_waiting: deque = deque()
+        for request in self.waiting:
+            if request.request_id in ids:
+                request.status = RequestStatus.FINISHED_ABORTED
+                aborted.append(request)
+                del self.requests[request.request_id]
+            else:
+                still_waiting.append(request)
+        self.waiting = still_waiting
+
+        for request in self.running:
+            if request.request_id in ids:
+                request.status = RequestStatus.FINISHED_ABORTED
+        aborted.extend(self.free_finished_requests())
+        return aborted
