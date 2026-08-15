@@ -91,3 +91,12 @@ def test_rejects_dtype_mismatch():
     v = torch.randn(1, 2, 16, 32, dtype=torch.float32)
     with pytest.raises(AssertionError):
         flash_attention_forward(q, k, v)
+
+
+def test_rejects_wrong_ndim():
+    # Missing the batch dim: [H, N, D] instead of [B, H, N, D].
+    q = torch.randn(2, 16, 32)
+    k = torch.randn(2, 16, 32)
+    v = torch.randn(2, 16, 32)
+    with pytest.raises(AssertionError):
+        flash_attention_forward(q, k, v)
