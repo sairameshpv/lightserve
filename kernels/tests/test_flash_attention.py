@@ -100,3 +100,13 @@ def test_rejects_wrong_ndim():
     v = torch.randn(2, 16, 32)
     with pytest.raises(AssertionError):
         flash_attention_forward(q, k, v)
+
+
+def test_rejects_cpu_tensor():
+    # Right ndim/shape/dtype, just not on CUDA -- the Triton kernel can't
+    # launch against host memory.
+    q = torch.randn(1, 2, 16, 32)
+    k = torch.randn(1, 2, 16, 32)
+    v = torch.randn(1, 2, 16, 32)
+    with pytest.raises(AssertionError):
+        flash_attention_forward(q, k, v)
