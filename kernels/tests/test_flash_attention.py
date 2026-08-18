@@ -110,3 +110,13 @@ def test_rejects_cpu_tensor():
     v = torch.randn(1, 2, 16, 32)
     with pytest.raises(AssertionError):
         flash_attention_forward(q, k, v)
+
+
+def test_rejects_head_dim_mismatch():
+    # test_rejects_shape_mismatch covers N; this covers D, the other half
+    # of the q.shape == k.shape == v.shape check.
+    q = torch.randn(1, 2, 16, 32)
+    k = torch.randn(1, 2, 16, 32)
+    v = torch.randn(1, 2, 16, 64)  # wrong: D must match q/k
+    with pytest.raises(AssertionError):
+        flash_attention_forward(q, k, v)
