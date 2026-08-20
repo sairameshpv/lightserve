@@ -173,22 +173,28 @@ class TestPreemption:
         assert output.scheduled_new == []
 
     def test_preempted_request_resumes_as_a_fresh_prefill(self):
-        sched = make_scheduler(block_size=4, num_gpu_blocks=1)
+        # 2 blocks total, block_size=4. b and a (admitted in that order)
+        # each hold the sequence's only spare block, so free==0 once both
+        # are running -- num_gpu_blocks=1 can't set this up at all: with
+        # only 1 block to ever hand out, a's fresh 2-block re-admission
+        # below would be unsatisfiable no matter what freed it.
+        sched = make_scheduler(block_size=4, num_gpu_blocks=2)
+        b = make_request("b", prompt_len=4, max_tokens=1)
+        sched.add_request(b)
+        sched.schedule()
+
         a = make_request("a", prompt_len=4, max_tokens=100)
         sched.add_request(a)
         sched.schedule()
         assert a.num_computed_tokens == 4
 
-        # Manually preempt via a second competing request needing the only block.
-        a.output_token_ids.append(1)  # a now needs a 2nd block
-        b = make_request("b", prompt_len=4, max_tokens=100)
-        sched.add_request(b)
-        # a is RUNNING and gets processed before b is even considered
-        # (b is still WAITING) -- force pressure by shrinking free blocks
-        # to 0 directly is unnecessary; there's only 1 block total, held by
-        # a, so a's own append_slot needs a 2nd block with nothing to
-        # preempt from `pending` (a is the only running request) -> a
-        # preempts itself.
+        # Both blocks are now spoken for (b: 1, a: 1). Grow both by one
+        # output token: b crosses its block boundary and needs a 2nd
+        # block, and -- being processed before a in `pending` -- evicts a
+        # (the lower-priority request still pending this step) rather
+        # than itself. b also now sits at its own max_tokens.
+        b.output_token_ids.append(1)
+        a.output_token_ids.append(1)
         output = sched.schedule()
         assert len(output.preempted) == 1
         assert output.preempted[0].request_id == "a"
@@ -197,6 +203,14 @@ class TestPreemption:
         # 5 tokens (4 prompt + 1 output) survive the preemption -- recompute
         # strategy keeps the token ids, just loses the KV cache.
         assert a.get_len() == 5
+        assert b in sched.running
+        assert a not in sched.running
+
+        # b immediately finishes (it just hit max_tokens=1) and frees both
+        # of its blocks -- the room a's fresh 2-block prefill needs below.
+        b.maybe_finish()
+        assert b.is_finished()
+        assert sched.free_finished_requests() == [b]
 
         # Next step: a is re-admitted, whole 5-token sequence-so-far
         # scheduled as one fresh prefill.
