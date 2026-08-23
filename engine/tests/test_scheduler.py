@@ -5,7 +5,7 @@ module docstring on why these run for real on CI, not just import-checked.
 """
 from engine.config import CacheConfig, SchedulerConfig
 from engine.request import Request, RequestStatus, SamplingParams
-from engine.scheduler import Scheduler
+from engine.scheduler import ScheduledRequest, Scheduler, SchedulerOutput
 
 
 def make_scheduler(block_size=4, num_gpu_blocks=100, watermark_blocks=0,
@@ -134,6 +134,124 @@ class TestSteadyStateDecode:
         assert len(sched.block_manager.get_block_table(req)) == 2
 
 
+class TestMixedBatching:
+    """One schedule() call handling a running decode and a new admission
+    together -- the actual "continuous batching, mixed request lengths"
+    behavior: iteration-level scheduling means every step re-decides the
+    whole batch, not just whichever queue happened to be non-empty.
+    """
+
+    def test_same_step_admits_new_prefill_alongside_running_decode(self):
+        sched = make_scheduler(block_size=4, max_num_batched_tokens=2048)
+        running_req = make_request("running", prompt_len=4)
+        sched.add_request(running_req)
+        sched.schedule()  # admits running_req: prefill, num_computed_tokens=4
+        assert running_req in sched.running
+
+        running_req.output_token_ids.append(1)  # now needs 1 decode token
+        waiting_req = make_request("waiting", prompt_len=6)
+        sched.add_request(waiting_req)  # added after, so still WAITING
+
+        output = sched.schedule()
+
+        # Steady-state decode (length 1) and a fresh prefill (length 6)
+        # scheduled in the very same step -- exactly the mixed-length,
+        # admit-every-step behavior under test.
+        assert len(output.scheduled_running) == 1
+        assert output.scheduled_running[0].request is running_req
+        assert output.scheduled_running[0].num_scheduled_tokens == 1
+        assert len(output.scheduled_new) == 1
+        assert output.scheduled_new[0].request is waiting_req
+        assert output.scheduled_new[0].num_scheduled_tokens == 6
+        assert output.total_num_scheduled_tokens == 7
+        assert waiting_req in sched.running
+
+    def test_token_budget_is_shared_between_running_and_waiting_in_one_step(self):
+        # Running decode's 1 token is deducted from the budget *before*
+        # _schedule_waiting sees what's left -- a tight budget must block
+        # the new admission even though it would fit the raw config max.
+        sched = make_scheduler(block_size=4, max_num_batched_tokens=6)
+        running_req = make_request("running", prompt_len=4)
+        sched.add_request(running_req)
+        sched.schedule()
+        running_req.output_token_ids.append(1)
+
+        waiting_req = make_request("waiting", prompt_len=6)
+        sched.add_request(waiting_req)
+
+        output = sched.schedule()  # budget 6: 1 for decode, only 5 left for a 6-token prefill
+
+        assert len(output.scheduled_running) == 1  # decode still goes through
+        assert output.scheduled_new == []  # prefill didn't fit in what remained
+        assert waiting_req in sched.waiting
+
+        # One more token of budget (7 total: 1 decode + 6 prefill) admits it.
+        sched2 = make_scheduler(block_size=4, max_num_batched_tokens=7)
+        running_req2 = make_request("running2", prompt_len=4)
+        sched2.add_request(running_req2)
+        sched2.schedule()
+        running_req2.output_token_ids.append(1)
+        waiting_req2 = make_request("waiting2", prompt_len=6)
+        sched2.add_request(waiting_req2)
+
+        output2 = sched2.schedule()
+        assert len(output2.scheduled_running) == 1
+        assert len(output2.scheduled_new) == 1
+        assert output2.total_num_scheduled_tokens == 7
+
+
+class TestSchedulerOutputProperties:
+    def test_is_empty_true_with_no_scheduled_requests(self):
+        output = SchedulerOutput()
+        assert output.is_empty
+        assert output.total_num_scheduled_tokens == 0
+
+    def test_is_empty_true_even_with_a_preemption(self):
+        # is_empty only looks at scheduled_new/scheduled_running -- a step
+        # that preempted someone but admitted/decoded no one still counts as
+        # empty (see test_preemption_frees_blocks_and_requeues_at_front,
+        # which hits exactly this: scheduled_new == [] the same step a
+        # preemption happens).
+        req = make_request("r0")
+        output = SchedulerOutput(preempted=[req])
+        assert output.is_empty
+
+    def test_total_num_scheduled_tokens_sums_both_lists(self):
+        new_req, running_req = make_request("new"), make_request("running")
+        output = SchedulerOutput(
+            scheduled_new=[ScheduledRequest(new_req, 6)],
+            scheduled_running=[ScheduledRequest(running_req, 1)],
+        )
+        assert output.total_num_scheduled_tokens == 7
+        assert not output.is_empty
+
+
+class TestRunningRequestOverBudget:
+    def test_running_request_needing_more_tokens_than_budget_stays_running_untouched(self):
+        # This design has no chunked prefill (see engine/README.md), so a
+        # RUNNING request normally only ever needs exactly 1 new token
+        # (steady-state decode) by the time _schedule_running sees it again.
+        # scheduler.py's comment on this branch flags it as mattering only
+        # for "a request still mid-prefill re-entering this path" -- construct
+        # that state directly rather than waiting on a future chunked-prefill
+        # feature to exercise scheduler.py:141-147's own-budget check.
+        sched = make_scheduler(block_size=4, num_gpu_blocks=10, max_num_batched_tokens=5)
+        req = make_request("mid_prefill", prompt_len=10, max_tokens=100)
+        sched.block_manager.allocate(req)
+        req.status = RequestStatus.RUNNING
+        req.num_computed_tokens = 2  # 8 new tokens needed, budget is only 5
+        sched.requests[req.request_id] = req
+        sched.running.append(req)
+
+        output = sched.schedule()
+
+        assert output.scheduled_running == []
+        assert output.scheduled_new == []
+        assert output.preempted == []
+        assert req in sched.running  # left untouched, retried next schedule() call
+        assert req.num_computed_tokens == 2  # not advanced
+
+
 class TestPreemption:
     def test_preemption_frees_blocks_and_requeues_at_front(self):
         # 2 blocks total, block_size=4. Two 1-block requests fill the pool.
@@ -171,6 +289,27 @@ class TestPreemption:
         assert preempted_req not in sched.running
         # No new admissions happened this step -- a preemption occurred.
         assert output.scheduled_new == []
+
+    def test_self_preemption_when_no_lower_priority_candidate_exists(self):
+        # Only one running request, one block total. It grows past its
+        # block's capacity, needs a 2nd block, none free, and -- being the
+        # only entry left in `pending` -- has no lower-priority victim to
+        # evict, so it preempts itself (scheduler.py's _schedule_running:
+        # "if pending: ... else: self._preempt(request, output)").
+        sched = make_scheduler(block_size=4, num_gpu_blocks=1)
+        solo = make_request("solo", prompt_len=4, max_tokens=100)
+        sched.add_request(solo)
+        sched.schedule()
+        assert sched.block_manager.num_free_blocks == 0
+
+        solo.output_token_ids.append(1)  # len=5, crosses into a 2nd block
+        output = sched.schedule()
+
+        assert output.preempted == [solo]
+        assert solo.status == RequestStatus.PREEMPTED
+        assert solo not in sched.running
+        assert list(sched.waiting)[0] is solo
+        assert sched.block_manager.num_free_blocks == 1  # its 1 block was freed
 
     def test_preempted_request_resumes_as_a_fresh_prefill(self):
         # 2 blocks total, block_size=4. b and a (admitted in that order)
