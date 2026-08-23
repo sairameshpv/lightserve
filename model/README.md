@@ -133,6 +133,60 @@ not the repo root, on `sys.path` and fails with
 `ModuleNotFoundError: model` (this file's own absolute import of
 `model.minimal_llama`).
 
+## Model runner: continuous batching, end to end
+
+Three more files wire `engine/`'s scheduler + block allocator to a real
+forward pass — the piece `engine/README.md`'s "What's not wired up" section
+used to describe as entirely missing:
+
+- **`kv_cache.py`** — `PagedKVCache`: the actual GPU memory
+  `engine/block_manager.py`'s integer block ids point into. One
+  `[num_gpu_blocks, block_size, n_heads, head_dim]` tensor per layer per K/V.
+  `write`/`read` translate a request's `block_table` into physical
+  `(block_id, offset)` pairs with one vectorized gather/scatter each, no
+  per-token Python loop.
+- **`model_runner.py`** — `ModelRunner.execute_model`: a *second* forward-pass
+  implementation (not a reuse of `llama_forward`, which has no KV cache at
+  all — see its module docstring), built around a flattened, ragged-length
+  batch. Every scheduled request's new tokens (prefill and decode alike) are
+  concatenated along one flat dimension; embedding, RMSNorm, every Linear,
+  and the MLP run once, batched, over that whole flat batch. Attention can't
+  batch that way (each request needs its own gathered K/V and length), so it
+  loops per request instead — see the module docstring for the shape trick
+  this needs: `flash_attention_forward` asserts `q.shape == k.shape ==
+  v.shape`, which a decode step's 1-query-against-many-cached-keys shape
+  violates outright, so a decode step's query gets zero-padded up to the
+  cached length instead (dummy rows, discarded after, causal masking makes
+  it exact) rather than touching the kernel. Real cost, not hidden: this
+  makes decode's attention `O(seq_len)` per step, not `O(1)` — the same
+  "recompute, don't incrementally extend" trade `cuda_graph_decode.py`
+  already makes and for the identical reason (no `Nq != Nkv` kernel). A
+  dedicated paged-decode kernel remains the real follow-up.
+- **`llm_engine.py`** — `LLMEngine`: `add_request`/`step`/`generate`, the
+  loop that actually runs `Scheduler.schedule() -> execute_model() ->
+  free_finished_requests()` until every submitted prompt is done. This is
+  the "end-to-end generation through the engine" entry point; `generate()`
+  submits every prompt up front so the scheduler gets to interleave their
+  prefills/decodes the way a real serving workload would.
+
+All three need a real CUDA GPU (`PagedKVCache` allocates real device
+tensors at construction) — same `requires_cuda`-skipped-on-CI, run-for-real-
+on-the-L40S story as everything else in this file.
+`tests/test_kv_cache.py`, `tests/test_model_runner.py`, and
+`tests/test_llm_engine.py` check, respectively: write/read round-trips
+(including cross-request and cross-layer isolation); step-by-step agreement
+between the incremental KV-cache path and `reference_llama_forward` re-run
+dense from scratch after every step (single request, and a genuine mixed
+prefill+decode batch in one `execute_model` call); and full `generate()`
+runs — single prompt, concurrent prompts of different lengths (proving no
+cross-request contamination through the flat batch), early stopping on
+`eos_token_id`, and a tight-block-pool run that forces a real preemption
+mid-generation and still checks out against the reference. **Written and
+statically reviewed on a machine without CUDA/Triton at all (this repo's own
+`triton` has no macOS wheel, so even import-checking these files locally
+isn't possible here) — not yet run for real; that verification is the next
+step on the L40S**, same as this file's other CUDA-only pieces.
+
 ## CI
 
 `.github/workflows/kernels-ci.yml` now also runs `model/tests/` (renamed
@@ -155,3 +209,16 @@ relies on.
   `--batch-size`, `--num-steps`).
 - `cuda_graph_decode_results.json` — raw per-step latencies from the
   `--n-layers 1` run above.
+- `kv_cache.py` — `PagedKVCache`, the physical per-layer K/V GPU buffers
+  behind `engine/block_manager.py`'s block ids.
+- `tests/test_kv_cache.py` — write/read round-trip, cross-request, and
+  cross-layer isolation tests.
+- `model_runner.py` — `ModelRunner`, the incremental KV-cache-backed
+  forward pass wired to `engine/scheduler.py`'s `SchedulerOutput`.
+- `tests/test_model_runner.py` — incremental-vs-dense-reference correctness,
+  including mixed prefill+decode batches.
+- `llm_engine.py` — `LLMEngine`, the `add_request`/`step`/`generate` loop
+  tying the scheduler, allocator, and model runner together end to end.
+- `tests/test_llm_engine.py` — full `generate()` correctness, concurrency
+  isolation, eos stopping, and preemption-under-pressure, all checked
+  against the dense reference.

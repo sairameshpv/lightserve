@@ -133,26 +133,42 @@ step.
 
 ## What's not wired up
 
-This package is scheduling and block-accounting logic only -- not a running
-engine. Specifically absent:
+This package is scheduling and block-accounting logic only -- pairing it
+with an actual GPU forward pass is `model/`'s job, not this package's (see
+model/README.md's "Model runner" section for what's wired up there and how).
+Specifically:
 
-- **No model runner.** Nothing here calls into `model/minimal_llama.py`'s
-  forward pass or turns a `SchedulerOutput` into an actual GPU forward call.
-  `Scheduler` decides *what* should run; nothing yet makes it run.
-- **No decode-shaped attention kernel.** `kernels/flash_attention.py`'s
-  `flash_attention_forward` is prefill-shaped only (`Nq == Nkv`, dense, no
-  block table). Steady-state decode needs `Nq == 1` against a *paged* `Nkv`
-  -- gathering K/V across a request's `block_table` -- and no kernel in this
-  repo implements that yet. `Request.is_prefill()`'s docstring flags exactly
-  this gap.
-- **No physical KV-cache buffers.** `BlockManager` only tracks which integer
-  block ids are free vs. owned by which request; the actual GPU memory a
-  block id refers to (shape: `block_size * 2 (K and V) * n_layers *
-  n_kv_heads * head_dim * dtype_bytes` per block) is deployment-time
-  arithmetic that belongs next to whatever loads the real model shape
-  (`model/minimal_llama.py`'s `LlamaConfig`, `kernels/flash_attention.py`'s
-  `D`), not hardcoded in this CPU-only package. `CacheConfig.num_gpu_blocks`
-  is a plain int this package treats as given.
+- **Model runner: now wired, in `model/`, not here.**
+  `model/model_runner.py`'s `ModelRunner.execute_model` turns a
+  `SchedulerOutput` into a real forward pass, and `model/llm_engine.py`'s
+  `LLMEngine` drives `Scheduler.schedule() -> execute_model() ->
+  free_finished_requests()` in a loop for actual end-to-end generation. It
+  lives under `model/`, not `engine/`, because it needs torch -- this
+  package's own modules are explicit about staying torch-free (see e.g.
+  `request.py`'s docstring) so their tests run without CUDA.
+- **No *dedicated* decode-shaped attention kernel -- worked around, not
+  solved.** `kernels/flash_attention.py`'s `flash_attention_forward` is
+  still prefill-shaped only (`q.shape == k.shape == v.shape` asserted, no
+  block table). `ModelRunner` doesn't relax that: it pads a decode step's
+  single real query row up to the cached K/V's length with dummy rows,
+  reusing `causal=True` unmodified (see `model_runner.py`'s module
+  docstring for the padding trick and its correctness argument). That makes
+  decode correct and real, but not `O(1)`-per-step -- it costs `O(seq_len)`
+  attention (same "recompute instead of incrementally extend" trade-off
+  `model/cuda_graph_decode.py` already makes, for the identical reason). A
+  real `Nq == 1`-against-*paged*-`Nkv` kernel (gathering block-table K/V
+  *inside* the kernel, across the whole batch at once) is the actual
+  follow-up this gap still points at -- `Request.is_prefill()`'s docstring
+  flags the same gap.
+- **Physical KV-cache buffers: now real, in `model/kv_cache.py`.**
+  `BlockManager` still only tracks which integer block ids are free vs.
+  owned by which request (unchanged, and still not this package's job); the
+  actual GPU memory each block id refers to is `model/kv_cache.py`'s
+  `PagedKVCache` -- one `[num_gpu_blocks, block_size, n_heads, head_dim]`
+  tensor per layer per K/V, sized from `CacheConfig` and
+  `model/minimal_llama.py`'s `LlamaConfig` (`kernels/flash_attention.py`'s
+  `D` is that `head_dim`). Same plain-MHA assumption as `minimal_llama.py`
+  throughout: no separate KV-head count, no GQA.
 - **Synchronous scheduling.** `Scheduler.schedule()` both decides the batch
   *and* immediately advances `Request.num_computed_tokens` / the block
   tables for it, as if the model runner is guaranteed to honor exactly that
@@ -160,8 +176,11 @@ engine. Specifically absent:
   run) and a separate `update_from_output(model_runner_output)` call after
   the forward pass actually completes -- what lets it pipeline scheduling
   for step N+1 while step N's forward pass is still running on the GPU
-  (async scheduling). Wiring a real model runner is the natural point to
-  split those apart; premature before that exists.
+  (async scheduling). `LLMEngine.step()` now exists (a real model runner to
+  split against) but still calls `execute_model()` synchronously right
+  after `schedule()`, same as this bullet always described -- splitting
+  scheduling from completion the way async scheduling needs remains a real
+  follow-up, just no longer blocked on "no model runner to split against."
 
 ## Non-goals (cut for scope, not oversights)
 
