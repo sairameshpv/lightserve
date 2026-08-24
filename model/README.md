@@ -187,6 +187,14 @@ statically reviewed on a machine without CUDA/Triton at all (this repo's own
 isn't possible here) — not yet run for real; that verification is the next
 step on the L40S**, same as this file's other CUDA-only pieces.
 
+`LLMEngine` itself is driven directly (`add_request`/`step`/`generate`) by
+whatever embeds it in-process. An HTTP front end sitting on top of it —
+OpenAI-compatible `POST /v1/completions`, streaming, request queuing,
+timeout handling — is `server/README.md`'s job, not this file's; see that
+package for how it wraps `LLMEngine.step()`'s synchronous, GPU-bound loop
+behind a background thread so FastAPI's async request handlers never block
+on it directly.
+
 ## CI
 
 `.github/workflows/kernels-ci.yml` now also runs `model/tests/` (renamed
@@ -195,7 +203,8 @@ GPU, so `requires_cuda` cases are skipped, this job catches import errors
 and CPU-runnable validation only" story as `kernels/README.md`'s CI
 section. `model/minimal_llama.py` imports straight from `kernels/`, so it
 exercises the same CPU-only-triton-import path `kernels/tests` already
-relies on.
+relies on. The same workflow also runs `server/tests/` — those need none of
+this file's CUDA caveats at all, see `server/README.md`.
 
 ## Files
 

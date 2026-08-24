@@ -6,11 +6,13 @@ on:
     paths:
       - "kernels/**"
       - "model/**"
+      - "server/**"
       - ".github/workflows/kernels-ci.yml"
   pull_request:
     paths:
       - "kernels/**"
       - "model/**"
+      - "server/**"
       - ".github/workflows/kernels-ci.yml"
 
 jobs:
@@ -23,6 +25,11 @@ jobs:
     # exercises the same CPU-only-triton-import path kernels/tests already
     # relies on. Full correctness (allclose vs the PyTorch reference) is
     # verified on a real L40S; see kernels/README.md.
+    #
+    # server/tests/ needs none of that -- it runs against FakeEngine (see
+    # server/tests/fake_engine.py), never importing model/ or kernels/ at
+    # all, so it's real, full-coverage CI, not skip-gated -- see
+    # server/README.md.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +41,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install triton pytest
+          pip install triton pytest fastapi uvicorn httpx
 
-      - name: Run kernel and model tests
-        run: pytest kernels/tests/ model/tests/ -v
+      - name: Run kernel, model, and server tests
+        run: pytest kernels/tests/ model/tests/ server/tests/ -v
