@@ -245,5 +245,62 @@ nebius compute instance delete --id <builder-instance-id>
 # apt-install block entirely when booting from the golden snapshot.
 
 ---------------------------------------------------------------------------
+12. First real (CUDA/Triton) verification of the whole lightserve repo,
+    plus lightserve vs vLLM vs SGLang Locust benchmark
+---------------------------------------------------------------------------
+# 2026-08-25: started vllm-node-0 (from the golden snapshot -- no install
+# wait), cloned lightserve fresh, python3 -m venv .venv.
+#
+# `pip install torch` alone pulled a cu130 wheel incompatible with this
+# box's driver (570.211.01, CUDA 12.8) -- RuntimeError on
+# torch.cuda.get_device_name. Fixed with:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+# Also needed `sudo apt-get install -y python3.12-dev` -- triton's
+# autotuner JIT-compiles a small C extension per shape and needs Python.h,
+# which the base image doesn't ship.
+#
+# Full real-CUDA test results (first time ever, previously only
+# statically reviewed -- see kernels/, model/, server/ READMEs):
+#   kernels/tests/  -- 120 passed (flash attention fwd+bwd, tiled matmul,
+#                       fused rmsnorm, fused bias-relu, all vs. real
+#                       cuBLAS/SDPA references)
+#   model/tests/    -- 27 passed, including LLMEngine.generate() under
+#                       real preemption pressure, matching the dense
+#                       reference exactly
+#   server/tests/   -- 75 passed, MINUS one real bug found and fixed:
+#                       TestDisconnect::test_client_disconnect_aborts_the_request
+#                       relied on starlette.testclient.TestClient
+#                       propagating a real ASGI http.disconnect on an
+#                       early-closed stream -- confirmed (via a real
+#                       uvicorn server + curl -N ... | head -n1) that a
+#                       REAL client disconnect is detected and aborted
+#                       within one poll interval; TestClient's simulated
+#                       transport just never surfaces it. Test rewritten
+#                       to run a real uvicorn server on a real loopback
+#                       socket instead of TestClient -- see
+#                       server/tests/test_app.py's _RealServer.
+#
+# Then `python -m server` with the real (32-layer) llama3_8b_shape() --
+# real end-to-end generation confirmed over curl, streaming and
+# non-streaming, deterministic (same output for same input, greedy
+# sampling). Locust benchmark (10/30/50 concurrent users, real vLLM +
+# real SGLang, both serving the real meta-llama/Meta-Llama-3-8B-Instruct
+# checkpoint) run and committed -- see benchmarks/README.md's "Results"
+# section for the numbers and analysis. SGLang wasn't previously set up
+# on this box; pulled `lmsysorg/sglang:latest` (32.4GB) and launched it
+# reusing the same mounted /root/.cache/huggingface (no re-download of
+# the 15GB checkpoint):
+#   docker run -d --name sglang-server --gpus all --shm-size 32g \
+#     -v /root/.cache/huggingface:/root/.cache/huggingface \
+#     --env HF_TOKEN=$HF_TOKEN --env HUGGING_FACE_HUB_TOKEN=$HF_TOKEN \
+#     -p 30000:30000 --ipc=host \
+#     lmsysorg/sglang:latest \
+#     python3 -m sglang.launch_server --model-path meta-llama/Meta-Llama-3-8B-Instruct --host 0.0.0.0 --port 30000
+#
+# All three servers/containers stopped and the instance itself stopped
+# (nebius compute instance stop) at the end of the session -- billing
+# back down to disk-only (~$0.004/hr, see step 11's cost note).
+
+---------------------------------------------------------------------------
 (further commands/steps will be appended below as generated)
 ---------------------------------------------------------------------------

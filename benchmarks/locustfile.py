@@ -1,36 +1,40 @@
 """Locust load test for an OpenAI-compatible POST /v1/completions endpoint
--- points at either lightserve's own server (server/app.py) or a real vLLM
-server (see nebius_setup_commands.txt's `docker run vllm/vllm-openai`
-command) with the same task shape, so a side-by-side comparison at a given
+-- points at lightserve's own server (server/app.py), a real vLLM server
+(see nebius_setup_commands.txt's `docker run vllm/vllm-openai` command), or
+a real SGLang server (see benchmarks/README.md's "Running it yourself"),
+with the same task shape, so a side-by-side comparison at a given
 concurrency level is an apples-to-apples "same request pattern, same
-hardware, different engine" comparison.
+hardware, different engine" comparison. vLLM and SGLang both speak the same
+text-in/text-out OpenAI completions shape, so `--target vllm` covers both --
+see below.
 
-Usage -- headless, at the two concurrency levels this benchmark cares
-about (run each --target against its own server, one at a time; both
-listen on :8000 by convention -- see nebius_setup_commands.txt and
-server/README.md's "Running it" section):
+Usage -- headless, at the concurrency levels this benchmark cares about
+(run each target against its own server, one at a time, each on its own
+port -- see benchmarks/README.md's "Running it yourself" for all three):
+
+    locust -f benchmarks/locustfile.py --host http://localhost:8001 \\
+        --headless --users 10 --spawn-rate 10 --run-time 120s \\
+        --target lightserve --csv benchmarks/locust_results/lightserve_10
 
     locust -f benchmarks/locustfile.py --host http://localhost:8000 \\
-        --headless --users 10 --spawn-rate 10 --run-time 2m \\
-        --target lightserve --csv benchmarks/locust_lightserve_10
-
-    locust -f benchmarks/locustfile.py --host http://localhost:8000 \\
-        --headless --users 50 --spawn-rate 50 --run-time 2m \\
-        --target vllm --csv benchmarks/locust_vllm_50
+        --headless --users 50 --spawn-rate 50 --run-time 120s \\
+        --target vllm --model meta-llama/Meta-Llama-3-8B-Instruct \\
+        --csv benchmarks/locust_results/vllm_50
 
 Or interactively: drop --headless/--users/--spawn-rate/--run-time and open
 http://localhost:8089 to drive it from the web UI instead (--target and
 --model still need to be passed on the command line -- Locust exposes
 custom CLI args, not custom UI fields).
 
-See benchmarks/README.md for the full run matrix (10 and 50 concurrent
-users, both targets) and how to read the resulting --csv files.
+See benchmarks/README.md for the real run matrix and results (10/30/50
+concurrent users, all three engines) and how to read the resulting --csv
+files.
 
-Why --target exists at all, and why there are two prompt files: the two
-servers don't accept the same prompt shape. vLLM has a real tokenizer and
-takes text (`benchmarks/baseline_prompts.jsonl`); lightserve has none (see
-server/schemas.py's module docstring) and takes token ids
-(`benchmarks/token_prompts.jsonl`, generate_token_prompts.py's
+Why --target exists at all, and why there are two prompt files: lightserve
+and vLLM/SGLang don't accept the same prompt shape. vLLM and SGLang both
+have a real tokenizer and take text (`benchmarks/baseline_prompts.jsonl`);
+lightserve has none (see server/schemas.py's module docstring) and takes
+token ids (`benchmarks/token_prompts.jsonl`, generate_token_prompts.py's
 length-matched companion to the same file). --target picks which one to
 load and how to shape the request body -- everything else about the task
 (closed-loop request pattern, streaming handling, pass/fail rule) is
