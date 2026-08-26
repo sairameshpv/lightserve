@@ -67,8 +67,11 @@ class PagedKVCache:
         physical blocks its block_table already reserves, at logical
         positions [start, start + k.shape[0]). k, v: [num_new_tokens,
         n_heads, head_dim]. `start` is the *sequence* position of the first
-        new token -- 0 for a fresh/resumed full prefill, num_computed_tokens
-        (pre-this-step) for a steady-state decode step -- the caller
+        new token -- 0 for a fresh/resumed prefill's first chunk (the whole
+        prompt in one step, or just its first slice under chunked prefill,
+        see engine/README.md), num_computed_tokens (pre-this-step) for a
+        steady-state decode step or a later chunked-prefill continuation --
+        the caller
         (model_runner.py) derives it from ScheduledRequest.num_scheduled_tokens
         since Scheduler.schedule() has already advanced
         request.num_computed_tokens to the post-step value by the time this
