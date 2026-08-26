@@ -5,9 +5,11 @@ vllm/v1/core/sched/interface.py, concretely implemented by `Scheduler` in
 vllm/v1/core/sched/scheduler.py, delegating block accounting to a
 KVCacheManager/BlockPool) at a scope that fits this repo: one GPU, no
 speculative decoding, no multimodal encoder cache, no distributed KV
-connector, no chunked prefill, no priority scheduling, no prefix caching --
-see block_manager.py's module docstring and engine/README.md for the full
-list of what's cut and why.
+connector, no priority scheduling, no prefix caching -- see
+block_manager.py's module docstring and engine/README.md's "Non-goals" for
+the full list of what's cut and why. Chunked prefill *is* implemented (see
+"Chunked prefill" below and engine/README.md) -- SchedulerConfig's own
+max_num_batched_tokens doubles as the chunk size, no separate knob.
 
 Simplification vLLM itself doesn't make, flagged here rather than left
 implicit: this Scheduler is synchronous. schedule() both decides the batch
@@ -21,6 +23,21 @@ scheduling). Wiring a real model runner (this repo's kernels don't yet
 support the Nq=1-against-paged-Nkv decode shape that would call into -- see
 README.md's "What's not wired up") is the natural point to split those
 apart; premature here.
+
+Chunked prefill: `_schedule_waiting` and `_schedule_running` both schedule
+`min(request.get_num_new_tokens(), token_budget)` tokens for a request with
+uncomputed prompt tokens, not `get_num_new_tokens()` outright -- a prompt
+longer than what's left of a step's budget gets however much fits *this*
+step, and picks up the rest on a later call once it re-enters
+`_schedule_running` still mid-prefill (`request.is_prefill()` stays `True`
+until every prompt token is computed). Block allocation is unaffected: a
+request's full block table -- sized off `request.get_len()`, prompt+output
+-- is still reserved by `BlockManager.allocate` in one shot at first
+admission (see `_schedule_waiting`), same as before this feature existed.
+Chunking only throttles *compute* (how many tokens one step's forward pass
+covers), not *memory* -- so a request that can't get all its blocks
+reserved up front still doesn't get admitted at all, chunked or not (see
+`test_fifo_head_of_line_blocking`).
 """
 from collections import deque
 from dataclasses import dataclass, field
@@ -33,11 +50,17 @@ from engine.request import Request, RequestStatus
 @dataclass
 class ScheduledRequest:
     """One request's slice of a SchedulerOutput: which request, and how many
-    of its tokens get KV computed this step. num_scheduled_tokens > 1 means
-    this is a prefill-shaped step (request.is_prefill() was True going in);
-    == 1 means a steady-state decode step -- the distinction a future
-    model-runner needs to pick which of this repo's attention-kernel call
-    shapes applies (see engine/README.md).
+    of its tokens get KV computed this step. num_scheduled_tokens > 1
+    usually means this is a prefill-shaped step (request.is_prefill() was
+    True going in) -- either a fresh admission or a chunked-prefill
+    continuation (see this module's docstring); == 1 usually means a
+    steady-state decode step. "Usually", not "always", now that chunked
+    prefill exists: a prompt admitted right at the tail end of a step's
+    token budget can get a 1-token first chunk and still be mid-prefill --
+    request.is_prefill() (checked before schedule() ran) is the precise
+    signal a model-runner needs to pick which of this repo's attention-
+    kernel call shapes applies (see engine/README.md), not
+    num_scheduled_tokens alone.
     """
     request: Request
     num_scheduled_tokens: int
@@ -48,11 +71,17 @@ class SchedulerOutput:
     """What one schedule() call decided.
 
     scheduled_new: requests admitted from `waiting` this step -- their first
-    (or, after a preemption, first-since-being-requeued) scheduled step, a
-    full-sequence prefill.
+    (or, after a preemption, first-since-being-requeued) scheduled step. Not
+    necessarily a full-sequence prefill in one shot any more: chunked
+    prefill (see this module's docstring) may only cover part of the
+    prompt if the step's token budget is tight, leaving the request
+    `is_prefill() == True` and due to continue via scheduled_running on a
+    later step.
     scheduled_running: requests that were already RUNNING and got scheduled
-    again this step (steady-state decode, almost always num_scheduled_tokens
-    == 1).
+    again this step -- steady-state decode (num_scheduled_tokens == 1) most
+    of the time, or a chunked-prefill continuation (num_scheduled_tokens
+    > 1, request.is_prefill() still True) for a request whose prompt didn't
+    fully fit an earlier step's budget.
     preempted: requests bumped from `running` back to `waiting` this step to
     free blocks for someone else. The caller doesn't need to *do* anything
     about these beyond not expecting output from them this step -- Scheduler
@@ -138,13 +167,17 @@ class Scheduler:
                 # skip it this step.
                 scheduled.append(request)
                 continue
-            if num_new > token_budget:
-                # Out of token budget for this step, not out of blocks --
-                # leave it RUNNING, retry next schedule() call. Only matters
-                # for a request still mid-prefill re-entering this path;
-                # steady-state decode's num_new is always 1.
+            if token_budget <= 0:
+                # Genuinely nothing left to give it this step -- leave it
+                # RUNNING, retry next schedule() call. Steady-state decode's
+                # num_new is always 1, so this only bites a request still
+                # mid-prefill (chunked or not) re-entering this path.
                 scheduled.append(request)
                 continue
+            # Chunked prefill: take whatever's left of this step's budget,
+            # not necessarily all of num_new -- see this module's docstring.
+            # For steady-state decode num_new == 1 == chunk always.
+            chunk = min(num_new, token_budget)
             while not self.block_manager.can_append_slot(request):
                 if pending:
                     self._preempt(pending.pop(), output)
@@ -153,9 +186,12 @@ class Scheduler:
                     break
             else:
                 self.block_manager.append_slot(request)
-                request.num_computed_tokens = request.get_len()
-                output.scheduled_running.append(ScheduledRequest(request, num_new))
-                token_budget -= num_new
+                # += chunk, not = request.get_len(): during a chunked-prefill
+                # continuation get_len() is the *whole* prompt length (no
+                # output tokens yet), not this step's partial progress.
+                request.num_computed_tokens += chunk
+                output.scheduled_running.append(ScheduledRequest(request, chunk))
+                token_budget -= chunk
                 scheduled.append(request)
         self.running = scheduled
         return token_budget
@@ -168,19 +204,30 @@ class Scheduler:
             fits_seq_budget = len(self.running) < self.scheduler_config.max_num_seqs
             if (
                 not fits_seq_budget
-                or num_new > token_budget
+                or token_budget <= 0
                 or not self.block_manager.can_allocate(request)
             ):
                 still_waiting.append(request)
-                # FIFO: if the head of the line can't be admitted, nothing
-                # behind it should jump ahead of it either -- stop scanning
-                # rather than admitting a smaller request out of order.
+                # FIFO: if the head of the line can't be admitted at all --
+                # no seq slot, no budget left, or (unaffected by chunking,
+                # see this module's docstring) not enough blocks for the
+                # whole prompt -- nothing behind it should jump ahead of it
+                # either. Stop scanning rather than admitting a smaller
+                # request out of order. A request that merely doesn't fit
+                # the *remaining* budget in full isn't blocked any more --
+                # see the chunked-prefill admission below.
                 break
             self.block_manager.allocate(request)
             request.status = RequestStatus.RUNNING
-            request.num_computed_tokens = request.get_len()
-            output.scheduled_new.append(ScheduledRequest(request, num_new))
-            token_budget -= num_new
+            # Chunked prefill: admit with whatever's left of this step's
+            # budget, not necessarily the whole prompt -- blocks are still
+            # reserved for the full prompt above, so a later step's
+            # _schedule_running just continues where this leaves off (see
+            # this module's docstring).
+            chunk = min(num_new, token_budget)
+            request.num_computed_tokens += chunk
+            output.scheduled_new.append(ScheduledRequest(request, chunk))
+            token_budget -= chunk
             self.running.append(request)
         still_waiting.extend(self.waiting)  # whatever wasn't popped before the break
         self.waiting = still_waiting
