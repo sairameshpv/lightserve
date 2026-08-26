@@ -53,11 +53,17 @@ class SchedulerConfig:
     max_num_batched_tokens: token budget per schedule() call. Caps how many
     prefill tokens (or, in this design's one-decode-token-per-running-
     request model, prefill tokens plus one per already-running request) one
-    step processes -- the mechanism a real engine uses to keep one huge
-    prefill from starving every other request's decode latency for a whole
-    step. Chunked prefill (splitting one large prompt's prefill across
-    multiple steps so it doesn't have to fit in one token budget) is a
-    documented non-goal here, see engine/README.md.
+    step processes -- the mechanism that keeps one huge prefill from
+    starving every other request's decode latency for a whole step.
+
+    This is also the chunk size: a prompt longer than what's left of this
+    budget on the step it's admitted (or resumed) doesn't wait for a step
+    that can fit it whole -- Scheduler schedules as many of its tokens as
+    fit this step and picks up the rest on a later one (see
+    engine/README.md's "Chunked prefill" section). Set this equal to (or
+    above) the longest prompt you expect to admit if you want every prefill
+    to still land in a single step, matching this design's pre-chunking
+    behavior.
     """
     max_num_seqs: int = 256
     max_num_batched_tokens: int = 2048
