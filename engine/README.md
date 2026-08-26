@@ -34,9 +34,13 @@ RUNNING --Request.maybe_finish() sees a stop condition--> FINISHED_STOPPED
 - **WAITING → RUNNING** is admission: `Scheduler._schedule_waiting` pops
   from the FIFO `waiting` deque, checks `BlockManager.can_allocate`, and if
   it fits, allocates blocks for the whole prompt and marks the request
-  RUNNING. FIFO means if the head of the queue can't be admitted, nothing
-  behind it jumps ahead either -- `_schedule_waiting` stops scanning rather
-  than admitting a smaller request out of order.
+  RUNNING -- computing that prompt's tokens may still take several more
+  steps if it doesn't fit this step's token budget in one go (see "Chunked
+  prefill" below); the block allocation itself always happens in one shot,
+  right here. FIFO means if the head of the queue can't be admitted at all
+  (no free seq slot, no budget left, or not enough blocks), nothing behind
+  it jumps ahead either -- `_schedule_waiting` stops scanning rather than
+  admitting a smaller request out of order.
 - **RUNNING → PREEMPTED → WAITING** is recompute-based preemption
   (`Scheduler._preempt`, see "Preemption" below). The request keeps its
   token ids (`output_token_ids` isn't touched) but loses its KV cache: every
@@ -69,23 +73,57 @@ processing model output.
    considered, in `self.running`'s existing order (arrival order). Each
    needs `request.get_num_new_tokens()` new tokens computed -- almost
    always 1 (steady-state decode); more only if it's still mid-prefill and
-   re-entering this path after a partial admission. If a request's next
-   token doesn't fit in its last block, `BlockManager.append_slot` needs one
-   more free block; if none is free, something gets preempted (see below).
+   re-entering this path after a partial admission or an earlier chunked
+   step (see "Chunked prefill" below). If a request's next token doesn't
+   fit in its last block, `BlockManager.append_slot` needs one more free
+   block; if none is free, something gets preempted (see below).
 2. **Runs `_schedule_waiting` only if nothing was preempted this step.**
    Same rule vLLM's `Scheduler` follows: a step that just freed blocks
    under memory pressure shouldn't immediately hand them to a brand-new
    admission and risk preempting it right back next step (thrashing).
-3. Returns a `SchedulerOutput`: `scheduled_new` (fresh admissions, full
-   prefill), `scheduled_running` (steady-state decode, or resumed prefill),
-   and `preempted` (bumped back to `waiting`; the caller doesn't need to do
-   anything about these beyond not expecting output from them this step --
-   `Scheduler` has already freed their blocks).
+3. Returns a `SchedulerOutput`: `scheduled_new` (fresh admissions -- the
+   whole prompt if it fits this step's budget, otherwise just the first
+   chunk), `scheduled_running` (steady-state decode, a resumed prefill
+   after preemption, or a chunked-prefill continuation), and `preempted`
+   (bumped back to `waiting`; the caller doesn't need to do anything about
+   these beyond not expecting output from them this step -- `Scheduler` has
+   already freed their blocks).
 
-`ScheduledRequest.num_scheduled_tokens > 1` means a prefill-shaped step
-(`request.is_prefill()` was `True` going in); `== 1` means steady-state
-decode -- the distinction a model-runner needs to pick which attention-
-kernel call shape applies (see "What's not wired up").
+`ScheduledRequest.num_scheduled_tokens > 1` usually means a prefill-shaped
+step (`request.is_prefill()` was `True` going in); `== 1` usually means
+steady-state decode. Not a strict rule any more with chunked prefill in the
+picture (a request admitted right at a step's budget limit can get a
+1-token *first* chunk and still be mid-prefill) -- `request.is_prefill()`,
+checked before `schedule()` ran, is the precise signal a model-runner needs
+to pick which attention-kernel call shape applies (see "What's not wired
+up").
+
+### Chunked prefill
+
+A prompt whose full `get_num_new_tokens()` doesn't fit what's left of a
+step's `token_budget` isn't blocked until a step is free enough for it
+outright -- both `_schedule_running` and `_schedule_waiting` schedule
+`min(get_num_new_tokens(), token_budget)` tokens instead, whatever fits
+*this* step, and the rest rides `request.is_prefill()` staying `True` to
+pick the prompt back up on a later step (via `_schedule_running`, same path
+a resumed-after-preemption prefill already used). A 5000-token prompt under
+a 512-token budget takes ~10 steps to finish prefilling, interleaved with
+every other request's own decode/prefill steps along the way, rather than
+either monopolizing one giant step or blocking admission entirely until a
+step has 5000 tokens of budget free.
+
+This is purely a *compute*-budget throttle, not a memory one: block
+allocation is untouched by it. `_schedule_waiting`'s `BlockManager.allocate`
+still reserves a request's full block table (`request.get_len()`'s worth,
+prompt + eventual output) in one shot at first admission, whether that
+admission's first scheduled chunk is the whole prompt or a fraction of it
+-- so a request that can't get all its blocks reserved up front still isn't
+admitted at all, chunked or not (`test_fifo_head_of_line_blocking` covers
+this: two requests where the memory-limited one can't fit even one block's
+worth short, chunking doesn't change that). `SchedulerConfig.max_num_batched_tokens`
+doubles as the chunk size -- no separate knob; set it to (or above) the
+longest prompt you expect if you want every prefill to land in a single
+step, matching the pre-chunking behavior.
 
 ### Preemption
 
@@ -201,8 +239,6 @@ Each of these is a real vLLM feature, deliberately left out:
 - **Swap-to-CPU preemption** (vLLM's `swap_out`/`swap_in`): `scheduler.py`
   only does recompute-based preemption (free the blocks, redo the prefix as
   a fresh prefill later).
-- **Chunked prefill**: splitting one large prompt's prefill across multiple
-  steps so it doesn't have to fit in one `max_num_batched_tokens` budget.
 - **Priority scheduling**: vLLM supports a `priority` policy alongside FIFO;
   `waiting` here is strictly FIFO (preempted requests requeued at the
   front).
