@@ -179,10 +179,15 @@ class ModelRunner:
 
             q_new = q[fs:fe]  # [L, n_heads, head_dim] -- this step's real query rows
             if L < se:
-                # Decode (or any step where L < se): pad the front with
-                # dummy rows so Q's length matches K/V's -- see module
-                # docstring. L == se only for a fresh/resumed full prefill
-                # (ss == 0), where no padding is needed at all.
+                # Decode, or a chunked-prefill continuation (any step where
+                # this request already has computed tokens behind it, ss >
+                # 0): pad the front with dummy rows so Q's length matches
+                # K/V's -- see module docstring. L == se only when ss == 0,
+                # i.e. this step covers the request's sequence from position
+                # 0 -- a fresh/resumed prefill's first chunk, whether that
+                # chunk is the whole prompt or (chunked prefill, see
+                # engine/README.md) just the first slice of it -- where no
+                # padding is needed at all.
                 pad = q_new.new_zeros(se - L, *q_new.shape[1:])
                 q_full = torch.cat([pad, q_new], dim=0)
             else:
