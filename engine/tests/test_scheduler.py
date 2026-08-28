@@ -1,7 +1,8 @@
 """Correctness tests for engine/scheduler.py's continuous-batching
-schedule() loop: admission, steady-state decode, preemption-under-pressure,
-and teardown. Pure Python, no torch/CUDA -- see test_block_manager.py's
-module docstring on why these run for real on CI, not just import-checked.
+schedule() loop: admission, steady-state decode, chunked prefill,
+preemption-under-pressure, and teardown. Pure Python, no torch/CUDA -- see
+test_block_manager.py's module docstring on why these run for real on CI,
+not just import-checked.
 """
 from engine.config import CacheConfig, SchedulerConfig
 from engine.request import Request, RequestStatus, SamplingParams
@@ -76,15 +77,40 @@ class TestAdmission:
         assert [sr.request.request_id for sr in output.scheduled_new] == ["a"]
         assert list(sched.waiting) == [b]
 
-    def test_admission_blocked_by_token_budget(self):
+    def test_admission_gets_a_partial_chunk_when_budget_is_tight(self):
+        # Chunked prefill: `b` doesn't wait for a step with 8 free tokens --
+        # it gets whatever's left of this step's budget (2) as a first
+        # chunk, and picks up the other 6 on a later step (see
+        # TestChunkedPrefill for the continuation itself).
         sched = make_scheduler(max_num_batched_tokens=10)
         a = make_request("a", prompt_len=8)
         b = make_request("b", prompt_len=8)  # 8+8=16 > budget of 10
         sched.add_request(a)
         sched.add_request(b)
         output = sched.schedule()
+        assert [sr.request.request_id for sr in output.scheduled_new] == ["a", "b"]
+        assert output.scheduled_new[0].num_scheduled_tokens == 8
+        assert output.scheduled_new[1].num_scheduled_tokens == 2  # only 2 left of budget
+        assert b.status == RequestStatus.RUNNING
+        assert b.num_computed_tokens == 2
+        assert b.is_prefill()
+        assert b in sched.running
+        assert list(sched.waiting) == []
+
+    def test_admission_blocked_outright_once_budget_is_fully_exhausted(self):
+        # Budget fits `a` exactly with nothing left over -- 0 tokens isn't
+        # a valid chunk, so `b` gets no chunk at all and stays fully in
+        # `waiting`, same as the pre-chunked-prefill all-or-nothing case.
+        sched = make_scheduler(max_num_batched_tokens=8)
+        a = make_request("a", prompt_len=8)
+        b = make_request("b", prompt_len=8)
+        sched.add_request(a)
+        sched.add_request(b)
+        output = sched.schedule()
         assert [sr.request.request_id for sr in output.scheduled_new] == ["a"]
+        assert not a.is_prefill()
         assert list(sched.waiting) == [b]
+        assert b.num_computed_tokens == 0
 
     def test_fifo_head_of_line_blocking(self):
         """A small request behind a too-big one does NOT jump ahead of it --
@@ -168,8 +194,10 @@ class TestMixedBatching:
 
     def test_token_budget_is_shared_between_running_and_waiting_in_one_step(self):
         # Running decode's 1 token is deducted from the budget *before*
-        # _schedule_waiting sees what's left -- a tight budget must block
-        # the new admission even though it would fit the raw config max.
+        # _schedule_waiting sees what's left -- a tight budget gives the
+        # new admission a smaller chunk than its full prompt (chunked
+        # prefill), not the whole thing, even though the raw config max
+        # would've fit it.
         sched = make_scheduler(block_size=4, max_num_batched_tokens=6)
         running_req = make_request("running", prompt_len=4)
         sched.add_request(running_req)
@@ -182,10 +210,14 @@ class TestMixedBatching:
         output = sched.schedule()  # budget 6: 1 for decode, only 5 left for a 6-token prefill
 
         assert len(output.scheduled_running) == 1  # decode still goes through
-        assert output.scheduled_new == []  # prefill didn't fit in what remained
-        assert waiting_req in sched.waiting
+        assert len(output.scheduled_new) == 1
+        assert output.scheduled_new[0].num_scheduled_tokens == 5  # chunked, not blocked
+        assert waiting_req.is_prefill()
+        assert waiting_req in sched.running
+        assert output.total_num_scheduled_tokens == 6
 
-        # One more token of budget (7 total: 1 decode + 6 prefill) admits it.
+        # One more token of budget (7 total: 1 decode + 6 prefill) admits
+        # the whole prompt in a single chunk instead.
         sched2 = make_scheduler(block_size=4, max_num_batched_tokens=7)
         running_req2 = make_request("running2", prompt_len=4)
         sched2.add_request(running_req2)
@@ -197,6 +229,8 @@ class TestMixedBatching:
         output2 = sched2.schedule()
         assert len(output2.scheduled_running) == 1
         assert len(output2.scheduled_new) == 1
+        assert output2.scheduled_new[0].num_scheduled_tokens == 6
+        assert not waiting_req2.is_prefill()
         assert output2.total_num_scheduled_tokens == 7
 
 
@@ -227,14 +261,11 @@ class TestSchedulerOutputProperties:
 
 
 class TestRunningRequestOverBudget:
-    def test_running_request_needing_more_tokens_than_budget_stays_running_untouched(self):
-        # This design has no chunked prefill (see engine/README.md), so a
-        # RUNNING request normally only ever needs exactly 1 new token
-        # (steady-state decode) by the time _schedule_running sees it again.
-        # scheduler.py's comment on this branch flags it as mattering only
-        # for "a request still mid-prefill re-entering this path" -- construct
-        # that state directly rather than waiting on a future chunked-prefill
-        # feature to exercise scheduler.py:141-147's own-budget check.
+    def test_running_request_over_budget_gets_a_partial_chunk(self):
+        # A RUNNING request needing more new tokens than a step's budget
+        # (mid-prefill, chunked or not, re-entering _schedule_running) gets
+        # whatever fits this step rather than being skipped entirely -- see
+        # TestChunkedPrefill for the full multi-step continuation.
         sched = make_scheduler(block_size=4, num_gpu_blocks=10, max_num_batched_tokens=5)
         req = make_request("mid_prefill", prompt_len=10, max_tokens=100)
         sched.block_manager.allocate(req)
@@ -245,11 +276,144 @@ class TestRunningRequestOverBudget:
 
         output = sched.schedule()
 
-        assert output.scheduled_running == []
+        assert len(output.scheduled_running) == 1
+        assert output.scheduled_running[0].request is req
+        assert output.scheduled_running[0].num_scheduled_tokens == 5
         assert output.scheduled_new == []
         assert output.preempted == []
-        assert req in sched.running  # left untouched, retried next schedule() call
-        assert req.num_computed_tokens == 2  # not advanced
+        assert req in sched.running
+        assert req.num_computed_tokens == 7  # advanced by the chunk, not to get_len()
+        assert req.is_prefill()  # 3 tokens still left
+
+    def test_running_request_gets_nothing_once_this_steps_budget_is_already_zero(self):
+        # Distinct from the partial-chunk case above: a request that's
+        # scheduled *after* another running request has already spent the
+        # whole step's budget gets skipped outright (0 isn't a valid
+        # chunk), same as the pre-chunked-prefill "stays running untouched"
+        # behavior for this exact case.
+        sched = make_scheduler(block_size=4, num_gpu_blocks=10, max_num_batched_tokens=1)
+        decoding = make_request("decoding", prompt_len=4, max_tokens=100)
+        sched.block_manager.allocate(decoding)
+        decoding.status = RequestStatus.RUNNING
+        decoding.num_computed_tokens = 4
+        decoding.output_token_ids.append(1)  # needs exactly 1 decode token
+        sched.requests[decoding.request_id] = decoding
+        sched.running.append(decoding)  # processed first -- takes the only token of budget
+
+        mid_prefill = make_request("mid_prefill", prompt_len=10, max_tokens=100)
+        sched.block_manager.allocate(mid_prefill)
+        mid_prefill.status = RequestStatus.RUNNING
+        mid_prefill.num_computed_tokens = 2  # 8 new tokens needed
+        sched.requests[mid_prefill.request_id] = mid_prefill
+        sched.running.append(mid_prefill)  # processed second -- 0 budget left by then
+
+        output = sched.schedule()
+
+        assert [sr.request.request_id for sr in output.scheduled_running] == ["decoding"]
+        assert mid_prefill.num_computed_tokens == 2  # untouched
+        assert mid_prefill in sched.running
+
+
+class TestChunkedPrefill:
+    """A prompt whose full get_num_new_tokens() doesn't fit a step's token
+    budget gets whatever fits this step, not nothing -- see scheduler.py's
+    module docstring and engine/README.md's "Chunked prefill" section.
+    """
+
+    def test_admission_schedules_a_partial_chunk_not_the_whole_prompt(self):
+        sched = make_scheduler(block_size=4, max_num_batched_tokens=5)
+        req = make_request("r0", prompt_len=12)
+        sched.add_request(req)
+
+        output = sched.schedule()
+
+        assert len(output.scheduled_new) == 1
+        assert output.scheduled_new[0].num_scheduled_tokens == 5
+        assert req.num_computed_tokens == 5
+        assert req.status == RequestStatus.RUNNING
+        assert req.is_prefill()  # 7 of 12 tokens still uncomputed
+        assert req in sched.running
+        assert req not in sched.waiting
+        # Blocks are reserved for the *whole* prompt up front, not just
+        # this chunk -- chunking throttles compute, not memory.
+        assert len(sched.block_manager.get_block_table(req)) == 3  # ceil(12/4)
+
+    def test_continuation_resumes_via_schedule_running_next_step(self):
+        sched = make_scheduler(block_size=4, max_num_batched_tokens=5)
+        req = make_request("r0", prompt_len=12)
+        sched.add_request(req)
+        sched.schedule()  # chunk 1: 5/12
+        assert req.num_computed_tokens == 5
+
+        output = sched.schedule()  # chunk 2, via _schedule_running this time
+
+        assert output.scheduled_new == []
+        assert len(output.scheduled_running) == 1
+        assert output.scheduled_running[0].request is req
+        assert output.scheduled_running[0].num_scheduled_tokens == 5
+        assert req.num_computed_tokens == 10
+        assert req.is_prefill()  # 2 tokens still left
+        # Block table untouched by the continuation -- already sized for
+        # the whole prompt at first admission.
+        assert len(sched.block_manager.get_block_table(req)) == 3
+
+    def test_prefill_completes_after_enough_chunked_steps(self):
+        sched = make_scheduler(block_size=4, max_num_batched_tokens=5)
+        req = make_request("r0", prompt_len=12)
+        sched.add_request(req)
+
+        sched.schedule()  # 5/12
+        sched.schedule()  # 10/12
+        output = sched.schedule()  # final 2/12
+
+        assert output.scheduled_running[0].num_scheduled_tokens == 2
+        assert req.num_computed_tokens == 12
+        assert not req.is_prefill()
+
+        # Nothing left to compute -- calling schedule() again before a
+        # model runner appends an output token is a harmless no-op, not an
+        # empty/zero-length scheduled step.
+        output2 = sched.schedule()
+        assert output2.scheduled_running == []
+        assert req in sched.running
+
+    def test_memory_limited_admission_still_blocks_outright_chunking_doesnt_help(self):
+        # Chunking only throttles compute, not memory -- a request that
+        # can't get its *whole* block table reserved up front still isn't
+        # admitted at all, however generous the token budget.
+        sched = make_scheduler(block_size=4, num_gpu_blocks=2, max_num_batched_tokens=2048)
+        req = make_request("r0", prompt_len=12)  # needs 3 blocks, only 2 exist
+        sched.add_request(req)
+
+        output = sched.schedule()
+
+        assert output.scheduled_new == []
+        assert req in sched.waiting
+        assert req.num_computed_tokens == 0
+
+    def test_decode_of_another_running_request_shares_the_same_step_as_a_chunk(self):
+        # Continuous batching under chunked prefill: one step can mix a
+        # chunked-prefill continuation for one request with a plain decode
+        # step for another -- same "whole batch re-decided every step"
+        # behavior TestMixedBatching covers without chunking.
+        sched = make_scheduler(block_size=4, max_num_batched_tokens=6)
+        decoding = make_request("decoding", prompt_len=4)
+        sched.add_request(decoding)
+        sched.schedule()  # admits + fully prefills (4 <= 6)
+        decoding.output_token_ids.append(1)  # now needs 1 decode token
+
+        big = make_request("big", prompt_len=20)
+        sched.add_request(big)
+
+        output = sched.schedule()  # budget 6: 1 for decode, 5 left for big's first chunk
+
+        assert len(output.scheduled_running) == 1
+        assert output.scheduled_running[0].request is decoding
+        assert output.scheduled_running[0].num_scheduled_tokens == 1
+        assert len(output.scheduled_new) == 1
+        assert output.scheduled_new[0].request is big
+        assert output.scheduled_new[0].num_scheduled_tokens == 5
+        assert big.is_prefill()
 
 
 class TestPreemption:
