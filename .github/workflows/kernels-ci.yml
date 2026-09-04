@@ -8,6 +8,7 @@ on:
       - "model/**"
       - "server/**"
       - "engine/**"
+      - "benchmarks/**"
       - ".github/workflows/kernels-ci.yml"
   pull_request:
     paths:
@@ -15,6 +16,7 @@ on:
       - "model/**"
       - "server/**"
       - "engine/**"
+      - "benchmarks/**"
       - ".github/workflows/kernels-ci.yml"
 
 jobs:
@@ -35,6 +37,11 @@ jobs:
     #
     # engine/tests/ is torch-free (see engine/request.py's module
     # docstring), so it's real, full-coverage CI too -- no skip gating.
+    #
+    # benchmarks/tests/ only imports its own torch-free helpers at module
+    # level (e.g. measure_ttft.py's build_workload/summarize_results) --
+    # the actual LLMEngine/torch imports it exercises are local to main(),
+    # so this too collects and runs cleanly with no GPU and no skip gating.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,11 +55,11 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install triton pytest fastapi uvicorn httpx
 
-      - name: Run kernel, model, server, and engine tests
+      - name: Run kernel, model, server, engine, and benchmarks tests
         # `python -m pytest`, not the bare `pytest` console script: this repo
         # has no pyproject.toml/setup.py and no conftest.py, so nothing
         # else puts the repo root on sys.path for `from kernels/model/engine
         # import ...` to resolve -- `-m` does that by inserting CWD, `pytest`
         # alone doesn't (see git history for the ModuleNotFoundError this
         # was hit by).
-        run: python -m pytest kernels/tests/ model/tests/ server/tests/ engine/tests/ -v
+        run: python -m pytest kernels/tests/ model/tests/ server/tests/ engine/tests/ benchmarks/tests/ -v
