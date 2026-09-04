@@ -5,9 +5,11 @@ vllm/v1/core/sched/interface.py, concretely implemented by `Scheduler` in
 vllm/v1/core/sched/scheduler.py, delegating block accounting to a
 KVCacheManager/BlockPool) at a scope that fits this repo: one GPU, no
 speculative decoding, no multimodal encoder cache, no distributed KV
-connector, no priority scheduling, no prefix caching -- see
-block_manager.py's module docstring and engine/README.md's "Non-goals" for
-the full list of what's cut and why. Chunked prefill *is* implemented (see
+connector, no priority scheduling -- see block_manager.py's module
+docstring and engine/README.md's "Non-goals" for the full list of what's
+cut and why. Prefix caching *is* implemented, opt-in via
+CacheConfig.enable_prefix_caching (see block_manager.py's module docstring
+and `_schedule_waiting` below). Chunked prefill *is* implemented (see
 "Chunked prefill" below and engine/README.md) -- SchedulerConfig's own
 max_num_batched_tokens doubles as the chunk size, no separate knob.
 
@@ -33,11 +35,23 @@ step, and picks up the rest on a later call once it re-enters
 until every prompt token is computed). Block allocation is unaffected: a
 request's full block table -- sized off `request.get_len()`, prompt+output
 -- is still reserved by `BlockManager.allocate` in one shot at first
-admission (see `_schedule_waiting`), same as before this feature existed.
-Chunking only throttles *compute* (how many tokens one step's forward pass
-covers), not *memory* -- so a request that can't get all its blocks
-reserved up front still doesn't get admitted at all, chunked or not (see
-`test_fifo_head_of_line_blocking`).
+admission (see `_schedule_waiting`), same as before this feature existed;
+with prefix caching on, some of that table's *entries* may be reused
+physical blocks rather than freshly popped ones, but the table is still
+allocated whole, upfront. Chunking only throttles *compute* (how many
+tokens one step's forward pass covers), not *memory* -- so a request that
+can't get all its blocks reserved up front still doesn't get admitted at
+all, chunked or not (see `test_fifo_head_of_line_blocking`).
+
+Prefix caching plugs into this same admission path with no separate
+scheduling logic of its own: `_schedule_waiting` looks up a match before
+allocating, seeds `num_computed_tokens` from it, and the chunked-prefill
+math above (`get_num_new_tokens()`, already chunk-aware) naturally
+schedules only the unmatched remainder -- a full cache hit just looks like
+a request that arrives with most of its prefill already done. See
+block_manager.py's module docstring for where the RadixTrie itself lives
+and model/llm_engine.py's step() for where matched blocks get registered
+back into it once real compute has happened.
 """
 from collections import deque
 from dataclasses import dataclass, field
@@ -115,6 +129,7 @@ class Scheduler:
             block_size=cache_config.block_size,
             num_gpu_blocks=cache_config.num_gpu_blocks,
             watermark_blocks=cache_config.watermark_blocks,
+            enable_prefix_caching=cache_config.enable_prefix_caching,
         )
         self.waiting: deque = deque()
         self.running: list = []
@@ -200,12 +215,16 @@ class Scheduler:
         still_waiting: deque = deque()
         while self.waiting:
             request = self.waiting.popleft()
-            num_new = request.get_num_new_tokens()  # full sequence-so-far on (re-)admission
+            # Side-effect-free peek (see BlockManager.match_prefix's
+            # docstring) -- safe to compute even if this request ends up not
+            # admitted this step (the `break` below), since nothing is
+            # committed (ref counts bumped, stats recorded) until allocate().
+            match = self.block_manager.match_prefix(request.prompt_token_ids)
             fits_seq_budget = len(self.running) < self.scheduler_config.max_num_seqs
             if (
                 not fits_seq_budget
                 or token_budget <= 0
-                or not self.block_manager.can_allocate(request)
+                or not self.block_manager.can_allocate(request, match)
             ):
                 still_waiting.append(request)
                 # FIFO: if the head of the line can't be admitted at all --
@@ -217,8 +236,18 @@ class Scheduler:
                 # the *remaining* budget in full isn't blocked any more --
                 # see the chunked-prefill admission below.
                 break
-            self.block_manager.allocate(request)
+            self.block_manager.allocate(request, match)
             request.status = RequestStatus.RUNNING
+            # Prefix caching: a match means some of this prompt's KV is
+            # already computed -- seed num_computed_tokens with it *before*
+            # computing num_new below, so the chunked-prefill math already
+            # in get_num_new_tokens() naturally schedules only the unmatched
+            # remainder. Must happen before num_new is read, not after --
+            # reading it first (this design's pre-prefix-caching order)
+            # would schedule the matched tokens for compute all over again.
+            if match is not None:
+                request.num_computed_tokens = match.num_matched_tokens
+            num_new = request.get_num_new_tokens()
             # Chunked prefill: admit with whatever's left of this step's
             # budget, not necessarily the whole prompt -- blocks are still
             # reserved for the full prompt above, so a later step's
@@ -242,6 +271,16 @@ class Scheduler:
         Requeued at the *front* of `waiting`, not the back, so it's first in
         line once space frees up -- ahead of requests that arrived later but
         were never running.
+
+        No special prefix-cache handling needed here: block_manager.free
+        already releases any cache ref this request holds (see its
+        docstring), and any prefill progress this request made before this
+        step was already registered into the RadixTrie at the end of the
+        LLMEngine.step() that produced it (see model/llm_engine.py) -- there
+        is never a window, given this Scheduler's synchronous one-step-at-a-
+        time cadence, where genuinely-computed-but-unregistered progress
+        exists at the moment a preemption decision runs. Revisit this if
+        scheduling ever becomes async (see this module's docstring).
         """
         self.block_manager.free(request)
         request.num_computed_tokens = 0

@@ -7,12 +7,14 @@ on:
       - "kernels/**"
       - "model/**"
       - "server/**"
+      - "engine/**"
       - ".github/workflows/kernels-ci.yml"
   pull_request:
     paths:
       - "kernels/**"
       - "model/**"
       - "server/**"
+      - "engine/**"
       - ".github/workflows/kernels-ci.yml"
 
 jobs:
@@ -30,6 +32,9 @@ jobs:
     # server/tests/fake_engine.py), never importing model/ or kernels/ at
     # all, so it's real, full-coverage CI, not skip-gated -- see
     # server/README.md.
+    #
+    # engine/tests/ is torch-free (see engine/request.py's module
+    # docstring), so it's real, full-coverage CI too -- no skip gating.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,5 +48,5 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install triton pytest fastapi uvicorn httpx
 
-      - name: Run kernel, model, and server tests
-        run: pytest kernels/tests/ model/tests/ server/tests/ -v
+      - name: Run kernel, model, server, and engine tests
+        run: pytest kernels/tests/ model/tests/ server/tests/ engine/tests/ -v

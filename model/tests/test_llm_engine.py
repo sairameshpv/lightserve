@@ -36,10 +36,19 @@ def _reference_generate(weights, config, prompt, max_tokens, eos_token_id=None):
     return generated
 
 
-def _make_engine(config, weights, block_size=4, num_gpu_blocks=64, max_num_seqs=8, max_num_batched_tokens=64):
-    cache_config = CacheConfig(block_size=block_size, num_gpu_blocks=num_gpu_blocks)
+def _make_engine(config, weights, block_size=4, num_gpu_blocks=64, max_num_seqs=8, max_num_batched_tokens=64,
+                  enable_prefix_caching=False):
+    cache_config = CacheConfig(block_size=block_size, num_gpu_blocks=num_gpu_blocks,
+                                enable_prefix_caching=enable_prefix_caching)
     scheduler_config = SchedulerConfig(max_num_seqs=max_num_seqs, max_num_batched_tokens=max_num_batched_tokens)
     return LLMEngine(cache_config, scheduler_config, config, weights=weights, device="cuda")
+
+
+def _run_to_completion(engine, prompt, request_id, max_tokens):
+    request = engine.add_request(prompt, sampling_params=SamplingParams(max_tokens=max_tokens), request_id=request_id)
+    while engine.scheduler.has_unfinished_requests():
+        engine.step()
+    return request
 
 
 @requires_cuda
@@ -109,3 +118,63 @@ class TestGenerate:
 
         assert out_a.output_token_ids == _reference_generate(weights, config, prompt_a, max_tokens=4)
         assert out_b.output_token_ids == _reference_generate(weights, config, prompt_b, max_tokens=4)
+
+
+@requires_cuda
+class TestPrefixCaching:
+    """The critical correctness property for engine/prefix_cache.py's
+    RadixTrie wired into the real engine: reusing another request's
+    physical KV blocks for a shared prompt prefix must be completely
+    invisible to what gets generated. Run once on the Nebius L40S (skipped
+    here, no CUDA) -- this is the test that would actually catch silent KV
+    corruption from a block-id-reuse bug (see block_manager.py's free()
+    docstring on that exact failure mode).
+    """
+
+    def test_cache_hit_produces_identical_output_to_cache_disabled(self):
+        torch.manual_seed(0)
+        config = replace(TOY_CONFIG, dtype=torch.float32)
+        weights = init_weights(config, device="cuda", seed=0)
+
+        donor_prompt = [1, 2, 3, 4, 5, 6, 7, 8]  # 8 tokens = 2 whole blocks (block_size=4)
+        follower_prompt = donor_prompt + [9, 10, 11, 12]  # shared prefix + its own unique suffix
+
+        def run(enable_prefix_caching):
+            engine = _make_engine(config, weights, enable_prefix_caching=enable_prefix_caching)
+            _run_to_completion(engine, donor_prompt, "donor", max_tokens=1)
+            follower = _run_to_completion(engine, follower_prompt, "follower", max_tokens=5)
+            return follower.output_token_ids
+
+        # Sampling is pure greedy argmax (model_runner.py's _sample), so this
+        # is a deterministic, bit-exact comparison -- any divergence means
+        # the reused physical blocks didn't actually hold what the KV read
+        # assumed they held.
+        assert run(enable_prefix_caching=True) == run(enable_prefix_caching=False)
+
+    def test_matched_region_is_never_rewritten(self):
+        # Positive confirmation (not just inference from the seeded-
+        # num_computed_tokens trick) that model_runner.py genuinely never
+        # calls PagedKVCache.write for the matched token range once a cache
+        # hit has seeded num_computed_tokens past it.
+        torch.manual_seed(0)
+        config = replace(TOY_CONFIG, dtype=torch.float32)
+        weights = init_weights(config, device="cuda", seed=0)
+        engine = _make_engine(config, weights, enable_prefix_caching=True)
+
+        donor_prompt = [1, 2, 3, 4, 5, 6, 7, 8]  # 2 whole blocks
+        _run_to_completion(engine, donor_prompt, "donor", max_tokens=1)
+
+        write_starts = []
+        original_write = engine.kv_cache.write
+
+        def spy_write(layer_idx, request, start, k, v):
+            if request.request_id == "follower":
+                write_starts.append(start)
+            return original_write(layer_idx, request, start, k, v)
+
+        engine.kv_cache.write = spy_write
+        follower_prompt = donor_prompt  # identical -> the whole prompt is a cache hit
+        _run_to_completion(engine, follower_prompt, "follower", max_tokens=1)
+
+        assert write_starts  # the decode step still wrote something
+        assert min(write_starts) >= len(donor_prompt)  # never wrote inside the matched region

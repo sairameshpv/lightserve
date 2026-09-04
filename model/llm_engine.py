@@ -13,6 +13,16 @@ run for real, once per engine iteration:
 like a real serving workload would, not one at a time), then call `step()`
 until nothing's left running or waiting.
 
+When CacheConfig.enable_prefix_caching is on, `step()` has one more stage
+after execute_model: registering whatever prefill progress just happened
+for real into the RadixTrie (engine/prefix_cache.py), so a later request's
+admission can match against it. This can't happen any earlier than here --
+Scheduler.schedule() only *decides* the batch (advancing
+Request.num_computed_tokens synchronously, before the forward pass has
+actually run, per scheduler.py's own documented invariant); this is the
+first point where model_runner has actually computed real KV data for
+those tokens.
+
 Lives under model/, not engine/, on purpose: engine/'s own module
 docstrings are explicit about staying torch-free so that package's tests run
 without CUDA (see e.g. engine/request.py's docstring). This file imports
@@ -74,14 +84,30 @@ class LLMEngine:
         return request
 
     def step(self):
-        """One iteration: schedule this step's batch, run it, sweep out
-        whatever finished. Returns (SchedulerOutput, finished_requests) --
-        mirrors Scheduler.schedule()/free_finished_requests()'s own return
-        shapes, since this is just sequencing them with the forward pass
-        run in between.
+        """One iteration: schedule this step's batch, run it, register any
+        genuinely-computed prefill progress into the prefix cache, sweep
+        out whatever finished. Returns (SchedulerOutput, finished_requests)
+        -- mirrors Scheduler.schedule()/free_finished_requests()'s own
+        return shapes, since this is just sequencing them with the forward
+        pass (and, when enabled, the prefix-cache registration step) run in
+        between.
         """
         output = self.scheduler.schedule()
         self.model_runner.execute_model(output)
+        if self.scheduler.block_manager.prefix_cache is not None:
+            for sr in list(output.scheduled_new) + list(output.scheduled_running):
+                request = sr.request
+                # num_computed_tokens is already post-step (schedule()
+                # advances it synchronously before this forward pass ran --
+                # see scheduler.py's docstring); subtract this step's own
+                # contribution back out to get the pre-step value, so this
+                # only fires for a request that had genuine prefill compute
+                # in the step whose forward pass just ran above -- never
+                # before real KV exists, and never wastefully on a pure
+                # steady-state decode step.
+                pre_step_computed = request.num_computed_tokens - sr.num_scheduled_tokens
+                if pre_step_computed < len(request.prompt_token_ids):
+                    self.scheduler.block_manager.insert_computed_prefix(request)
         finished = self.scheduler.free_finished_requests()
         return output, finished
 

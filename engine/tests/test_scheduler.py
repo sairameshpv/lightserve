@@ -10,9 +10,10 @@ from engine.scheduler import ScheduledRequest, Scheduler, SchedulerOutput
 
 
 def make_scheduler(block_size=4, num_gpu_blocks=100, watermark_blocks=0,
-                    max_num_seqs=256, max_num_batched_tokens=2048):
+                    max_num_seqs=256, max_num_batched_tokens=2048, enable_prefix_caching=False):
     return Scheduler(
-        CacheConfig(block_size=block_size, num_gpu_blocks=num_gpu_blocks, watermark_blocks=watermark_blocks),
+        CacheConfig(block_size=block_size, num_gpu_blocks=num_gpu_blocks, watermark_blocks=watermark_blocks,
+                    enable_prefix_caching=enable_prefix_caching),
         SchedulerConfig(max_num_seqs=max_num_seqs, max_num_batched_tokens=max_num_batched_tokens),
     )
 
@@ -592,3 +593,109 @@ class TestTeardown:
         aborted = sched.abort_requests(["does-not-exist"])
         assert aborted == []
         assert sched.get_num_unfinished_requests() == 1
+
+
+class TestPrefixCaching:
+    """enable_prefix_caching=True admission wiring. These tests don't run a
+    real model, so a donor's prefill progress is registered into the cache
+    via a direct sched.block_manager.insert_computed_prefix(donor) call --
+    standing in for what model/llm_engine.py's step() does for real once a
+    forward pass has actually computed that donor's KV data (see this
+    module's docstring on the new admission flow).
+    """
+
+    def test_disabled_by_default_is_unaffected(self):
+        sched = make_scheduler()
+        assert sched.block_manager.prefix_cache is None
+
+        donor = make_request("donor", prompt_len=8)
+        sched.add_request(donor)
+        sched.schedule()
+
+        follower = make_request("follower", prompt_len=8)  # identical content
+        sched.add_request(follower)
+        output = sched.schedule()
+
+        # No caching wired in -- full fresh prefill, exactly like before this
+        # feature existed.
+        assert output.scheduled_new[0].num_scheduled_tokens == 8
+        assert follower.num_computed_tokens == 8
+        assert sched.block_manager.get_block_table(follower) != sched.block_manager.get_block_table(donor)
+
+    def test_admission_seeds_num_computed_tokens_from_a_match_and_schedules_only_the_remainder(self):
+        sched = make_scheduler(enable_prefix_caching=True)
+        donor = make_request("donor", prompt_len=8)  # 2 whole blocks
+        sched.add_request(donor)
+        sched.schedule()
+        assert donor.num_computed_tokens == 8
+        sched.block_manager.insert_computed_prefix(donor)
+
+        # Shares donor's 8-token prefix, plus 4 unique tokens of its own.
+        follower = Request(request_id="follower", prompt_token_ids=list(range(8)) + [999] * 4)
+        sched.add_request(follower)
+        output = sched.schedule()
+
+        assert len(output.scheduled_new) == 1
+        assert output.scheduled_new[0].request is follower
+        assert output.scheduled_new[0].num_scheduled_tokens == 4  # only the unmatched suffix
+        assert follower.num_computed_tokens == 12  # 8 seeded from the match + 4 scheduled this step
+        donor_table = sched.block_manager.get_block_table(donor)
+        follower_table = sched.block_manager.get_block_table(follower)
+        assert follower_table[:2] == donor_table  # matched blocks reused, not fresh
+
+    def test_a_full_cache_hit_needs_no_new_compute_this_step(self):
+        sched = make_scheduler(enable_prefix_caching=True)
+        donor = make_request("donor", prompt_len=8)
+        sched.add_request(donor)
+        sched.schedule()
+        sched.block_manager.insert_computed_prefix(donor)
+
+        follower = make_request("follower", prompt_len=8)  # identical content, nothing extra
+        sched.add_request(follower)
+        output = sched.schedule()
+
+        assert output.scheduled_new[0].num_scheduled_tokens == 0
+        assert follower.num_computed_tokens == 8
+        assert not follower.is_prefill()  # already fully "prefilled" via the cache hit
+
+    def test_free_finished_requests_releases_the_cache_ref(self):
+        sched = make_scheduler(enable_prefix_caching=True)
+        donor = make_request("donor", prompt_len=8, max_tokens=1)
+        sched.add_request(donor)
+        sched.schedule()
+        sched.block_manager.insert_computed_prefix(donor)
+
+        follower = make_request("follower", prompt_len=8, max_tokens=1)
+        sched.add_request(follower)
+        sched.schedule()
+
+        for req in (donor, follower):
+            req.output_token_ids.append(1)
+            req.maybe_finish()
+        assert sched.free_finished_requests() == [donor, follower]
+        assert donor.cached_prefix_nodes == []
+        assert follower.cached_prefix_nodes == []
+        assert sched.block_manager.prefix_cache.num_evictable_blocks == 1  # tail leaf, see
+        # test_block_manager.py's TestPrefixCaching for why a 2-block chain
+        # undercounts to 1 evictable block until the leaf is actually evicted.
+
+    def test_preemption_releases_the_cache_ref_too(self):
+        # Mirrors TestPreemption's own
+        # test_self_preemption_when_no_lower_priority_candidate_exists setup
+        # (1 block total, grows past capacity, no other running request to
+        # evict instead) but with prefix caching enabled, to check the
+        # cache ref specifically gets released on preemption.
+        sched = make_scheduler(block_size=4, num_gpu_blocks=1, enable_prefix_caching=True)
+        solo = make_request("solo", prompt_len=4, max_tokens=100)
+        sched.add_request(solo)
+        sched.schedule()
+        sched.block_manager.insert_computed_prefix(solo)
+        assert solo.cached_prefix_nodes != []
+        assert sched.block_manager.prefix_cache.num_evictable_blocks == 0  # still ref'd by solo
+
+        solo.output_token_ids.append(1)  # len=5, crosses into a 2nd block, none free -- self-preempts
+        output = sched.schedule()
+
+        assert output.preempted == [solo]
+        assert solo.cached_prefix_nodes == []
+        assert sched.block_manager.prefix_cache.num_evictable_blocks == 1  # ref released, now reclaimable

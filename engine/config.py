@@ -30,10 +30,17 @@ class CacheConfig:
     preempting a request that had barely started. vLLM's own `watermark`
     config is the same idea, expressed as a fraction of total blocks instead
     of an absolute count.
+
+    enable_prefix_caching: opt-in flag wiring engine/prefix_cache.py's
+    RadixTrie into BlockManager. Off by default so existing behavior/tests
+    are unaffected; when on, BlockManager.allocate reuses another request's
+    already-computed blocks for a shared prompt prefix instead of always
+    allocating fresh ones (see block_manager.py's module docstring).
     """
     block_size: int = 16
     num_gpu_blocks: int = 0
     watermark_blocks: int = 0
+    enable_prefix_caching: bool = False
 
     def __post_init__(self):
         assert self.block_size > 0, "block_size must be positive"

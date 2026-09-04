@@ -53,6 +53,15 @@ class Request:
     directly by this class -- request.py doesn't import block_manager.py (no
     circular dependency, and it keeps "which physical block ids" out of the
     object a request-lifecycle unit test shouldn't need to know about).
+
+    `cached_prefix_nodes` is the same idea for prefix caching: populated by
+    BlockManager.allocate/insert_computed_prefix with whatever
+    engine.prefix_cache.TrieNode objects this request currently holds a ref
+    on (its admission-time match, plus its own blocks registered since),
+    kept as a plain untyped list rather than importing TrieNode's type here
+    for the same no-coupling reason. BlockManager.free reads it back to know
+    what to release(). Always empty when prefix caching is disabled or this
+    request never matched anything.
     """
     request_id: str
     prompt_token_ids: list[int]
@@ -62,6 +71,7 @@ class Request:
     output_token_ids: list[int] = field(default_factory=list)
     status: RequestStatus = RequestStatus.WAITING
     block_table: list[int] = field(default_factory=list)
+    cached_prefix_nodes: list = field(default_factory=list)
 
     # How many of this request's tokens (prompt + output, in that order)
     # already have a KV-cache entry computed. Scheduler.schedule() advances
