@@ -49,4 +49,10 @@ jobs:
           pip install triton pytest fastapi uvicorn httpx
 
       - name: Run kernel, model, server, and engine tests
-        run: pytest kernels/tests/ model/tests/ server/tests/ engine/tests/ -v
+        # `python -m pytest`, not the bare `pytest` console script: this repo
+        # has no pyproject.toml/setup.py and no conftest.py, so nothing
+        # else puts the repo root on sys.path for `from kernels/model/engine
+        # import ...` to resolve -- `-m` does that by inserting CWD, `pytest`
+        # alone doesn't (see git history for the ModuleNotFoundError this
+        # was hit by).
+        run: python -m pytest kernels/tests/ model/tests/ server/tests/ engine/tests/ -v
