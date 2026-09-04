@@ -220,18 +220,28 @@ Specifically:
   scheduling from completion the way async scheduling needs remains a real
   follow-up, just no longer blocked on "no model runner to split against."
 
+## Prefix caching (vLLM's `cached_block_hash_to_block`)
+
+Implemented, opt-in via `CacheConfig.enable_prefix_caching` (default off).
+When on, `BlockManager` owns a `RadixTrie` (`engine/prefix_cache.py`) that
+hashes each request's prompt into fixed-size blocks and lets a later
+request reuse another request's already-computed blocks for a shared
+prompt prefix, instead of recomputing them. `Scheduler._schedule_waiting`
+looks up a match before allocating and seeds `Request.num_computed_tokens`
+from it, so the existing chunked-prefill machinery naturally schedules
+only the unmatched remainder -- no separate scheduling path needed.
+`model/llm_engine.py`'s `LLMEngine.step()` registers newly-computed blocks
+back into the trie once a real forward pass has produced their KV data.
+LRU-ordered eviction of cached-but-unreferenced blocks also lives entirely
+in the `RadixTrie` (`evict_one_lru`), reclaimed into `BlockManager`'s free
+stack on demand -- that free stack itself stays a plain, unordered `list`
+for genuinely-free blocks, since it has no reuse-locality of its own to
+preserve.
+
 ## Non-goals (cut for scope, not oversights)
 
 Each of these is a real vLLM feature, deliberately left out:
 
-- **Prefix caching** (vLLM's `cached_block_hash_to_block`): reusing another
-  request's already-computed blocks for a shared prompt prefix. Needs a
-  content hash per block and a lookup table. This is also why
-  `BlockManager` uses a plain `list` as a free-block stack instead of
-  vLLM's `KVCacheBlock` / `FreeKVCacheBlockQueue` doubly-linked list -- that
-  structure exists for O(1) LRU-ordered eviction so prefix-cache hits get
-  reused before truly-cold blocks; with no reuse-ordering policy to
-  preserve here, any free block is as good as any other.
 - **Copy-on-write / fork** (vLLM's `BlockManager.fork`): sharing a
   block-table prefix across sibling sequences (beam search, parallel
   sampling `n>1`) until they diverge. Every `Request` here owns private
