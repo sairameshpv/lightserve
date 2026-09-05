@@ -5,10 +5,13 @@ BlockManager/Scheduler, see engine/README.md's "Prefix caching" section) is
 meant to speed up.
 
 Drives model.llm_engine.LLMEngine directly, one CacheConfig.
-enable_prefix_caching=False/True pair per prefix length in PREFIX_LENS, and
-writes two CSVs (see write_results' docstring) -- turning those into a "TTFT
-reduction % vs. prefix length" chart is a separate step, through this
-repo's usual dataviz/artifact tooling, not this script's job.
+enable_prefix_caching=False/True pair per prefix length in PREFIX_LENS
+(each pair preceded by an untimed warmup() pass -- see its docstring for
+why: without it, whatever one-time CUDA/Triton kernel-compile cost exists
+lands entirely on cache_off's numbers, since it always runs first), and
+writes three CSVs (see write_results' docstring) -- turning those into a
+"TTFT reduction % vs. prefix length" chart is a separate step, through
+this repo's usual dataviz/artifact tooling, not this script's job.
 
 This repo has no tokenizer (see benchmarks/generate_token_prompts.py's
 module docstring for the same point made about baseline_prompts.jsonl), so
@@ -24,7 +27,7 @@ summarize_results() below have no such dependency and ARE covered by
 benchmarks/tests/test_measure_ttft.py, runnable anywhere. Before trusting a
 full sweep, smoke-test on the real GPU first with a tiny one, e.g.:
 
-    python3 benchmarks/prefix_caching/measure_ttft.py \\
+    python3 -m benchmarks.prefix_caching.measure_ttft \\
         --prefix-lens 0,32 --num-requests 4 --max-tokens 1
 
 (same spirit as run_baseline.py's own --limit flag for exactly this reason).
@@ -46,6 +49,7 @@ SUFFIX_LEN = 16
 
 SUMMARY_CSV = Path(__file__).parent / "prefix_cache_ttft_summary.csv"
 RAW_CSV = Path(__file__).parent / "prefix_cache_ttft_raw.csv"
+STEP_CSV = Path(__file__).parent / "prefix_cache_step_latency.csv"
 
 
 def build_workload(prefix_len: int, num_requests: int, suffix_len: int,
@@ -63,12 +67,14 @@ def build_workload(prefix_len: int, num_requests: int, suffix_len: int,
     ]
 
 
-def run_workload(engine, prompts: list, max_tokens: int = 1) -> dict:
+def run_workload(engine, prompts: list, max_tokens: int = 1) -> tuple:
     """Submits every prompt at once (one shared t0, modeling concurrent
     arrival) and drives engine.step() directly rather than
     LLMEngine.generate() -- generate() doesn't expose per-step timing, and
     TTFT is exactly the thing being measured here. Returns
-    {request_id: ttft_seconds}.
+    ({request_id: ttft_seconds}, step_records) -- step_records is one dict
+    per engine.step() call (see its keys below), for diagnosing *why* a
+    configuration is slow, not just that it is.
 
     Caveat, stated plainly rather than left implicit: one timestamp is
     captured per whole batched step(), not per request within a step, so a
@@ -85,15 +91,26 @@ def run_workload(engine, prompts: list, max_tokens: int = 1) -> dict:
         for p in prompts
     ]
     ttft = {}
+    step_records = []
     prev_len = {r.request_id: 0 for r in requests}
+    step_index = 0
     while engine.scheduler.has_unfinished_requests():
-        engine.step()
+        step_start = time.perf_counter()
+        output, _ = engine.step()
         now = time.perf_counter()
+        step_records.append({
+            "step_index": step_index,
+            "duration_ms": (now - step_start) * 1000,
+            "num_scheduled_tokens": output.total_num_scheduled_tokens,
+            "num_waiting": len(engine.scheduler.waiting),
+            "num_running": len(engine.scheduler.running),
+        })
+        step_index += 1
         for r in requests:
             if r.request_id not in ttft and len(r.output_token_ids) > prev_len[r.request_id]:
                 ttft[r.request_id] = now - t0
             prev_len[r.request_id] = len(r.output_token_ids)
-    return ttft
+    return ttft, step_records
 
 
 def summarize_results(prefix_len: int, ttft_off: dict, ttft_on: dict) -> dict:
@@ -113,11 +130,15 @@ def summarize_results(prefix_len: int, ttft_off: dict, ttft_on: dict) -> dict:
     }
 
 
-def write_results(summary_rows: list, raw_rows: list) -> None:
+def write_results(summary_rows: list, raw_rows: list, step_rows: list) -> None:
     """summary: prefix_len, cache_off_ttft_ms, cache_on_ttft_ms,
     reduction_pct -- one row per prefix length swept. raw: prefix_len,
     cache_enabled, request_id, ttft_ms -- every individual measurement,
-    for a richer chart later than the summary alone supports.
+    for a richer chart later than the summary alone supports. step:
+    prefix_len, cache_enabled, step_index, duration_ms,
+    num_scheduled_tokens, num_waiting, num_running -- one row per
+    engine.step() call (see run_workload's docstring), for diagnosing
+    *why* a configuration is slow rather than just that it is.
     """
     with SUMMARY_CSV.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["prefix_len", "cache_off_ttft_ms", "cache_on_ttft_ms", "reduction_pct"])
@@ -129,8 +150,51 @@ def write_results(summary_rows: list, raw_rows: list) -> None:
         writer.writeheader()
         writer.writerows(raw_rows)
 
+    with STEP_CSV.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "prefix_len", "cache_enabled", "step_index", "duration_ms",
+            "num_scheduled_tokens", "num_waiting", "num_running",
+        ])
+        writer.writeheader()
+        writer.writerows(step_rows)
+
     print(f"Wrote {len(summary_rows)} summary rows to {SUMMARY_CSV}")
     print(f"Wrote {len(raw_rows)} raw rows to {RAW_CSV}")
+    print(f"Wrote {len(step_rows)} step rows to {STEP_CSV}")
+
+
+def warmup(prefix_lens: list, suffix_len: int, block_size: int, num_gpu_blocks: int,
+           model_config, weights, seed: int, num_requests: int = 4) -> None:
+    """Runs one small, untimed workload per prefix length in `prefix_lens`
+    through a throwaway engine, before any real (timed) measurement.
+
+    Why: main()'s sweep always builds and times `engine_off` before
+    `engine_on`, for every prefix length -- whatever one-time CUDA context
+    / Triton kernel-compile cost exists for a given sequence-length shape
+    would otherwise land entirely on that prefix length's `cache_off`
+    number, not because caching did anything, just because `off` happened
+    to run first while the shape was still cold. Running every shape once
+    here, before either engine in the real sweep is ever timed, means both
+    `engine_off` and `engine_on` start warm at every prefix length.
+
+    Uses a small fixed `num_requests` (4) rather than the real sweep's
+    --num-requests, to keep this cheap -- covers per-token kernel shapes
+    but not necessarily batch-size-specific compiled variants. A
+    reasonable cost/rigor trade-off; revisit if results still look
+    warmup-biased.
+
+    `enable_prefix_caching` doesn't matter here -- this is about warming
+    shared Triton/CUDA kernel compilation (a process-global cache), not
+    exercising cache behavior, so a single caching-off throwaway engine
+    per length covers both configurations.
+    """
+    t0 = time.perf_counter()
+    for prefix_len in prefix_lens:
+        prompts = build_workload(prefix_len, num_requests, suffix_len, seed=seed)
+        engine = _make_engine(model_config, weights, num_gpu_blocks, block_size,
+                               enable_prefix_caching=False, max_num_seqs=num_requests)
+        run_workload(engine, prompts, max_tokens=1)
+    print(f"Warmup done ({len(prefix_lens)} shapes) in {time.perf_counter() - t0:.1f}s")
 
 
 def _make_engine(model_config, weights, num_gpu_blocks, block_size, enable_prefix_caching, max_num_seqs):
@@ -158,6 +222,9 @@ def main():
     ap.add_argument("--num-gpu-blocks", default=None, type=int,
                      help="Defaults to enough for the worst case (caching off, longest prefix)")
     ap.add_argument("--seed", default=0, type=int)
+    ap.add_argument("--skip-warmup", action="store_true",
+                     help="Skip the untimed warmup pass -- faster iteration on the harness itself, "
+                          "but real measurements will be biased by cold-start (see warmup()'s docstring)")
     args = ap.parse_args()
 
     prefix_lens = [int(n) for n in args.prefix_lens.split(",")]
@@ -175,29 +242,36 @@ def main():
         blocks_per_request = -(-max_len_needed // args.block_size)  # ceil div
         num_gpu_blocks = blocks_per_request * args.num_requests + args.block_size  # +1 block margin
 
-    summary_rows, raw_rows = [], []
+    if not args.skip_warmup:
+        warmup(prefix_lens, args.suffix_len, args.block_size, num_gpu_blocks,
+               model_config, weights, args.seed)
+
+    summary_rows, raw_rows, step_rows = [], [], []
     for prefix_len in prefix_lens:
         prompts = build_workload(prefix_len, args.num_requests, args.suffix_len, seed=args.seed)
 
         torch.manual_seed(args.seed)
         engine_off = _make_engine(model_config, weights, num_gpu_blocks, args.block_size,
                                    enable_prefix_caching=False, max_num_seqs=args.num_requests)
-        ttft_off = run_workload(engine_off, prompts, max_tokens=args.max_tokens)
+        ttft_off, steps_off = run_workload(engine_off, prompts, max_tokens=args.max_tokens)
 
         torch.manual_seed(args.seed)
         engine_on = _make_engine(model_config, weights, num_gpu_blocks, args.block_size,
                                   enable_prefix_caching=True, max_num_seqs=args.num_requests)
-        ttft_on = run_workload(engine_on, prompts, max_tokens=args.max_tokens)
+        ttft_on, steps_on = run_workload(engine_on, prompts, max_tokens=args.max_tokens)
 
         summary_rows.append(summarize_results(prefix_len, ttft_off, ttft_on))
         for request_id, t in ttft_off.items():
             raw_rows.append({"prefix_len": prefix_len, "cache_enabled": False, "request_id": request_id, "ttft_ms": t * 1000})
         for request_id, t in ttft_on.items():
             raw_rows.append({"prefix_len": prefix_len, "cache_enabled": True, "request_id": request_id, "ttft_ms": t * 1000})
+        for cache_enabled, steps in ((False, steps_off), (True, steps_on)):
+            for step in steps:
+                step_rows.append({"prefix_len": prefix_len, "cache_enabled": cache_enabled, **step})
 
         print(f"prefix_len={prefix_len}: {summary_rows[-1]}")
 
-    write_results(summary_rows, raw_rows)
+    write_results(summary_rows, raw_rows, step_rows)
 
 
 if __name__ == "__main__":

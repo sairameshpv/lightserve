@@ -27,8 +27,14 @@ python3 -m benchmarks.prefix_caching.measure_ttft --prefix-lens 0,32 --num-reque
 ```
 
 Writes `prefix_cache_ttft_summary.csv` (`prefix_len, cache_off_ttft_ms,
-cache_on_ttft_ms, reduction_pct`) and `prefix_cache_ttft_raw.csv` (every
-individual measurement) into this directory.
+cache_on_ttft_ms, reduction_pct`), `prefix_cache_ttft_raw.csv` (every
+individual measurement), and `prefix_cache_step_latency.csv` (one row per
+`engine.step()` call -- duration, tokens scheduled, queue depth -- for
+diagnosing *why* a configuration is slow, not just that it is) into this
+directory. An untimed `warmup()` pass runs once per prefix length before
+either engine is ever timed (see its docstring) -- `--skip-warmup` turns
+this off for faster iteration on the harness itself, at the cost of
+cold-start-biased numbers.
 
 ## Status
 
@@ -55,35 +61,33 @@ others were still depending on it. Re-run clean after the fix:
 | 1024       | 1418.8             | 1761.2             | -24.1%         |
 | 2048       | 1678.6             | 1920.0             | -14.4%         |
 
-Two things stand out, neither yet confirmed root-caused:
+Two things stood out, and the table above is now known to be **superseded**
+-- see the update below the line:
 
-- **prefix_len=0/128's huge win is likely inflated by a warmup confound,
-  not purely the cache**: `main()` builds `engine_off` before `engine_on`
-  in every iteration, and the very first iteration (prefix_len=0) pays
-  whatever one-time CUDA context / Triton kernel-autotuning cost exists in
-  the process -- landing entirely on that first `cache_off_ttft_ms`
-  (3813ms, the highest of any off-run despite prefix_len=0 needing the
-  *least* compute of the sweep). A fairer methodology would run one
-  untimed warmup step before either engine's first measurement.
-- **cache_on gets *worse* than cache_off from prefix_len=512 onward**:
-  the opposite of what a working cache should do at longer shared
-  prefixes. Leading hypothesis, not yet verified: `--num-gpu-blocks`
-  defaults to the caching-*off* worst case (no slack for blocks a
-  finished request's cache ref is still holding onto rather than
-  returning to the free pool), so `engine_on` likely spends real time in
-  `BlockManager._drain_evictions`/`RadixTrie.evict_one_lru` fighting for
-  blocks the off run never had to reclaim -- an operational cost of
-  prefix caching (it needs headroom beyond the bare compute-need to net
-  positive) rather than a correctness bug. Worth confirming by re-running
-  with a larger explicit `--num-gpu-blocks` before trusting the crossover
-  as real.
+- **prefix_len=0's 98.2% "win" cannot be real caching**: `build_workload`
+  gives every request an independently-random suffix when `prefix_len=0`
+  (`shared_prefix` is an empty list), so there is zero shared content
+  between any two requests -- the RadixTrie cannot produce a single
+  cross-request hit here. Since `main()` builds and times `engine_off`
+  before `engine_on` in every iteration, and prefix_len=0 is the very
+  first iteration of the whole process, this number is almost entirely a
+  cold-start artifact (first-ever CUDA/Triton kernel compile landing on
+  `cache_off`), not the cache doing anything.
+- **cache_on gets *worse* than cache_off from prefix_len=512 onward.**
+  The `--num-gpu-blocks`-eviction-thrashing theory floated here originally
+  doesn't survive closer inspection: caching-on should need *fewer*
+  physical blocks live at once than caching-off (later-admitted requests
+  reuse the shared prefix instead of getting their own copy), not more --
+  there shouldn't be eviction pressure. Retracted as the leading
+  explanation; the real cause needs the step-by-step data below, not
+  another guess.
 
-Raw data: `prefix_cache_ttft_summary.csv` / `prefix_cache_ttft_raw.csv` in
-this directory (384 rows, one per request per prefix_len per cache
-on/off).
+---
 
-Next step: re-run with generous `--num-gpu-blocks` headroom and an
-untimed warmup step to separate the real caching effect from these two
-confounds, then turn the (corrected) summary CSV into a "TTFT reduction %
-vs. prefix length" chart (an interactive Artifact, same as
-`../profiling/roofline/README.md`'s) and link it here.
+**Update**: `measure_ttft.py` now runs an untimed `warmup()` pass per
+prefix length before either engine is ever timed (removes the cold-start
+bias above at every length, not just 0), and records
+`prefix_cache_step_latency.csv` alongside the existing two CSVs, so the
+512+ regression can actually be diagnosed from real per-step data instead
+of guessed at. Re-run on the L40S pending -- this section will be replaced
+with corrected numbers and a data-backed explanation once that's done.
