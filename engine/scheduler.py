@@ -43,7 +43,7 @@ tokens one step's forward pass covers), not *memory* -- so a request that
 can't get all its blocks reserved up front still doesn't get admitted at
 all, chunked or not (see `test_fifo_head_of_line_blocking`).
 
-Prefix caching plugs into this same admission path with no separate
+Prefix caching plugs into this same admission path with almost no separate
 scheduling logic of its own: `_schedule_waiting` looks up a match before
 allocating, seeds `num_computed_tokens` from it, and the chunked-prefill
 math above (`get_num_new_tokens()`, already chunk-aware) naturally
@@ -52,6 +52,13 @@ a request that arrives with most of its prefill already done. See
 block_manager.py's module docstring for where the RadixTrie itself lives
 and model/llm_engine.py's step() for where matched blocks get registered
 back into it once real compute has happened.
+
+The one real exception: `_schedule_waiting` also tracks
+`max_cache_hit_context_tokens`, a second per-step budget alongside
+token_budget (see SchedulerConfig's docstring for why token_budget alone
+isn't enough once caching is on -- it charges by new tokens, not by the
+real context length model/model_runner.py's attention cost actually scales
+with).
 """
 from collections import deque
 from dataclasses import dataclass, field
@@ -213,6 +220,15 @@ class Scheduler:
 
     def _schedule_waiting(self, output: SchedulerOutput, token_budget: int) -> int:
         still_waiting: deque = deque()
+        # See SchedulerConfig.max_cache_hit_context_tokens's docstring for
+        # why this exists as a *separate* budget from token_budget: a
+        # prefix-cache hit's new-token count (what token_budget charges)
+        # can be tiny while its real context length (what attention cost
+        # actually scales with) is huge. Tracked here, not folded into
+        # token_budget, precisely so it can bind independently of it.
+        cache_hit_context_budget = self.scheduler_config.max_cache_hit_context_tokens
+        if cache_hit_context_budget is None:
+            cache_hit_context_budget = self.scheduler_config.max_num_batched_tokens
         while self.waiting:
             request = self.waiting.popleft()
             # Side-effect-free peek (see BlockManager.match_prefix's
@@ -220,21 +236,31 @@ class Scheduler:
             # admitted this step (the `break` below), since nothing is
             # committed (ref counts bumped, stats recorded) until allocate().
             match = self.block_manager.match_prefix(request.prompt_token_ids)
+            # Charged against match.num_matched_tokens (known now), not the
+            # exact resulting context length (matched + this step's chunk,
+            # not decided until after allocate() below) -- chunk is already
+            # bounded separately by token_budget and is normally small
+            # relative to a large matched prefix, so this stays a simple
+            # pre-check rather than reordering allocate/seed/chunk below.
+            matched_tokens = match.num_matched_tokens if match is not None else 0
             fits_seq_budget = len(self.running) < self.scheduler_config.max_num_seqs
+            fits_cache_hit_budget = matched_tokens <= cache_hit_context_budget
             if (
                 not fits_seq_budget
                 or token_budget <= 0
+                or not fits_cache_hit_budget
                 or not self.block_manager.can_allocate(request, match)
             ):
                 still_waiting.append(request)
                 # FIFO: if the head of the line can't be admitted at all --
-                # no seq slot, no budget left, or (unaffected by chunking,
-                # see this module's docstring) not enough blocks for the
-                # whole prompt -- nothing behind it should jump ahead of it
-                # either. Stop scanning rather than admitting a smaller
-                # request out of order. A request that merely doesn't fit
-                # the *remaining* budget in full isn't blocked any more --
-                # see the chunked-prefill admission below.
+                # no seq slot, no budget left, no cache-hit-context budget
+                # left, or (unaffected by chunking, see this module's
+                # docstring) not enough blocks for the whole prompt --
+                # nothing behind it should jump ahead of it either. Stop
+                # scanning rather than admitting a smaller request out of
+                # order. A request that merely doesn't fit the *remaining*
+                # budget in full isn't blocked any more -- see the
+                # chunked-prefill admission below.
                 break
             self.block_manager.allocate(request, match)
             request.status = RequestStatus.RUNNING
@@ -247,6 +273,7 @@ class Scheduler:
             # would schedule the matched tokens for compute all over again.
             if match is not None:
                 request.num_computed_tokens = match.num_matched_tokens
+                cache_hit_context_budget -= matched_tokens
             num_new = request.get_num_new_tokens()
             # Chunked prefill: admit with whatever's left of this step's
             # budget, not necessarily the whole prompt -- blocks are still

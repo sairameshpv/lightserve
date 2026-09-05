@@ -71,10 +71,31 @@ class SchedulerConfig:
     above) the longest prompt you expect to admit if you want every prefill
     to still land in a single step, matching this design's pre-chunking
     behavior.
+
+    max_cache_hit_context_tokens: a second, separate per-step budget --
+    None (default) reuses max_num_batched_tokens's value -- covering a gap
+    max_num_batched_tokens can't see on its own: model/model_runner.py's
+    _attention still pays O(context_length^2) attention cost for any
+    request continuing past position 0, REGARDLESS of how few new tokens
+    it has this step (see its docstring on the padded-Q trade-off for
+    reusing the existing flash-attention kernel unmodified). A prefix-cache
+    hit (CacheConfig.enable_prefix_caching) can make a request's *new*
+    token count tiny (just its unmatched suffix) while its real context
+    length stays huge (the matched prefix) -- max_num_batched_tokens, which
+    only charges by new tokens, would happily admit many such requests
+    into the very same step, each still paying full O(context_length^2)
+    attention. max_cache_hit_context_tokens caps total matched-prefix
+    length admitted per step instead, closing that gap -- see
+    Scheduler._schedule_waiting. Only ever matters when caching is on and
+    a match actually has matched tokens; otherwise inert.
     """
     max_num_seqs: int = 256
     max_num_batched_tokens: int = 2048
+    max_cache_hit_context_tokens: int = None
 
     def __post_init__(self):
         assert self.max_num_seqs > 0, "max_num_seqs must be positive"
         assert self.max_num_batched_tokens > 0, "max_num_batched_tokens must be positive"
+        assert self.max_cache_hit_context_tokens is None or self.max_cache_hit_context_tokens > 0, (
+            "max_cache_hit_context_tokens must be positive if set"
+        )

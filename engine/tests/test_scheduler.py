@@ -10,11 +10,13 @@ from engine.scheduler import ScheduledRequest, Scheduler, SchedulerOutput
 
 
 def make_scheduler(block_size=4, num_gpu_blocks=100, watermark_blocks=0,
-                    max_num_seqs=256, max_num_batched_tokens=2048, enable_prefix_caching=False):
+                    max_num_seqs=256, max_num_batched_tokens=2048, enable_prefix_caching=False,
+                    max_cache_hit_context_tokens=None):
     return Scheduler(
         CacheConfig(block_size=block_size, num_gpu_blocks=num_gpu_blocks, watermark_blocks=watermark_blocks,
                     enable_prefix_caching=enable_prefix_caching),
-        SchedulerConfig(max_num_seqs=max_num_seqs, max_num_batched_tokens=max_num_batched_tokens),
+        SchedulerConfig(max_num_seqs=max_num_seqs, max_num_batched_tokens=max_num_batched_tokens,
+                        max_cache_hit_context_tokens=max_cache_hit_context_tokens),
     )
 
 
@@ -699,3 +701,66 @@ class TestPrefixCaching:
         assert output.preempted == [solo]
         assert solo.cached_prefix_nodes == []
         assert sched.block_manager.prefix_cache.num_evictable_blocks == 1  # ref released, now reclaimable
+
+    def test_max_cache_hit_context_tokens_defers_a_second_large_match_same_step(self):
+        """SchedulerConfig.max_cache_hit_context_tokens's core job: two
+        followers each matching a large (8-token) donor prefix, admitted in
+        the same schedule() call, would both fit max_num_batched_tokens
+        (only their tiny unique suffix counts against it) -- but with the
+        cache-hit-context budget set to fit only one match's worth, the
+        second must be deferred, not skipped past (FIFO), leaving it in
+        `waiting` for a later step.
+        """
+        sched = make_scheduler(max_num_batched_tokens=2048, max_cache_hit_context_tokens=8,
+                                enable_prefix_caching=True)
+        donor = make_request("donor", prompt_len=8)  # 2 whole blocks
+        sched.add_request(donor)
+        sched.schedule()
+        sched.block_manager.insert_computed_prefix(donor)
+
+        follower1 = Request(request_id="follower1", prompt_token_ids=list(range(8)) + [901, 902, 903, 904])
+        follower2 = Request(request_id="follower2", prompt_token_ids=list(range(8)) + [911, 912, 913, 914])
+        sched.add_request(follower1)
+        sched.add_request(follower2)
+        output = sched.schedule()
+
+        assert [sr.request for sr in output.scheduled_new] == [follower1]
+        assert follower2.status == RequestStatus.WAITING
+        assert follower2 in sched.waiting
+
+    def test_max_cache_hit_context_tokens_none_defaults_to_max_num_batched_tokens(self):
+        donor_prompt = list(range(8))
+        follower_tail = [901, 902, 903, 904]
+
+        def run(max_cache_hit_context_tokens):
+            sched = make_scheduler(max_num_batched_tokens=8, enable_prefix_caching=True,
+                                    max_cache_hit_context_tokens=max_cache_hit_context_tokens)
+            donor = make_request("donor", prompt_len=8)
+            sched.add_request(donor)
+            sched.schedule()
+            sched.block_manager.insert_computed_prefix(donor)
+
+            f1 = Request(request_id="f1", prompt_token_ids=donor_prompt + follower_tail)
+            f2 = Request(request_id="f2", prompt_token_ids=donor_prompt + follower_tail)
+            sched.add_request(f1)
+            sched.add_request(f2)
+            output = sched.schedule()
+            return [sr.request.request_id for sr in output.scheduled_new], f2.status
+
+        assert run(None) == run(max_cache_hit_context_tokens=8)
+
+    def test_max_cache_hit_context_tokens_inert_when_caching_disabled(self):
+        sched = make_scheduler(max_cache_hit_context_tokens=1, enable_prefix_caching=False)
+        donor = make_request("donor", prompt_len=8)
+        sched.add_request(donor)
+        sched.schedule()
+
+        follower1 = make_request("follower1", prompt_len=8)  # identical content, but no cache to match against
+        follower2 = make_request("follower2", prompt_len=8)
+        sched.add_request(follower1)
+        sched.add_request(follower2)
+        output = sched.schedule()
+
+        # Both admit normally -- match is always None with caching off, so
+        # matched_tokens is always 0, trivially within any budget.
+        assert {sr.request.request_id for sr in output.scheduled_new} == {"follower1", "follower2"}
