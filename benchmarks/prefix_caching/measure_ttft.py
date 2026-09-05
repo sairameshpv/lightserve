@@ -215,10 +215,10 @@ def write_results(summary_rows: list, raw_rows: list, step_rows: list) -> None:
 
 
 def warmup(prefix_lens: list, suffix_len: int, block_size: int, num_gpu_blocks: int,
-           model_config, weights, seed: int, num_requests: int = 4, cache_hit_num_requests: int = 32) -> None:
-    """Runs one small, untimed workload per prefix length in `prefix_lens`,
-    both cache off and on, through throwaway engines, before any real
-    (timed) measurement.
+           model_config, weights, seed: int, num_requests: int = 32) -> None:
+    """Runs one untimed workload per prefix length in `prefix_lens`, both
+    cache off and on, through throwaway engines, before any real (timed)
+    measurement.
 
     Why this exists at all: main()'s sweep always builds and times
     `engine_off` before `engine_on`, for every prefix length -- whatever
@@ -229,33 +229,36 @@ def warmup(prefix_lens: list, suffix_len: int, block_size: int, num_gpu_blocks: 
 
     The real one-time cost, found by actually profiling the slow step
     with torch.profiler (see benchmarks/prefix_caching/README.md) rather
-    than guessing further -- two earlier cuts of this function guessed
-    wrong twice and are worth naming so the mistake isn't repeated:
+    than guessing further -- three earlier cuts of this function guessed
+    wrong and are worth naming so the mistake isn't repeated twice more:
     kernels/tiled_matmul.py's `_matmul_kernel` is `@triton.autotune(...,
     key=["M", "N", "K"])`, and every Linear in model/model_runner.py's
     execute_model() runs as one matmul over the whole flat batch of `M =
-    sum(num_scheduled_tokens)` rows. `M` isn't fixed -- it's however many
-    followers' worth of new tokens the scheduler batches into one
-    cache-hit continuation step (see
-    SchedulerConfig.max_cache_hit_context_tokens's docstring for why that
-    count varies a lot by prefix_len: `floor(max_cache_hit_context_tokens
-    / matched_tokens)`, e.g. 32 followers at prefix_len=128 vs. 2 at
-    prefix_len=2048). Autotune benchmarks *every* config in
-    kernels/tiled_matmul.py's _CONFIGS for a **new** M the first time it's
-    seen, live, inside the timed call -- not a fixed compile tax, a real
-    multi-config timing sweep, which is why it's a full 1.3-2 *seconds*
-    and why a smaller toy `num_requests` here (this function's first two
-    versions used 4) never reliably reproduces it: with few enough toy
-    followers, warmup's own batches never reach the same M the real
-    sweep's shorter prefix lengths do, so those M values never get
-    autotuned until the real, timed run hits them.
+    sum(num_scheduled_tokens)` rows. `M` isn't fixed -- it depends on how
+    many requests' new tokens the scheduler batches into one step, which
+    varies both by prefix_len (a cache-hit continuation step admits
+    `floor(max_cache_hit_context_tokens / matched_tokens)` followers --
+    32 at prefix_len=128, 2 at prefix_len=2048) and, on the cache-*off*
+    side, by ordinary chunked-prefill arithmetic (the tail/remainder chunk
+    of a `--num-requests`-sized batch). Autotune benchmarks *every*
+    config in kernels/tiled_matmul.py's _CONFIGS for a **new** M the first
+    time it's seen, live, inside the timed call -- not a fixed compile
+    tax, a real multi-config timing sweep, which is why it's hundreds of
+    milliseconds to full seconds, and why a smaller toy `num_requests`
+    here (earlier versions used 4 for one or both passes) never reliably
+    reproduces it: with few enough toy requests, warmup's own batches
+    never reach the same M values the real sweep's `--num-requests`
+    actually produces.
 
-    Fix: the cache-hit follower batch here uses `cache_hit_num_requests`
-    (defaults to the real sweep's own --num-requests, not the small
-    `num_requests` used for the cache-off pass and the donor) precisely
-    so this function's own natural per-step admission grouping -- gated
-    by the same SchedulerConfig.max_cache_hit_context_tokens math the
-    real sweep uses -- lands on the exact same M per prefix_len.
+    Fix, applied consistently to *both* passes after the first attempt
+    only fixed the cache-on side (confirmed still-noisy on the cache-off
+    side by `--repeats`'s stdev column, once that existed to look at):
+    `num_requests` here defaults to the real sweep's own --num-requests,
+    not a small toy count, so this function's own natural per-step
+    admission grouping -- on-path gated by
+    SchedulerConfig.max_cache_hit_context_tokens, off-path by ordinary
+    chunked-prefill -- lands on the same M values per prefix_len either
+    way.
 
     The cache-on pass submits a donor *first*, through its own separate
     run_workload() call, and waits for it to fully finish (so its prefix
@@ -286,10 +289,10 @@ def warmup(prefix_lens: list, suffix_len: int, block_size: int, num_gpu_blocks: 
         run_workload(engine_off, off_prompts, max_tokens=1)
 
         engine_on = _make_engine(model_config, weights, num_gpu_blocks, block_size,
-                                  enable_prefix_caching=True, max_num_seqs=cache_hit_num_requests + 1)
+                                  enable_prefix_caching=True, max_num_seqs=num_requests + 1)
         donor_prompts = build_workload(prefix_len, 1, suffix_len, seed=seed)
         run_workload(engine_on, donor_prompts, max_tokens=1)  # runs to completion -> prefix registered
-        follower_prompts = build_workload(prefix_len, cache_hit_num_requests + 1, suffix_len, seed=seed)[1:]
+        follower_prompts = build_workload(prefix_len, num_requests + 1, suffix_len, seed=seed)[1:]
         run_workload(engine_on, follower_prompts, max_tokens=1)  # same M the real sweep will hit, guaranteed
     print(f"Warmup done ({len(prefix_lens)} shapes x 2 cache states) in {time.perf_counter() - t0:.1f}s")
 
@@ -345,7 +348,7 @@ def main():
 
     if not args.skip_warmup:
         warmup(prefix_lens, args.suffix_len, args.block_size, num_gpu_blocks,
-               model_config, weights, args.seed, cache_hit_num_requests=args.num_requests)
+               model_config, weights, args.seed, num_requests=args.num_requests)
 
     summary_rows, raw_rows, step_rows = [], [], []
     for prefix_len in prefix_lens:

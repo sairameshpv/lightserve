@@ -40,7 +40,7 @@ def main():
         import time
         t0 = time.perf_counter()
         warmup([args.prefix_len], args.suffix_len, args.block_size, num_gpu_blocks,
-               model_config, weights, args.seed, cache_hit_num_requests=args.num_requests)
+               model_config, weights, args.seed, num_requests=args.num_requests)
         print(f"warmup() took {time.perf_counter() - t0:.1f}s")
 
     engine = _make_engine(model_config, weights, num_gpu_blocks, args.block_size,
