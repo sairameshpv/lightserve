@@ -165,36 +165,51 @@ def write_results(summary_rows: list, raw_rows: list, step_rows: list) -> None:
 
 def warmup(prefix_lens: list, suffix_len: int, block_size: int, num_gpu_blocks: int,
            model_config, weights, seed: int, num_requests: int = 4) -> None:
-    """Runs one small, untimed workload per prefix length in `prefix_lens`
-    through a throwaway engine, before any real (timed) measurement.
+    """Runs one small, untimed workload per prefix length in `prefix_lens`,
+    both cache off and on, through throwaway engines, before any real
+    (timed) measurement.
 
     Why: main()'s sweep always builds and times `engine_off` before
     `engine_on`, for every prefix length -- whatever one-time CUDA context
-    / Triton kernel-compile cost exists for a given sequence-length shape
-    would otherwise land entirely on that prefix length's `cache_off`
-    number, not because caching did anything, just because `off` happened
-    to run first while the shape was still cold. Running every shape once
-    here, before either engine in the real sweep is ever timed, means both
-    `engine_off` and `engine_on` start warm at every prefix length.
+    / Triton kernel-compile cost exists for a given call shape would
+    otherwise land entirely on that prefix length's `cache_off` number,
+    not because caching did anything, just because `off` happened to run
+    first while the shape was still cold.
+
+    Both cache states are run here, not just one: a first cut of this
+    function only ran caching off, on the (wrong) assumption that "warm
+    shared Triton kernel compilation" only depends on shapes like
+    ordinary dense prefill/decode -- but model/model_runner.py's
+    _attention() pads every non-fresh-prefill call (`L < se`, see its
+    docstring) up to `se` regardless of how many rows are real, and a
+    cache-*hit* continuation's exact (se, num-real-rows) combination
+    never occurs on a cache-off run at all (there, prefill always
+    completes in the same step it starts a request's very first chunk, so
+    a decode step's se is prefill-length-plus-one, one more than a cache
+    hit's prefill-length-plus-chunk -- close, but not the same call, and
+    apparently close enough to matter to Triton's autotuner). Measured
+    consequence: every prefix length except one paid a 1.3-2 *second*
+    one-time cost on the real sweep's first cache-hit continuation step,
+    dwarfing every other step in that same run (structurally-identical
+    later steps cost ~11-20ms) -- see benchmarks/prefix_caching/README.md.
+    Running an actual caching-on pass here, through the same
+    build_workload shared-prefix shape the real sweep uses, exercises the
+    exact same continuation calls the timed run will make.
 
     Uses a small fixed `num_requests` (4) rather than the real sweep's
     --num-requests, to keep this cheap -- covers per-token kernel shapes
     but not necessarily batch-size-specific compiled variants. A
     reasonable cost/rigor trade-off; revisit if results still look
     warmup-biased.
-
-    `enable_prefix_caching` doesn't matter here -- this is about warming
-    shared Triton/CUDA kernel compilation (a process-global cache), not
-    exercising cache behavior, so a single caching-off throwaway engine
-    per length covers both configurations.
     """
     t0 = time.perf_counter()
     for prefix_len in prefix_lens:
         prompts = build_workload(prefix_len, num_requests, suffix_len, seed=seed)
-        engine = _make_engine(model_config, weights, num_gpu_blocks, block_size,
-                               enable_prefix_caching=False, max_num_seqs=num_requests)
-        run_workload(engine, prompts, max_tokens=1)
-    print(f"Warmup done ({len(prefix_lens)} shapes) in {time.perf_counter() - t0:.1f}s")
+        for enable_prefix_caching in (False, True):
+            engine = _make_engine(model_config, weights, num_gpu_blocks, block_size,
+                                   enable_prefix_caching=enable_prefix_caching, max_num_seqs=num_requests)
+            run_workload(engine, prompts, max_tokens=1)
+    print(f"Warmup done ({len(prefix_lens)} shapes x 2 cache states) in {time.perf_counter() - t0:.1f}s")
 
 
 def _make_engine(model_config, weights, num_gpu_blocks, block_size, enable_prefix_caching, max_num_seqs):
