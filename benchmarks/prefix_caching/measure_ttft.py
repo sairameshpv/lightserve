@@ -192,9 +192,24 @@ def warmup(prefix_lens: list, suffix_len: int, block_size: int, num_gpu_blocks: 
     one-time cost on the real sweep's first cache-hit continuation step,
     dwarfing every other step in that same run (structurally-identical
     later steps cost ~11-20ms) -- see benchmarks/prefix_caching/README.md.
-    Running an actual caching-on pass here, through the same
-    build_workload shared-prefix shape the real sweep uses, exercises the
-    exact same continuation calls the timed run will make.
+
+    The cache-on pass submits a donor *first*, through its own separate
+    run_workload() call, and waits for it to fully finish (so its prefix
+    is genuinely registered into the cache -- see
+    BlockManager.insert_computed_prefix) before submitting `num_requests`
+    followers sharing its prefix in a second call. Deliberately not "just
+    submit num_requests requests sharing a prefix in one run_workload()
+    call, same as the real sweep does": a second cut of this function did
+    exactly that and still left prefix_lens 128/256/512 unwarmed, only
+    fixing 1024/2048 by accident -- a small enough `num_requests` at a
+    short enough `prefix_len` lets every toy request's tokens fit inside
+    one scheduler step's token budget, so (exactly the mechanism behind
+    the ref-count bug this whole feature already hit once, see
+    engine/prefix_cache.py's git history) *all* of them get admitted
+    before *any* of them has registered anything -- never producing a
+    genuine matched continuation at all for those lengths. Splitting into
+    two separate run_workload() calls forces the donor's registration to
+    complete first, regardless of prefix_len or budget sizing.
 
     Uses a small fixed `num_requests` (4) rather than the real sweep's
     --num-requests, to keep this cheap -- covers per-token kernel shapes
@@ -204,11 +219,17 @@ def warmup(prefix_lens: list, suffix_len: int, block_size: int, num_gpu_blocks: 
     """
     t0 = time.perf_counter()
     for prefix_len in prefix_lens:
-        prompts = build_workload(prefix_len, num_requests, suffix_len, seed=seed)
-        for enable_prefix_caching in (False, True):
-            engine = _make_engine(model_config, weights, num_gpu_blocks, block_size,
-                                   enable_prefix_caching=enable_prefix_caching, max_num_seqs=num_requests)
-            run_workload(engine, prompts, max_tokens=1)
+        off_prompts = build_workload(prefix_len, num_requests, suffix_len, seed=seed)
+        engine_off = _make_engine(model_config, weights, num_gpu_blocks, block_size,
+                                   enable_prefix_caching=False, max_num_seqs=num_requests)
+        run_workload(engine_off, off_prompts, max_tokens=1)
+
+        engine_on = _make_engine(model_config, weights, num_gpu_blocks, block_size,
+                                  enable_prefix_caching=True, max_num_seqs=num_requests)
+        donor_prompts = build_workload(prefix_len, 1, suffix_len, seed=seed)
+        run_workload(engine_on, donor_prompts, max_tokens=1)  # runs to completion -> prefix registered
+        follower_prompts = build_workload(prefix_len, num_requests, suffix_len, seed=seed)
+        run_workload(engine_on, follower_prompts, max_tokens=1)  # genuine matched continuation, guaranteed
     print(f"Warmup done ({len(prefix_lens)} shapes x 2 cache states) in {time.perf_counter() - t0:.1f}s")
 
 
