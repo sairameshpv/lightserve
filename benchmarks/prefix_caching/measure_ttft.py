@@ -14,10 +14,16 @@ deviation reported alongside the mean -- a single measurement of a GPU
 workload is noisy enough (scheduling jitter, memory-allocator behavior,
 etc.) that one run's reduction_pct can look nothing like the real trend;
 see benchmarks/prefix_caching/README.md's "How much does `--repeats`
-matter" section for a worked example. Writes three CSVs (see
-write_results' docstring) -- turning those into a "TTFT reduction % vs.
-prefix length" chart is a separate step, through this repo's usual
-dataviz/artifact tooling, not this script's job.
+matter" section for a worked example. An extra, unaveraged repeat 0 runs
+first and is discarded by default (`--keep-first-repeat` to include it)
+-- warmup() has repeatedly turned out not to anticipate every shape a
+given prefix_len/repeat combination hits, and repeat 0 is where that
+residual cold-start cost lands; treating it as one more (discarded)
+warmup pass is simpler than chasing warmup() to predict everything in
+advance. Writes three CSVs (see write_results' docstring) -- turning
+those into a "TTFT reduction % vs. prefix length" chart is a separate
+step, through this repo's usual dataviz/artifact tooling, not this
+script's job.
 
 This repo has no tokenizer (see benchmarks/generate_token_prompts.py's
 module docstring for the same point made about baseline_prompts.jsonl), so
@@ -326,6 +332,13 @@ def main():
                      help="Measurements per prefix length, averaged (with a stdev reported "
                           "alongside) to separate real signal from GPU timing noise -- "
                           "see REPEATS' own comment for the tradeoff")
+    ap.add_argument("--keep-first-repeat", action="store_true",
+                     help="Include repeat 0 in the mean/stdev instead of discarding it as an extra "
+                          "warmup. Off by default: repeat 0 has repeatedly shown residual Triton "
+                          "autotune cold-start cost that warmup() doesn't fully eliminate for every "
+                          "shape (see measure_ttft.py's git history) -- discarding it trades one "
+                          "extra repeat's cost for not needing to perfectly predict every shape in "
+                          "warmup() ahead of time")
     ap.add_argument("--skip-warmup", action="store_true",
                      help="Skip the untimed warmup pass -- faster iteration on the harness itself, "
                           "but real measurements will be biased by cold-start (see warmup()'s docstring)")
@@ -350,6 +363,15 @@ def main():
         warmup(prefix_lens, args.suffix_len, args.block_size, num_gpu_blocks,
                model_config, weights, args.seed, num_requests=args.num_requests)
 
+    # See --keep-first-repeat's help: repeat 0 keeps turning out to be the
+    # one that eats residual Triton autotune cold-start cost warmup()
+    # didn't anticipate for some shape or other -- run one extra repeat
+    # and drop the first from the aggregate, rather than chasing warmup()
+    # to predict every shape in advance (a moving target -- see its git
+    # history, four rounds of that game already).
+    discard_first_repeat = not args.keep_first_repeat
+    total_repeats = args.repeats + 1 if discard_first_repeat else args.repeats
+
     summary_rows, raw_rows, step_rows = [], [], []
     for prefix_len in prefix_lens:
         # Same prompts (same seed) every repeat, deliberately -- the point
@@ -358,7 +380,7 @@ def main():
         prompts = build_workload(prefix_len, args.num_requests, args.suffix_len, seed=args.seed)
 
         repeat_summaries = []
-        for repeat_index in range(args.repeats):
+        for repeat_index in range(total_repeats):
             torch.manual_seed(args.seed)
             engine_off = _make_engine(model_config, weights, num_gpu_blocks, args.block_size,
                                        enable_prefix_caching=False, max_num_seqs=args.num_requests)
@@ -370,6 +392,9 @@ def main():
             ttft_on, steps_on = run_workload(engine_on, prompts, max_tokens=args.max_tokens)
 
             repeat_summaries.append(summarize_results(prefix_len, ttft_off, ttft_on))
+            # Recorded for every repeat, including a discarded repeat 0 --
+            # raw/step data stays complete and inspectable even though the
+            # summary aggregate below excludes it.
             for request_id, t in ttft_off.items():
                 raw_rows.append({"prefix_len": prefix_len, "repeat_index": repeat_index, "cache_enabled": False,
                                   "request_id": request_id, "ttft_ms": t * 1000})
@@ -381,7 +406,8 @@ def main():
                     step_rows.append({"prefix_len": prefix_len, "repeat_index": repeat_index,
                                        "cache_enabled": cache_enabled, **step})
 
-        aggregated = aggregate_repeats(prefix_len, repeat_summaries)
+        kept_summaries = repeat_summaries[1:] if discard_first_repeat else repeat_summaries
+        aggregated = aggregate_repeats(prefix_len, kept_summaries)
         summary_rows.append(aggregated)
         print(f"prefix_len={prefix_len}: {aggregated}")
 

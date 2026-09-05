@@ -162,6 +162,36 @@ to tell from a single number whether that happened.
 comment for the 3-vs-5-vs-10 tradeoff) runs the same workload multiple
 times per prefix length and reports mean +/- stdev instead of one sample,
 turning "did this look better or worse" into "how much did it actually
-vary, and is that big relative to the mean." Pending an actual
-`--repeats 5` run on the L40S to fill in real numbers here -- next step,
-not yet done as of this write-up.
+vary, and is that big relative to the mean."
+
+It immediately earned its keep: the first real `--repeats 5` run showed
+`prefix_len=128`'s reduction as `15.9% +/- 35.8%` -- nothing like the
+clean 79.7% the earlier single-sample run reported. Cause, found from
+`repeat_index`-level data in the raw/step CSVs: `warmup()`'s cache-*off*
+pass still used a small toy `num_requests` (4), never having fixed that
+side the way the cache-on side already was -- repeat 0 alone paid ~936ms
+for a never-before-seen `M=4096` and ~1894ms for `M=432`, both ~12-100ms
+in every later repeat. Same root cause as the cache-on fix earlier in
+this doc, just never applied to cache-off; fixed by giving `warmup()` one
+`num_requests` (defaulting to the real sweep's own) used for both passes
+instead of a small separate toy count for cache-off.
+
+Re-verifying that fix (a cheap `--repeats 2` check, not a full sweep)
+found a **fourth**, structurally deeper mismatch: `warmup()`'s cache-on
+pass runs a donor fully to completion, then submits *all* followers as
+one batch that immediately gets a full match -- but the real sweep
+submits everyone at once with an empty cache, so only the first ~28
+requests get genuine misses (filling most of step 0's token budget) and
+just the few stragglers left over see a match in step 1, at a *much*
+smaller `M` than warmup's all-32-followers-matched-at-once batch ever
+produces. Four rounds of chasing warmup() to predict every shape a given
+prefix_len/repeat combination will hit is enough to call it a moving
+target rather than a bug with one more fix.
+
+Instead of a fifth warmup attempt: `main()` now runs one extra,
+unaveraged repeat 0 and discards it by default (`--keep-first-repeat` to
+include it) -- since repeat 0 is consistently where this class of
+residual cold-start cost lands, treating it as one more (discarded)
+warmup pass sidesteps the problem without needing warmup() to predict
+every shape in advance. Verification of *this* -- a full `--repeats 5`
+run with the discard behavior on -- is the next real step.
