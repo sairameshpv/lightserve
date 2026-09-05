@@ -164,58 +164,68 @@ def write_results(summary_rows: list, raw_rows: list, step_rows: list) -> None:
 
 
 def warmup(prefix_lens: list, suffix_len: int, block_size: int, num_gpu_blocks: int,
-           model_config, weights, seed: int, num_requests: int = 4) -> None:
+           model_config, weights, seed: int, num_requests: int = 4, cache_hit_num_requests: int = 32) -> None:
     """Runs one small, untimed workload per prefix length in `prefix_lens`,
     both cache off and on, through throwaway engines, before any real
     (timed) measurement.
 
-    Why: main()'s sweep always builds and times `engine_off` before
-    `engine_on`, for every prefix length -- whatever one-time CUDA context
-    / Triton kernel-compile cost exists for a given call shape would
-    otherwise land entirely on that prefix length's `cache_off` number,
-    not because caching did anything, just because `off` happened to run
-    first while the shape was still cold.
+    Why this exists at all: main()'s sweep always builds and times
+    `engine_off` before `engine_on`, for every prefix length -- whatever
+    one-time cost exists for a given call shape would otherwise land
+    entirely on that prefix length's `cache_off` number, not because
+    caching did anything, just because `off` happened to run first while
+    the shape was still cold.
 
-    Both cache states are run here, not just one: a first cut of this
-    function only ran caching off, on the (wrong) assumption that "warm
-    shared Triton kernel compilation" only depends on shapes like
-    ordinary dense prefill/decode -- but model/model_runner.py's
-    _attention() pads every non-fresh-prefill call (`L < se`, see its
-    docstring) up to `se` regardless of how many rows are real, and a
-    cache-*hit* continuation's exact (se, num-real-rows) combination
-    never occurs on a cache-off run at all (there, prefill always
-    completes in the same step it starts a request's very first chunk, so
-    a decode step's se is prefill-length-plus-one, one more than a cache
-    hit's prefill-length-plus-chunk -- close, but not the same call, and
-    apparently close enough to matter to Triton's autotuner). Measured
-    consequence: every prefix length except one paid a 1.3-2 *second*
-    one-time cost on the real sweep's first cache-hit continuation step,
-    dwarfing every other step in that same run (structurally-identical
-    later steps cost ~11-20ms) -- see benchmarks/prefix_caching/README.md.
+    The real one-time cost, found by actually profiling the slow step
+    with torch.profiler (see benchmarks/prefix_caching/README.md) rather
+    than guessing further -- two earlier cuts of this function guessed
+    wrong twice and are worth naming so the mistake isn't repeated:
+    kernels/tiled_matmul.py's `_matmul_kernel` is `@triton.autotune(...,
+    key=["M", "N", "K"])`, and every Linear in model/model_runner.py's
+    execute_model() runs as one matmul over the whole flat batch of `M =
+    sum(num_scheduled_tokens)` rows. `M` isn't fixed -- it's however many
+    followers' worth of new tokens the scheduler batches into one
+    cache-hit continuation step (see
+    SchedulerConfig.max_cache_hit_context_tokens's docstring for why that
+    count varies a lot by prefix_len: `floor(max_cache_hit_context_tokens
+    / matched_tokens)`, e.g. 32 followers at prefix_len=128 vs. 2 at
+    prefix_len=2048). Autotune benchmarks *every* config in
+    kernels/tiled_matmul.py's _CONFIGS for a **new** M the first time it's
+    seen, live, inside the timed call -- not a fixed compile tax, a real
+    multi-config timing sweep, which is why it's a full 1.3-2 *seconds*
+    and why a smaller toy `num_requests` here (this function's first two
+    versions used 4) never reliably reproduces it: with few enough toy
+    followers, warmup's own batches never reach the same M the real
+    sweep's shorter prefix lengths do, so those M values never get
+    autotuned until the real, timed run hits them.
+
+    Fix: the cache-hit follower batch here uses `cache_hit_num_requests`
+    (defaults to the real sweep's own --num-requests, not the small
+    `num_requests` used for the cache-off pass and the donor) precisely
+    so this function's own natural per-step admission grouping -- gated
+    by the same SchedulerConfig.max_cache_hit_context_tokens math the
+    real sweep uses -- lands on the exact same M per prefix_len.
 
     The cache-on pass submits a donor *first*, through its own separate
     run_workload() call, and waits for it to fully finish (so its prefix
     is genuinely registered into the cache -- see
-    BlockManager.insert_computed_prefix) before submitting `num_requests`
-    followers sharing its prefix in a second call. Deliberately not "just
-    submit num_requests requests sharing a prefix in one run_workload()
-    call, same as the real sweep does": a second cut of this function did
-    exactly that and still left prefix_lens 128/256/512 unwarmed, only
-    fixing 1024/2048 by accident -- a small enough `num_requests` at a
-    short enough `prefix_len` lets every toy request's tokens fit inside
-    one scheduler step's token budget, so (exactly the mechanism behind
-    the ref-count bug this whole feature already hit once, see
-    engine/prefix_cache.py's git history) *all* of them get admitted
-    before *any* of them has registered anything -- never producing a
-    genuine matched continuation at all for those lengths. Splitting into
-    two separate run_workload() calls forces the donor's registration to
-    complete first, regardless of prefix_len or budget sizing.
+    BlockManager.insert_computed_prefix) before submitting the followers
+    in a second call sharing its prefix. Needed regardless of the M-match
+    fix above: submitting everyone in one run_workload() call risks all
+    of them being admitted before any one of them has registered anything
+    (exactly the mechanism behind the ref-count bug this feature already
+    hit once, see engine/prefix_cache.py's git history) -- never
+    producing a genuine matched continuation at all.
 
-    Uses a small fixed `num_requests` (4) rather than the real sweep's
-    --num-requests, to keep this cheap -- covers per-token kernel shapes
-    but not necessarily batch-size-specific compiled variants. A
-    reasonable cost/rigor trade-off; revisit if results still look
-    warmup-biased.
+    build_workload restarts its own rng fresh from `seed` every call, so
+    a donor drawn with n=1 and followers drawn starting from the same
+    seed would both start with the exact same first suffix -- follower[0]
+    would be a byte-for-byte duplicate of the donor (100% matched,
+    chunk=0), which model/model_runner.py's _attention doesn't actually
+    handle (`[-L:]` with L=0 is Python's `[0:]`, not empty -- a separate,
+    real, unfixed bug, flagged not fixed here). Drawing one extra follower
+    and dropping the first (the donor's own duplicate) avoids ever
+    triggering it, without papering over that it exists.
     """
     t0 = time.perf_counter()
     for prefix_len in prefix_lens:
@@ -225,21 +235,11 @@ def warmup(prefix_lens: list, suffix_len: int, block_size: int, num_gpu_blocks: 
         run_workload(engine_off, off_prompts, max_tokens=1)
 
         engine_on = _make_engine(model_config, weights, num_gpu_blocks, block_size,
-                                  enable_prefix_caching=True, max_num_seqs=num_requests)
-        # build_workload restarts its own rng fresh from `seed` every call,
-        # so a donor drawn with n=1 and followers drawn with n=num_requests
-        # would both start with the exact same first suffix -- follower[0]
-        # would be a byte-for-byte duplicate of the donor (100% matched,
-        # chunk=0), which model/model_runner.py's _attention doesn't
-        # handle (`[-L:]` with L=0 is `[0:]` in Python, not empty -- see
-        # this function's git history for the crash that surfaced this).
-        # Drawing num_requests+1 and dropping the first (the donor's own
-        # duplicate) keeps every real follower's suffix from ever colliding
-        # with the donor's, without touching that separate, real bug.
+                                  enable_prefix_caching=True, max_num_seqs=cache_hit_num_requests + 1)
         donor_prompts = build_workload(prefix_len, 1, suffix_len, seed=seed)
         run_workload(engine_on, donor_prompts, max_tokens=1)  # runs to completion -> prefix registered
-        follower_prompts = build_workload(prefix_len, num_requests + 1, suffix_len, seed=seed)[1:]
-        run_workload(engine_on, follower_prompts, max_tokens=1)  # genuine matched continuation, guaranteed
+        follower_prompts = build_workload(prefix_len, cache_hit_num_requests + 1, suffix_len, seed=seed)[1:]
+        run_workload(engine_on, follower_prompts, max_tokens=1)  # same M the real sweep will hit, guaranteed
     print(f"Warmup done ({len(prefix_lens)} shapes x 2 cache states) in {time.perf_counter() - t0:.1f}s")
 
 
@@ -290,7 +290,7 @@ def main():
 
     if not args.skip_warmup:
         warmup(prefix_lens, args.suffix_len, args.block_size, num_gpu_blocks,
-               model_config, weights, args.seed)
+               model_config, weights, args.seed, cache_hit_num_requests=args.num_requests)
 
     summary_rows, raw_rows, step_rows = [], [], []
     for prefix_len in prefix_lens:
