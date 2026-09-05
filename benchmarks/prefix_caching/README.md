@@ -215,3 +215,45 @@ the run that revealed `prefix_len=128` has ~0% real reduction, not the
 already roughly right, but a materially different, more accurate
 picture of where prefix caching actually starts paying off in this
 implementation.
+
+## Going past 2048 tokens
+
+Two real ceilings, not one, cap how far `--prefix-lens` can usefully go --
+found by asking "does the win keep growing forever?" and then actually
+testing it rather than extrapolating.
+
+**Algorithmic ceiling, visible in the numbers already above.**
+`cache_on_ttft_ms` isn't flat -- it's `O(context_length^2)` per
+continuation (see Bug 2), and its growth rate is already visibly
+accelerating: +13.5% going 512->1024, +35.3% going 1024->2048. Fitting
+`ttft ~= C + k*context^2` to those three points (`C~=95ms`,
+`k~=1.5e-5 ms/token^2`) predicts `reduction_pct` is already near its
+*peak* somewhere around 2048-4096 tokens and would start declining
+beyond it, not keep climbing toward 100%.
+
+**Hardware ceiling, hit directly trying to check that prediction.**
+`python3 -m benchmarks.prefix_caching.measure_ttft --prefix-lens
+2048,4096,8192` crashed with a real `torch.OutOfMemoryError` -- but not
+because 8192 itself needs that much memory. `main()` sizes
+`num_gpu_blocks` **once**, off `max(prefix_lens)` across the *whole*
+list passed to `--prefix-lens`, so every engine constructed during that
+sweep (warmup, plus every repeat, at *every* length including 2048)
+allocated KV-cache sized for the 8192 worst case -- about 16GB per
+engine (8.04GB each for K and V, confirmed exactly from the crash's own
+"Tried to allocate 8.04 GiB" against this repo's `n_layers=4` truncated
+model -- see `llama3_8b_shape()`'s default, which `measure_ttft.py`
+never overrides, so none of the absolute ms numbers in this doc are the
+real 32-layer 8B model's). With dozens of such engines constructed in
+sequence and no explicit `del`/`torch.cuda.empty_cache()` between them,
+even two or three not-yet-garbage-collected engines' KV caches alone
+exceeded the L40S's ~44GB usable budget -- well before 2048 or 4096
+finished, let alone 8192.
+
+**To actually test further**: run one prefix length per process
+invocation (`--prefix-lens 4096` alone, then `--prefix-lens 8192` alone)
+so `num_gpu_blocks` is sized honestly for just that length and each run
+starts from a clean GPU, rather than combining large lengths into one
+`--prefix-lens` list. Not yet done -- the algorithmic-ceiling prediction
+above is untested past 2048, and the memory math for any given length in
+isolation hasn't been verified either, just estimated (and this doc's
+own history is proof that estimate alone isn't enough to trust).
