@@ -226,9 +226,19 @@ def warmup(prefix_lens: list, suffix_len: int, block_size: int, num_gpu_blocks: 
 
         engine_on = _make_engine(model_config, weights, num_gpu_blocks, block_size,
                                   enable_prefix_caching=True, max_num_seqs=num_requests)
+        # build_workload restarts its own rng fresh from `seed` every call,
+        # so a donor drawn with n=1 and followers drawn with n=num_requests
+        # would both start with the exact same first suffix -- follower[0]
+        # would be a byte-for-byte duplicate of the donor (100% matched,
+        # chunk=0), which model/model_runner.py's _attention doesn't
+        # handle (`[-L:]` with L=0 is `[0:]` in Python, not empty -- see
+        # this function's git history for the crash that surfaced this).
+        # Drawing num_requests+1 and dropping the first (the donor's own
+        # duplicate) keeps every real follower's suffix from ever colliding
+        # with the donor's, without touching that separate, real bug.
         donor_prompts = build_workload(prefix_len, 1, suffix_len, seed=seed)
         run_workload(engine_on, donor_prompts, max_tokens=1)  # runs to completion -> prefix registered
-        follower_prompts = build_workload(prefix_len, num_requests, suffix_len, seed=seed)
+        follower_prompts = build_workload(prefix_len, num_requests + 1, suffix_len, seed=seed)[1:]
         run_workload(engine_on, follower_prompts, max_tokens=1)  # genuine matched continuation, guaranteed
     print(f"Warmup done ({len(prefix_lens)} shapes x 2 cache states) in {time.perf_counter() - t0:.1f}s")
 
