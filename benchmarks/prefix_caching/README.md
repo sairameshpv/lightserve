@@ -14,11 +14,16 @@ methodology and caveats (one timestamp per batched `step()`, not
 per-request GPU-event precision).
 
 ```bash
-# Full sweep (run on a real CUDA GPU -- see the "Status" note below)
-python3 benchmarks/prefix_caching/measure_ttft.py
+# Run as a module, not a script -- this repo has no pyproject.toml/setup.py
+# or conftest.py, so nothing else puts the repo root on sys.path for
+# `from engine/model import ...` to resolve (same reason kernels-ci.yml
+# runs `python -m pytest`, not bare `pytest` -- see its own comment).
+
+# Full sweep, on a real CUDA GPU (see the "Status" note below)
+python3 -m benchmarks.prefix_caching.measure_ttft
 
 # Small smoke test first
-python3 benchmarks/prefix_caching/measure_ttft.py --prefix-lens 0,32 --num-requests 4 --max-tokens 1
+python3 -m benchmarks.prefix_caching.measure_ttft --prefix-lens 0,32 --num-requests 4 --max-tokens 1
 ```
 
 Writes `prefix_cache_ttft_summary.csv` (`prefix_len, cache_off_ttft_ms,
@@ -27,14 +32,58 @@ individual measurement) into this directory.
 
 ## Status
 
-Not yet run for real -- this script's engine-driving path needs a real
-CUDA GPU (see its module docstring), which this was authored without
-access to. `build_workload`/`summarize_results` (the torch-free helpers) are
-covered by `benchmarks/tests/test_measure_ttft.py` and run cleanly
-anywhere; `main()`'s actual `LLMEngine` sweep is reviewed but unverified.
+Run for real on a Nebius L40S (2026-09-04, default sweep: `num_requests=32`,
+`suffix_len=16`, `max_tokens=1`, `num_gpu_blocks` auto-sized off the
+caching-off worst case). First real run hit an actual bug -- 32 requests
+admitted in the same step, all sharing the same prefix and all missing the
+(empty) cache, independently computed and registered the same blocks;
+`RadixTrie.release()` raised `ValueError: ... ref_count already 0` when
+they all later freed. Fixed in `engine/prefix_cache.py`'s `insert()` (see
+its git history) -- it only bumped `ref_count` for a block it *created*,
+leaving a second request that found the same block already there
+uncounted. Worse than the crash itself: the same gap meant a shared
+block's `ref_count` could hit 0 -- becoming eligible for eviction -- as
+soon as just the *first* of its N sharing requests finished, while N-1
+others were still depending on it. Re-run clean after the fix:
 
-Next step: run the smoke test above on a Nebius L40S (matching
-`benchmarks/README.md`'s own precedent for where this repo's real-GPU
-numbers come from), then the full sweep, then turn the summary CSV into a
-"TTFT reduction % vs. prefix length" chart (an interactive Artifact, same
-as `../profiling/roofline/README.md`'s) and link it here.
+| prefix_len | cache_off_ttft_ms | cache_on_ttft_ms | reduction_pct |
+|-----------:|------------------:|------------------:|--------------:|
+| 0          | 3813.5             | 68.9               | 98.2%          |
+| 128        | 3128.0             | 226.5              | 92.8%          |
+| 256        | 951.5              | 767.0              | 19.4%          |
+| 512        | 1307.1             | 1511.0             | -15.6%         |
+| 1024       | 1418.8             | 1761.2             | -24.1%         |
+| 2048       | 1678.6             | 1920.0             | -14.4%         |
+
+Two things stand out, neither yet confirmed root-caused:
+
+- **prefix_len=0/128's huge win is likely inflated by a warmup confound,
+  not purely the cache**: `main()` builds `engine_off` before `engine_on`
+  in every iteration, and the very first iteration (prefix_len=0) pays
+  whatever one-time CUDA context / Triton kernel-autotuning cost exists in
+  the process -- landing entirely on that first `cache_off_ttft_ms`
+  (3813ms, the highest of any off-run despite prefix_len=0 needing the
+  *least* compute of the sweep). A fairer methodology would run one
+  untimed warmup step before either engine's first measurement.
+- **cache_on gets *worse* than cache_off from prefix_len=512 onward**:
+  the opposite of what a working cache should do at longer shared
+  prefixes. Leading hypothesis, not yet verified: `--num-gpu-blocks`
+  defaults to the caching-*off* worst case (no slack for blocks a
+  finished request's cache ref is still holding onto rather than
+  returning to the free pool), so `engine_on` likely spends real time in
+  `BlockManager._drain_evictions`/`RadixTrie.evict_one_lru` fighting for
+  blocks the off run never had to reclaim -- an operational cost of
+  prefix caching (it needs headroom beyond the bare compute-need to net
+  positive) rather than a correctness bug. Worth confirming by re-running
+  with a larger explicit `--num-gpu-blocks` before trusting the crossover
+  as real.
+
+Raw data: `prefix_cache_ttft_summary.csv` / `prefix_cache_ttft_raw.csv` in
+this directory (384 rows, one per request per prefix_len per cache
+on/off).
+
+Next step: re-run with generous `--num-gpu-blocks` headroom and an
+untimed warmup step to separate the real caching effect from these two
+confounds, then turn the (corrected) summary CSV into a "TTFT reduction %
+vs. prefix length" chart (an interactive Artifact, same as
+`../profiling/roofline/README.md`'s) and link it here.
