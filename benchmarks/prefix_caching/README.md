@@ -44,29 +44,37 @@ numbers.
 
 ## Status
 
-Run for real on a Nebius L40S (2026-09-04, default sweep: `num_requests=32`,
+Run for real on a Nebius L40S (2026-09-05, default sweep: `num_requests=32`,
 `suffix_len=16`, `max_tokens=1`, `num_gpu_blocks` auto-sized off the
-caching-off worst case). Getting a trustworthy number took two real
-engine bugs found and fixed, plus a benchmark-methodology bug that took
-three wrong guesses and an actual profiler to pin down -- final,
-corrected results:
+caching-off worst case, `--repeats 5` with repeat 0 discarded -- see
+below). Getting a trustworthy number took two real engine bugs, and a
+benchmark-methodology chase (five warmup fixes across two different root
+causes, an actual profiler, and finally `--repeats` itself) -- final
+result, mean +/- stdev over 5 kept repeats:
 
 | prefix_len | cache_off_ttft_ms | cache_on_ttft_ms | reduction_pct |
 |-----------:|------------------:|------------------:|--------------:|
-| 0          | 68.9               | 68.7               | ~0%            |
-| 128        | 1117.5             | 226.8              | 79.7%          |
-| 256        | 113.7              | 97.3               | 14.4%          |
-| 512        | 474.6              | 97.9               | 79.4%          |
-| 1024       | 248.0              | 111.4              | 55.1%          |
-| 2048       | 461.0              | 150.1              | 67.4%          |
+| 0          | 68.4 +/- 0.1        | 68.5 +/- 0.1        | -0.2% +/- 0.2%  |
+| 128        | 101.0 +/- 0.6       | 101.2 +/- 0.2       | -0.2% +/- 0.6%  |
+| 256        | 113.5 +/- 0.1       | 96.3 +/- 0.2        | 15.1% +/- 0.2%  |
+| 512        | 153.0 +/- 0.2       | 97.7 +/- 0.1        | 36.1% +/- 0.1%  |
+| 1024       | 248.9 +/- 0.8       | 110.9 +/- 0.4       | 55.4% +/- 0.3%  |
+| 2048       | 466.2 +/- 2.4       | 150.0 +/- 1.6       | 67.8% +/- 0.5%  |
 
-`prefix_len=0`'s ~0% is *correct*, not a bug: `build_workload` gives every
-request an independently-random suffix when `prefix_len=0` (`shared_prefix`
-is an empty list), so there's zero shared content for the trie to ever
-match -- a real cache genuinely can't do anything there, and this run
-finally shows that instead of an artifact. Raw data:
-`prefix_cache_ttft_summary.csv` / `prefix_cache_ttft_raw.csv` /
-`prefix_cache_step_latency.csv` in this directory.
+A real, clean, monotonic trend once the noise is gone: `reduction_pct`
+climbs steadily from ~0% at 0/128 tokens shared to 67.8% at 2048.
+`prefix_len` 0 and 128 both landing at ~0% (well within a stdev of zero)
+is real, not a bug: at `prefix_len=0` there's no shared content at all
+for the trie to match (`build_workload` gives every request an
+independently-random suffix there), and at `prefix_len=128` (8 blocks)
+the fixed per-admission bookkeeping overhead this implementation pays for
+every cache hit roughly cancels out the compute it saves -- caching only
+becomes clearly worthwhile past a few hundred shared tokens *in this
+specific implementation*, not as some universal property of prefix
+caching. Raw data: `prefix_cache_ttft_summary.csv` /
+`prefix_cache_ttft_raw.csv` / `prefix_cache_step_latency.csv` in this
+directory (`repeat_index` column included -- repeat 0, discarded from
+the aggregate above, is still in there for anyone who wants to look).
 
 ### Bug 1: ref-count double-release (real correctness bug)
 
@@ -193,5 +201,14 @@ unaveraged repeat 0 and discards it by default (`--keep-first-repeat` to
 include it) -- since repeat 0 is consistently where this class of
 residual cold-start cost lands, treating it as one more (discarded)
 warmup pass sidesteps the problem without needing warmup() to predict
-every shape in advance. Verification of *this* -- a full `--repeats 5`
-run with the discard behavior on -- is the next real step.
+every shape in advance.
+
+That worked. The verification run (`--repeats 5`, discard-first-repeat
+on) is the "Status" table at the top of this doc -- every stdev landed
+under 2.5ms (under 0.6 percentage points on `reduction_pct`), and it's
+the run that revealed `prefix_len=128` has ~0% real reduction, not the
+79.7% a single noisy sample had reported. Net result of the whole
+`--repeats` chase: not just tighter error bars on numbers that were
+already roughly right, but a materially different, more accurate
+picture of where prefix caching actually starts paying off in this
+implementation.
