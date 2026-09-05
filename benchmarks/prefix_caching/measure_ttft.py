@@ -5,13 +5,19 @@ BlockManager/Scheduler, see engine/README.md's "Prefix caching" section) is
 meant to speed up.
 
 Drives model.llm_engine.LLMEngine directly, one CacheConfig.
-enable_prefix_caching=False/True pair per prefix length in PREFIX_LENS
-(each pair preceded by an untimed warmup() pass -- see its docstring for
-why: without it, whatever one-time CUDA/Triton kernel-compile cost exists
-lands entirely on cache_off's numbers, since it always runs first), and
-writes three CSVs (see write_results' docstring) -- turning those into a
-"TTFT reduction % vs. prefix length" chart is a separate step, through
-this repo's usual dataviz/artifact tooling, not this script's job.
+enable_prefix_caching=False/True pair per prefix length in PREFIX_LENS,
+repeated `--repeats` times each (each pair preceded by an untimed
+warmup() pass -- see its docstring for why: without it, whatever one-time
+CUDA/Triton kernel-compile cost exists lands entirely on cache_off's
+numbers, since it always runs first) and averaged, with a standard
+deviation reported alongside the mean -- a single measurement of a GPU
+workload is noisy enough (scheduling jitter, memory-allocator behavior,
+etc.) that one run's reduction_pct can look nothing like the real trend;
+see benchmarks/prefix_caching/README.md's "How much does `--repeats`
+matter" section for a worked example. Writes three CSVs (see
+write_results' docstring) -- turning those into a "TTFT reduction % vs.
+prefix length" chart is a separate step, through this repo's usual
+dataviz/artifact tooling, not this script's job.
 
 This repo has no tokenizer (see benchmarks/generate_token_prompts.py's
 module docstring for the same point made about baseline_prompts.jsonl), so
@@ -28,13 +34,14 @@ benchmarks/tests/test_measure_ttft.py, runnable anywhere. Before trusting a
 full sweep, smoke-test on the real GPU first with a tiny one, e.g.:
 
     python3 -m benchmarks.prefix_caching.measure_ttft \\
-        --prefix-lens 0,32 --num-requests 4 --max-tokens 1
+        --prefix-lens 0,32 --num-requests 4 --max-tokens 1 --repeats 1
 
 (same spirit as run_baseline.py's own --limit flag for exactly this reason).
 """
 import argparse
 import csv
 import random
+import statistics
 import time
 from pathlib import Path
 
@@ -46,6 +53,11 @@ VOCAB_SIZE = 128_256
 PREFIX_LENS = [0, 128, 256, 512, 1024, 2048]  # whole multiples of the default block_size=16
 NUM_REQUESTS = 32
 SUFFIX_LEN = 16
+# 3 is the bare minimum to say anything about spread at all; 10 gives
+# noticeably more confidence but at double the GPU cost of 5 for
+# diminishing returns once the mean has stabilized. 5 is the balance --
+# see benchmarks/prefix_caching/README.md for the noise this is fighting.
+REPEATS = 5
 
 SUMMARY_CSV = Path(__file__).parent / "prefix_cache_ttft_summary.csv"
 RAW_CSV = Path(__file__).parent / "prefix_cache_ttft_raw.csv"
@@ -130,29 +142,68 @@ def summarize_results(prefix_len: int, ttft_off: dict, ttft_on: dict) -> dict:
     }
 
 
+def aggregate_repeats(prefix_len: int, repeat_summaries: list) -> dict:
+    """Aggregates `--repeats` runs' worth of summarize_results() dicts (all
+    for the same prefix_len) into a mean +/- stdev per metric. Kept
+    separate from summarize_results itself so a single repeat's own
+    arithmetic and the across-repeats aggregation are each independently
+    testable (see benchmarks/tests/test_measure_ttft.py).
+
+    stdev is 0.0 when only one repeat was run (statistics.stdev needs at
+    least two points to mean anything) -- reported honestly rather than
+    raising, since --repeats 1 is a legitimate, if not recommended, choice
+    (see REPEATS' own comment on the tradeoff).
+    """
+    def mean_and_stdev(key):
+        values = [s[key] for s in repeat_summaries]
+        return statistics.mean(values), statistics.stdev(values) if len(values) > 1 else 0.0
+
+    off_mean, off_stdev = mean_and_stdev("cache_off_ttft_ms")
+    on_mean, on_stdev = mean_and_stdev("cache_on_ttft_ms")
+    reduction_mean, reduction_stdev = mean_and_stdev("reduction_pct")
+    return {
+        "prefix_len": prefix_len,
+        "num_repeats": len(repeat_summaries),
+        "cache_off_ttft_ms_mean": off_mean,
+        "cache_off_ttft_ms_stdev": off_stdev,
+        "cache_on_ttft_ms_mean": on_mean,
+        "cache_on_ttft_ms_stdev": on_stdev,
+        "reduction_pct_mean": reduction_mean,
+        "reduction_pct_stdev": reduction_stdev,
+    }
+
+
 def write_results(summary_rows: list, raw_rows: list, step_rows: list) -> None:
-    """summary: prefix_len, cache_off_ttft_ms, cache_on_ttft_ms,
-    reduction_pct -- one row per prefix length swept. raw: prefix_len,
-    cache_enabled, request_id, ttft_ms -- every individual measurement,
-    for a richer chart later than the summary alone supports. step:
-    prefix_len, cache_enabled, step_index, duration_ms,
-    num_scheduled_tokens, num_waiting, num_running -- one row per
-    engine.step() call (see run_workload's docstring), for diagnosing
-    *why* a configuration is slow rather than just that it is.
+    """summary: prefix_len, num_repeats, cache_off_ttft_ms_mean/stdev,
+    cache_on_ttft_ms_mean/stdev, reduction_pct_mean/stdev -- one row per
+    prefix length swept, aggregated across --repeats runs (see
+    aggregate_repeats). raw: prefix_len, repeat_index, cache_enabled,
+    request_id, ttft_ms -- every individual measurement from every
+    repeat, for a richer chart later than the summary alone supports, or
+    for computing your own aggregate instead of trusting the mean/stdev
+    here. step: prefix_len, repeat_index, cache_enabled, step_index,
+    duration_ms, num_scheduled_tokens, num_waiting, num_running -- one
+    row per engine.step() call (see run_workload's docstring), for
+    diagnosing *why* a configuration is slow rather than just that it is.
     """
     with SUMMARY_CSV.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["prefix_len", "cache_off_ttft_ms", "cache_on_ttft_ms", "reduction_pct"])
+        writer = csv.DictWriter(f, fieldnames=[
+            "prefix_len", "num_repeats",
+            "cache_off_ttft_ms_mean", "cache_off_ttft_ms_stdev",
+            "cache_on_ttft_ms_mean", "cache_on_ttft_ms_stdev",
+            "reduction_pct_mean", "reduction_pct_stdev",
+        ])
         writer.writeheader()
         writer.writerows(summary_rows)
 
     with RAW_CSV.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["prefix_len", "cache_enabled", "request_id", "ttft_ms"])
+        writer = csv.DictWriter(f, fieldnames=["prefix_len", "repeat_index", "cache_enabled", "request_id", "ttft_ms"])
         writer.writeheader()
         writer.writerows(raw_rows)
 
     with STEP_CSV.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "prefix_len", "cache_enabled", "step_index", "duration_ms",
+            "prefix_len", "repeat_index", "cache_enabled", "step_index", "duration_ms",
             "num_scheduled_tokens", "num_waiting", "num_running",
         ])
         writer.writeheader()
@@ -268,6 +319,10 @@ def main():
     ap.add_argument("--num-gpu-blocks", default=None, type=int,
                      help="Defaults to enough for the worst case (caching off, longest prefix)")
     ap.add_argument("--seed", default=0, type=int)
+    ap.add_argument("--repeats", default=REPEATS, type=int,
+                     help="Measurements per prefix length, averaged (with a stdev reported "
+                          "alongside) to separate real signal from GPU timing noise -- "
+                          "see REPEATS' own comment for the tradeoff")
     ap.add_argument("--skip-warmup", action="store_true",
                      help="Skip the untimed warmup pass -- faster iteration on the harness itself, "
                           "but real measurements will be biased by cold-start (see warmup()'s docstring)")
@@ -294,28 +349,38 @@ def main():
 
     summary_rows, raw_rows, step_rows = [], [], []
     for prefix_len in prefix_lens:
+        # Same prompts (same seed) every repeat, deliberately -- the point
+        # is to sample GPU/system timing noise on an otherwise-identical
+        # computation, not to also mix in workload-content variance.
         prompts = build_workload(prefix_len, args.num_requests, args.suffix_len, seed=args.seed)
 
-        torch.manual_seed(args.seed)
-        engine_off = _make_engine(model_config, weights, num_gpu_blocks, args.block_size,
-                                   enable_prefix_caching=False, max_num_seqs=args.num_requests)
-        ttft_off, steps_off = run_workload(engine_off, prompts, max_tokens=args.max_tokens)
+        repeat_summaries = []
+        for repeat_index in range(args.repeats):
+            torch.manual_seed(args.seed)
+            engine_off = _make_engine(model_config, weights, num_gpu_blocks, args.block_size,
+                                       enable_prefix_caching=False, max_num_seqs=args.num_requests)
+            ttft_off, steps_off = run_workload(engine_off, prompts, max_tokens=args.max_tokens)
 
-        torch.manual_seed(args.seed)
-        engine_on = _make_engine(model_config, weights, num_gpu_blocks, args.block_size,
-                                  enable_prefix_caching=True, max_num_seqs=args.num_requests)
-        ttft_on, steps_on = run_workload(engine_on, prompts, max_tokens=args.max_tokens)
+            torch.manual_seed(args.seed)
+            engine_on = _make_engine(model_config, weights, num_gpu_blocks, args.block_size,
+                                      enable_prefix_caching=True, max_num_seqs=args.num_requests)
+            ttft_on, steps_on = run_workload(engine_on, prompts, max_tokens=args.max_tokens)
 
-        summary_rows.append(summarize_results(prefix_len, ttft_off, ttft_on))
-        for request_id, t in ttft_off.items():
-            raw_rows.append({"prefix_len": prefix_len, "cache_enabled": False, "request_id": request_id, "ttft_ms": t * 1000})
-        for request_id, t in ttft_on.items():
-            raw_rows.append({"prefix_len": prefix_len, "cache_enabled": True, "request_id": request_id, "ttft_ms": t * 1000})
-        for cache_enabled, steps in ((False, steps_off), (True, steps_on)):
-            for step in steps:
-                step_rows.append({"prefix_len": prefix_len, "cache_enabled": cache_enabled, **step})
+            repeat_summaries.append(summarize_results(prefix_len, ttft_off, ttft_on))
+            for request_id, t in ttft_off.items():
+                raw_rows.append({"prefix_len": prefix_len, "repeat_index": repeat_index, "cache_enabled": False,
+                                  "request_id": request_id, "ttft_ms": t * 1000})
+            for request_id, t in ttft_on.items():
+                raw_rows.append({"prefix_len": prefix_len, "repeat_index": repeat_index, "cache_enabled": True,
+                                  "request_id": request_id, "ttft_ms": t * 1000})
+            for cache_enabled, steps in ((False, steps_off), (True, steps_on)):
+                for step in steps:
+                    step_rows.append({"prefix_len": prefix_len, "repeat_index": repeat_index,
+                                       "cache_enabled": cache_enabled, **step})
 
-        print(f"prefix_len={prefix_len}: {summary_rows[-1]}")
+        aggregated = aggregate_repeats(prefix_len, repeat_summaries)
+        summary_rows.append(aggregated)
+        print(f"prefix_len={prefix_len}: {aggregated}")
 
     write_results(summary_rows, raw_rows, step_rows)
 

@@ -1,11 +1,13 @@
 """Correctness tests for benchmarks/prefix_caching/measure_ttft.py's
-torch-free helpers (build_workload, summarize_results) -- the only parts of
-that script verifiable without a real CUDA GPU (see its module docstring).
-Pure Python, no torch/CUDA, runs anywhere.
+torch-free helpers (build_workload, summarize_results, aggregate_repeats)
+-- the only parts of that script verifiable without a real CUDA GPU (see
+its module docstring). Pure Python, no torch/CUDA, runs anywhere.
 """
+import statistics
+
 import pytest
 
-from benchmarks.prefix_caching.measure_ttft import build_workload, summarize_results
+from benchmarks.prefix_caching.measure_ttft import aggregate_repeats, build_workload, summarize_results
 
 
 class TestBuildWorkload:
@@ -57,3 +59,42 @@ class TestSummarizeResults:
         ttft_on = {"r0": 0.075}
         result = summarize_results(prefix_len=0, ttft_off=ttft_off, ttft_on=ttft_on)
         assert result["reduction_pct"] == pytest.approx(-50.0)
+
+
+class TestAggregateRepeats:
+    def _summary(self, off_ms, on_ms, reduction):
+        return {"cache_off_ttft_ms": off_ms, "cache_on_ttft_ms": on_ms, "reduction_pct": reduction}
+
+    def test_single_repeat_has_zero_stdev(self):
+        result = aggregate_repeats(prefix_len=256, repeat_summaries=[self._summary(100.0, 50.0, 50.0)])
+        assert result["num_repeats"] == 1
+        assert result["cache_off_ttft_ms_mean"] == 100.0
+        assert result["cache_off_ttft_ms_stdev"] == 0.0
+        assert result["reduction_pct_mean"] == 50.0
+        assert result["reduction_pct_stdev"] == 0.0
+
+    def test_multiple_repeats_average_and_report_spread(self):
+        repeats = [
+            self._summary(100.0, 50.0, 50.0),
+            self._summary(120.0, 60.0, 50.0),  # same reduction, different absolute noise
+            self._summary(80.0, 40.0, 50.0),
+        ]
+        result = aggregate_repeats(prefix_len=256, repeat_summaries=repeats)
+        assert result["num_repeats"] == 3
+        assert result["cache_off_ttft_ms_mean"] == pytest.approx(100.0)
+        assert result["cache_off_ttft_ms_stdev"] == pytest.approx(statistics.stdev([100.0, 120.0, 80.0]))
+        assert result["reduction_pct_mean"] == pytest.approx(50.0)
+        assert result["reduction_pct_stdev"] == pytest.approx(0.0)  # identical every repeat here
+
+    def test_a_noisy_outlier_shows_up_as_nonzero_stdev(self):
+        repeats = [
+            self._summary(100.0, 90.0, 10.0),
+            self._summary(100.0, 20.0, 80.0),  # one repeat's cache_on happened to be much faster
+        ]
+        result = aggregate_repeats(prefix_len=256, repeat_summaries=repeats)
+        assert result["reduction_pct_mean"] == pytest.approx(45.0)
+        assert result["reduction_pct_stdev"] > 0  # the spread is visible, not averaged away silently
+
+    def test_prefix_len_passes_through_unchanged(self):
+        result = aggregate_repeats(prefix_len=1024, repeat_summaries=[self._summary(1.0, 1.0, 0.0)])
+        assert result["prefix_len"] == 1024

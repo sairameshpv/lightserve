@@ -7,11 +7,14 @@ many requests sharing a common system-prompt prefix.
 
 `measure_ttft.py` sweeps a set of shared-prefix lengths (default `0, 128,
 256, 512, 1024, 2048` tokens), and at each length runs the same synthetic
-workload twice against a real `LLMEngine` -- once with
-`CacheConfig.enable_prefix_caching=False`, once `True` -- recording each
-request's TTFT both times. See its module docstring for the exact
-methodology and caveats (one timestamp per batched `step()`, not
-per-request GPU-event precision).
+workload `--repeats` times (default 5) against a real `LLMEngine` -- once
+with `CacheConfig.enable_prefix_caching=False`, once `True`, per repeat --
+recording each request's TTFT every time and reporting a mean +/- stdev
+per prefix length. See its module docstring for the exact methodology
+and caveats (one timestamp per batched `step()`, not per-request
+GPU-event precision) and "How much does `--repeats` matter" below for why
+this isn't just belt-and-suspenders -- a single measurement here is noisy
+enough to get the *direction* of a result wrong, not just its exact size.
 
 ```bash
 # Run as a module, not a script -- this repo has no pyproject.toml/setup.py
@@ -22,19 +25,22 @@ per-request GPU-event precision).
 # Full sweep, on a real CUDA GPU (see the "Status" note below)
 python3 -m benchmarks.prefix_caching.measure_ttft
 
-# Small smoke test first
-python3 -m benchmarks.prefix_caching.measure_ttft --prefix-lens 0,32 --num-requests 4 --max-tokens 1
+# Small smoke test first -- --repeats 1 since this is just checking the
+# path works end to end, not measuring anything trustworthy yet
+python3 -m benchmarks.prefix_caching.measure_ttft --prefix-lens 0,32 --num-requests 4 --max-tokens 1 --repeats 1
 ```
 
-Writes `prefix_cache_ttft_summary.csv` (`prefix_len, cache_off_ttft_ms,
-cache_on_ttft_ms, reduction_pct`), `prefix_cache_ttft_raw.csv` (every
-individual measurement), and `prefix_cache_step_latency.csv` (one row per
-`engine.step()` call -- duration, tokens scheduled, queue depth -- for
-diagnosing *why* a configuration is slow, not just that it is) into this
-directory. An untimed `warmup()` pass runs once per prefix length before
-either engine is ever timed (see its docstring) -- `--skip-warmup` turns
-this off for faster iteration on the harness itself, at the cost of
-cold-start-biased numbers.
+Writes `prefix_cache_ttft_summary.csv` (`prefix_len, num_repeats,
+cache_off_ttft_ms_mean, cache_off_ttft_ms_stdev, cache_on_ttft_ms_mean,
+cache_on_ttft_ms_stdev, reduction_pct_mean, reduction_pct_stdev`),
+`prefix_cache_ttft_raw.csv` (every individual measurement from every
+repeat), and `prefix_cache_step_latency.csv` (one row per `engine.step()`
+call -- duration, tokens scheduled, queue depth -- for diagnosing *why* a
+configuration is slow, not just that it is) into this directory. An
+untimed `warmup()` pass runs once per prefix length before any repeat is
+ever timed (see its docstring) -- `--skip-warmup` turns this off for
+faster iteration on the harness itself, at the cost of cold-start-biased
+numbers.
 
 ## Status
 
@@ -141,3 +147,21 @@ prompt), not fixed in `model/model_runner.py` itself -- real workloads
 essentially never produce byte-identical prompts, so it wasn't otherwise
 in scope here, but it's a real crash waiting for whoever hits it for
 real (e.g. a retried or literally-duplicated request under caching).
+
+## How much does `--repeats` matter
+
+Every result above came from a **single** measurement per prefix length
+-- no repeats, no averaging. That's how the 512+ regression above got
+found in the first place, but it also means those exact numbers carry
+real, unquantified GPU/system timing noise: a `prefix_len=256` run that
+happened to land on an unusually fast or slow `cache_off` sample would
+report a wildly different `reduction_pct` than a typical one, with no way
+to tell from a single number whether that happened.
+
+`--repeats` (now built into `main()`, default 5 -- see `REPEATS`'s own
+comment for the 3-vs-5-vs-10 tradeoff) runs the same workload multiple
+times per prefix length and reports mean +/- stdev instead of one sample,
+turning "did this look better or worse" into "how much did it actually
+vary, and is that big relative to the mean." Pending an actual
+`--repeats 5` run on the L40S to fill in real numbers here -- next step,
+not yet done as of this write-up.
