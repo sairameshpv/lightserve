@@ -40,54 +40,104 @@ cold-start-biased numbers.
 
 Run for real on a Nebius L40S (2026-09-04, default sweep: `num_requests=32`,
 `suffix_len=16`, `max_tokens=1`, `num_gpu_blocks` auto-sized off the
-caching-off worst case). First real run hit an actual bug -- 32 requests
-admitted in the same step, all sharing the same prefix and all missing the
-(empty) cache, independently computed and registered the same blocks;
-`RadixTrie.release()` raised `ValueError: ... ref_count already 0` when
-they all later freed. Fixed in `engine/prefix_cache.py`'s `insert()` (see
-its git history) -- it only bumped `ref_count` for a block it *created*,
-leaving a second request that found the same block already there
-uncounted. Worse than the crash itself: the same gap meant a shared
-block's `ref_count` could hit 0 -- becoming eligible for eviction -- as
-soon as just the *first* of its N sharing requests finished, while N-1
-others were still depending on it. Re-run clean after the fix:
+caching-off worst case). Getting a trustworthy number took two real
+engine bugs found and fixed, plus a benchmark-methodology bug that took
+three wrong guesses and an actual profiler to pin down -- final,
+corrected results:
 
 | prefix_len | cache_off_ttft_ms | cache_on_ttft_ms | reduction_pct |
 |-----------:|------------------:|------------------:|--------------:|
-| 0          | 3813.5             | 68.9               | 98.2%          |
-| 128        | 3128.0             | 226.5              | 92.8%          |
-| 256        | 951.5              | 767.0              | 19.4%          |
-| 512        | 1307.1             | 1511.0             | -15.6%         |
-| 1024       | 1418.8             | 1761.2             | -24.1%         |
-| 2048       | 1678.6             | 1920.0             | -14.4%         |
+| 0          | 68.9               | 68.7               | ~0%            |
+| 128        | 1117.5             | 226.8              | 79.7%          |
+| 256        | 113.7              | 97.3               | 14.4%          |
+| 512        | 474.6              | 97.9               | 79.4%          |
+| 1024       | 248.0              | 111.4              | 55.1%          |
+| 2048       | 461.0              | 150.1              | 67.4%          |
 
-Two things stood out, and the table above is now known to be **superseded**
--- see the update below the line:
+`prefix_len=0`'s ~0% is *correct*, not a bug: `build_workload` gives every
+request an independently-random suffix when `prefix_len=0` (`shared_prefix`
+is an empty list), so there's zero shared content for the trie to ever
+match -- a real cache genuinely can't do anything there, and this run
+finally shows that instead of an artifact. Raw data:
+`prefix_cache_ttft_summary.csv` / `prefix_cache_ttft_raw.csv` /
+`prefix_cache_step_latency.csv` in this directory.
 
-- **prefix_len=0's 98.2% "win" cannot be real caching**: `build_workload`
-  gives every request an independently-random suffix when `prefix_len=0`
-  (`shared_prefix` is an empty list), so there is zero shared content
-  between any two requests -- the RadixTrie cannot produce a single
-  cross-request hit here. Since `main()` builds and times `engine_off`
-  before `engine_on` in every iteration, and prefix_len=0 is the very
-  first iteration of the whole process, this number is almost entirely a
-  cold-start artifact (first-ever CUDA/Triton kernel compile landing on
-  `cache_off`), not the cache doing anything.
-- **cache_on gets *worse* than cache_off from prefix_len=512 onward.**
-  The `--num-gpu-blocks`-eviction-thrashing theory floated here originally
-  doesn't survive closer inspection: caching-on should need *fewer*
-  physical blocks live at once than caching-off (later-admitted requests
-  reuse the shared prefix instead of getting their own copy), not more --
-  there shouldn't be eviction pressure. Retracted as the leading
-  explanation; the real cause needs the step-by-step data below, not
-  another guess.
+### Bug 1: ref-count double-release (real correctness bug)
 
----
+First real run: 32 requests admitted in the same step, all sharing a
+prefix and all missing the (then-empty) cache, independently computed and
+registered the same blocks; `RadixTrie.release()` raised `ValueError: ...
+ref_count already 0` when they all later freed. `engine/prefix_cache.py`'s
+`insert()` only bumped `ref_count` for a block it *created*, leaving a
+second request that found the same block already there uncounted --
+worse than the crash itself, the same gap meant a shared block's
+`ref_count` could hit 0 (eligible for eviction) as soon as just the
+*first* of its N sharing requests finished, while N-1 others still
+depended on it. Fixed (see git history) by having `insert()` bump
+`ref_count` for every node it returns unless the caller already owns it.
 
-**Update**: `measure_ttft.py` now runs an untimed `warmup()` pass per
-prefix length before either engine is ever timed (removes the cold-start
-bias above at every length, not just 0), and records
-`prefix_cache_step_latency.csv` alongside the existing two CSVs, so the
-512+ regression can actually be diagnosed from real per-step data instead
-of guessed at. Re-run on the L40S pending -- this section will be replaced
-with corrected numbers and a data-backed explanation once that's done.
+### Bug 2: O(context_length²) attention cost slips past the token budget
+
+Re-run clean after Bug 1, but `cache_on` got progressively *worse* than
+`cache_off` from prefix_len=512 onward (down to -616% at one point).
+Real cause: `model/model_runner.py`'s `_attention()` pads every
+non-fresh-prefill call up to the full context length and computes
+O(context_length²) attention regardless of how few tokens are new (a
+documented trade-off for reusing the flash-attention kernel unmodified).
+A prefix-cache hit makes a request's *new*-token count tiny while its
+real context length stays huge, so `SchedulerConfig.max_num_batched_tokens`
+(which only charges by new tokens) let many such requests pile into the
+same step -- measured: ~30 requests at once, each still paying full
+O(2064²) attention, a 1.9-2.0 *second* step vs. ~55ms for every other
+step in the same run. Fixed by
+`SchedulerConfig.max_cache_hit_context_tokens`, a second per-step budget
+charged by matched-context length instead of new-token count (see its
+docstring and `Scheduler._schedule_waiting`).
+
+### The warmup chase: three wrong guesses, then an actual profile
+
+With both bugs fixed, `prefix_len` 1024/2048 flipped strongly positive,
+but 128/256/512 barely moved -- still a ~1.35 second spike on their first
+cache-hit continuation step. Three consecutive attempts to fix
+`measure_ttft.py`'s `warmup()` (covering the cache-on shape at all;
+forcing a genuine registered match via a donor-then-followers split;
+fixing a crash that split caused) all failed to move these three lengths,
+because all three were guesses about *what* needed warming rather than
+verified measurements.
+
+What actually found it: `benchmarks/prefix_caching/profile_spike.py`
+(committed, one-off, not part of the regular suite) wraps the exact slow
+scenario in `torch.profiler`. That showed ~99% of the slow step's GPU
+time in our own `matmul` kernel and tensor zero-initialization -- real,
+recurring compute, not a one-time cost at all. `kernels/tiled_matmul.py`'s
+`_matmul_kernel` is `@triton.autotune(key=["M", "N", "K"])`, and `M` (the
+flat-batch row count every `Linear` in `execute_model()` runs over) is
+however many followers' new tokens get batched into one cache-hit
+continuation step -- which varies a lot by `prefix_len`
+(`floor(max_cache_hit_context_tokens / matched_tokens)`: 32 followers at
+prefix_len=128, 2 at prefix_len=2048). Autotune benchmarks every
+candidate config for a **new** `M` live, inside the timed call -- a real
+multi-config timing sweep, not a fixed tax -- and warmup's small fixed toy
+`num_requests` (4) never reached the `M` values 128/256/512's larger
+follower groups need, so those `M` values were never autotuned until the
+real, timed run hit them.
+
+Fixed by having `warmup()`'s cache-hit follower batch use the real
+sweep's own `--num-requests` (not a small toy count), so its own natural
+per-step admission grouping lands on the exact same `M` per `prefix_len`.
+Verified cheaply with `profile_spike.py --warmup` before committing to
+another full sweep: the same prefix_len=256 scenario dropped from 1.836s
+to 9.6ms CUDA time.
+
+### Aside, flagged but not fixed
+
+`profile_spike.py`'s early iterations also crashed on a **real, separate**
+latent bug: a request admitted with a fully-cached prefix and zero new
+tokens this step gets pushed through `_attention`/sampling with an empty
+flat-batch range -- `out_i...[-L:]` with `L=0` is Python's `[0:]` (the
+*whole* tensor), not empty, corrupting the assignment. Worked around in
+`warmup()`'s own workload construction (never submit an exact-duplicate
+prompt), not fixed in `model/model_runner.py` itself -- real workloads
+essentially never produce byte-identical prompts, so it wasn't otherwise
+in scope here, but it's a real crash waiting for whoever hits it for
+real (e.g. a retried or literally-duplicated request under caching).
