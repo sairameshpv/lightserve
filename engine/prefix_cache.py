@@ -203,7 +203,8 @@ class RadixTrie:
 
     # -- Insertion --------------------------------------------------------
 
-    def insert(self, token_ids: list, physical_block_ids: list, num_computed_tokens: int) -> list:
+    def insert(self, token_ids: list, physical_block_ids: list, num_computed_tokens: int,
+               previously_owned: frozenset = frozenset()) -> list:
         """Registers newly-computed blocks into the cache, so a future
         request's `match()` can find and reuse them.
 
@@ -212,12 +213,28 @@ class RadixTrie:
         planned. `num_computed_tokens` says how many tokens (from the
         start) are done; only whole blocks within that count get cached.
 
-        This can safely be called again and again as more of a request's
-        prompt gets computed -- useful for chunked prefill, where a long
-        prompt is computed a bit at a time across several steps. It always
-        re-walks from the very first block, so calling it repeatedly just
-        re-finds blocks it already registered before and adds any new ones
-        on top -- nothing gets registered twice.
+        Every node returned gets its ref_count bumped -- this is a hold,
+        the same as acquire()'s, just reached via "I just computed this"
+        instead of "I matched something someone else computed" -- UNLESS
+        its block_hash is in `previously_owned`, meaning *this same
+        caller* already holds it (see `previously_owned`'s own note
+        below). Two different requests independently computing the same
+        content (e.g. concurrent admission before either has registered
+        anything, so neither matched the other at admission time) both
+        get their own hold on the resulting shared node, exactly like two
+        requests that matched it via `acquire()` would.
+
+        `previously_owned`: block hashes this exact caller already holds
+        a ref on from an earlier call -- pass `{n.block_hash for n in
+        request.cached_prefix_nodes}` before overwriting it. Needed
+        because this can safely be called again and again as more of a
+        request's prompt gets computed (chunked prefill, computed a bit
+        at a time across several steps): it always re-walks from the very
+        first block, so calling it repeatedly just re-finds blocks it
+        already registered before and adds any new ones on top. Without
+        this, every repeat call would re-bump ref_count for blocks the
+        caller already holds, inflating it far past the number of
+        requests actually depending on the block.
 
         Returns the list of blocks now registered (existing ones it found
         again, plus any brand new ones). This list may be shorter than
@@ -228,6 +245,7 @@ class RadixTrie:
         overwriting that entry. Overwriting would corrupt an
         already-cached block that some other request might still be using.
         """
+        self._clock += 1
         n_blocks = num_computed_tokens // self.block_size
         parent_hash = ROOT_HASH
         level = self._roots
@@ -244,11 +262,14 @@ class RadixTrie:
                     parent_hash=parent_hash,
                     token_ids=block,
                     physical_block_id=physical_block_ids[i],
-                    ref_count=1,
+                    ref_count=0,
                     last_used=self._clock,
                 )
                 level[h] = node
                 self._by_hash[h] = node
+            if h not in previously_owned:
+                node.ref_count += 1
+                node.last_used = self._clock
             nodes.append(node)
             parent_hash = h
             level = node.children

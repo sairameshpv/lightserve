@@ -125,6 +125,45 @@ class TestHashCollision:
 
 
 class TestRefCountingAndEviction:
+    def test_two_requests_independently_inserting_the_same_content_both_get_a_hold(self):
+        """Regression test: two requests admitted before either has
+        registered anything (so neither matched the other at admission,
+        e.g. concurrent admission in the same scheduler step) both
+        computing and then insert()-ing the same prefix independently --
+        not one matching()/acquire()-ing the other's already-cached
+        result. Both must be able to release() without error: previously
+        this raised (ref_count already 0) because only the first insert()
+        actually bumped ref_count -- caught running measure_ttft.py for
+        real on a GPU (see benchmarks/prefix_caching/README.md).
+        """
+        trie = RadixTrie(block_size=4)
+        tokens = list(range(4))
+        p1_nodes = trie.insert(tokens, [10], num_computed_tokens=4)
+        p2_nodes = trie.insert(tokens, [10], num_computed_tokens=4)
+        assert p1_nodes[0] is p2_nodes[0]
+        assert p1_nodes[0].ref_count == 2
+        trie.release(p1_nodes)  # must not raise
+        trie.release(p2_nodes)  # must not raise
+        assert p1_nodes[0].ref_count == 0
+
+    def test_repeated_insert_by_the_same_request_does_not_inflate_ref_count(self):
+        """Chunked prefill: the same request calls insert_computed_prefix
+        again as more of its prompt gets computed. Passing back the
+        block_hashes it already owns (`previously_owned`, exactly what
+        BlockManager.insert_computed_prefix does with
+        request.cached_prefix_nodes) must leave already-held blocks'
+        ref_count untouched -- only genuinely new blocks pick up a hold.
+        """
+        trie = RadixTrie(block_size=4)
+        tokens = list(range(8))  # 2 blocks
+        first = trie.insert(tokens, [10, 11], num_computed_tokens=4)  # only block 0 computed so far
+        assert first[0].ref_count == 1
+        owned = frozenset(n.block_hash for n in first)
+        second = trie.insert(tokens, [10, 11], num_computed_tokens=8, previously_owned=owned)  # both blocks now
+        assert second[0] is first[0]
+        assert second[0].ref_count == 1  # unchanged -- this request already held it
+        assert second[1].ref_count == 1  # brand new hold on the newly-computed block
+
     def test_acquire_bumps_ref_count(self):
         trie = RadixTrie(block_size=4)
         inserted = trie.insert(list(range(4)), [10], num_computed_tokens=4)
@@ -209,11 +248,12 @@ class TestRefCountingAndEviction:
         p1_nodes = trie.insert(blocks(shared_head, [2, 2, 2, 2]), [10, 11], num_computed_tokens=8)
         p2_nodes = trie.insert(blocks(shared_head, [3, 3, 3, 3]), [10, 12], num_computed_tokens=8)
         # Both chains share node[0] (physical block 10) -- insert() found it
-        # pre-existing for p2 and left its ref_count untouched (still 1,
-        # from p1's own insert) per insert()'s documented contract, so we
-        # acquire explicitly here to represent p2 also depending on it.
+        # pre-existing for p2 (a different caller, no previously_owned
+        # passed) and bumped its ref_count to 2 automatically, exactly as
+        # if p2 had matched()/acquire()'d it instead of independently
+        # computing the same content.
         assert p1_nodes[0] is p2_nodes[0]
-        p2_nodes[0].ref_count += 1  # p2 also depends on the shared block 0
+        assert p1_nodes[0].ref_count == 2
 
         trie.release(p1_nodes)  # p1 fully freed: block 0 ref 1->0, block 1 (11) ref 1->0
         assert trie.num_evictable_blocks == 1  # only leaf 11 -- block 0 still has live child 12
