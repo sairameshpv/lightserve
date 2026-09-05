@@ -132,24 +132,24 @@ class BlockManager:
         disabled or less than one full block is computed.
 
         Safe to call repeatedly across chunked-prefill steps. Always
-        replaces request.cached_prefix_nodes wholesale -- insert() re-walks
-        from block 0 each time, so the result is always the complete,
-        deduplicated set of everything this request depends on. Passes the
-        request's current holdings as `previously_owned` so a repeat call
-        doesn't re-bump ref_count for blocks this same request already
-        holds (see RadixTrie.insert's docstring) -- only genuinely new
-        blocks (freshly computed this call, or matching another request's
-        already-cached block for the first time) pick up a hold.
+        replaces request.cached_prefix_nodes wholesale -- insert() resumes
+        from wherever request.cached_prefix_nodes already leaves off (its
+        `known_prefix` param), so the result is always the complete set of
+        everything this request depends on, without re-walking blocks
+        already established -- whether from an earlier call of this same
+        method (chunked prefill) or an admission-time match (see
+        RadixTrie.insert's docstring: re-walking already-known blocks on
+        every step is both unnecessary and, for a long matched prefix,
+        measurably slow).
         """
         if self.prefix_cache is None:
             return
         num_computed = min(request.num_computed_tokens, len(request.prompt_token_ids))
         if num_computed < self.block_size:
             return
-        previously_owned = frozenset(n.block_hash for n in request.cached_prefix_nodes)
         request.cached_prefix_nodes = self.prefix_cache.insert(
             request.prompt_token_ids, request.block_table, num_computed,
-            previously_owned=previously_owned,
+            known_prefix=request.cached_prefix_nodes,
         )
 
     def _drain_evictions(self, num_needed: int) -> None:

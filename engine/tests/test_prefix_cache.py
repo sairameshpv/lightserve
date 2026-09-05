@@ -148,8 +148,8 @@ class TestRefCountingAndEviction:
 
     def test_repeated_insert_by_the_same_request_does_not_inflate_ref_count(self):
         """Chunked prefill: the same request calls insert_computed_prefix
-        again as more of its prompt gets computed. Passing back the
-        block_hashes it already owns (`previously_owned`, exactly what
+        again as more of its prompt gets computed. Passing back what it
+        already owns (`known_prefix`, exactly what
         BlockManager.insert_computed_prefix does with
         request.cached_prefix_nodes) must leave already-held blocks'
         ref_count untouched -- only genuinely new blocks pick up a hold.
@@ -158,11 +158,30 @@ class TestRefCountingAndEviction:
         tokens = list(range(8))  # 2 blocks
         first = trie.insert(tokens, [10, 11], num_computed_tokens=4)  # only block 0 computed so far
         assert first[0].ref_count == 1
-        owned = frozenset(n.block_hash for n in first)
-        second = trie.insert(tokens, [10, 11], num_computed_tokens=8, previously_owned=owned)  # both blocks now
+        second = trie.insert(tokens, [10, 11], num_computed_tokens=8, known_prefix=first)  # both blocks now
         assert second[0] is first[0]
         assert second[0].ref_count == 1  # unchanged -- this request already held it
         assert second[1].ref_count == 1  # brand new hold on the newly-computed block
+
+    def test_insert_resumes_from_known_prefix_without_rewalking_it(self):
+        """The performance half of known_prefix: a node it should skip
+        entirely (not just leave ref_count alone on) must never even be
+        looked at -- verified here by using a hash_fn that raises if
+        called for a block index known_prefix already covers.
+        """
+        seen_indices = []
+
+        def tracking_hash(parent, block):
+            seen_indices.append(block[0] // 4)  # block_size=4, values 0,4,8,... per index
+            return hash((parent, block))
+
+        trie = RadixTrie(block_size=4, hash_fn=tracking_hash)
+        tokens = list(range(0, 12, 1))  # 3 blocks: [0-3],[4-7],[8-11] -- values chosen so block[0]//4 == index
+        first = trie.insert(tokens, [10, 11, 12], num_computed_tokens=4)  # walks index 0 only
+        assert seen_indices == [0]
+        seen_indices.clear()
+        trie.insert(tokens, [10, 11, 12], num_computed_tokens=12, known_prefix=first)  # should walk 1,2 only
+        assert seen_indices == [1, 2]  # index 0 never re-hashed
 
     def test_acquire_bumps_ref_count(self):
         trie = RadixTrie(block_size=4)

@@ -204,7 +204,7 @@ class RadixTrie:
     # -- Insertion --------------------------------------------------------
 
     def insert(self, token_ids: list, physical_block_ids: list, num_computed_tokens: int,
-               previously_owned: frozenset = frozenset()) -> list:
+               known_prefix: tuple = ()) -> list:
         """Registers newly-computed blocks into the cache, so a future
         request's `match()` can find and reuse them.
 
@@ -213,44 +213,55 @@ class RadixTrie:
         planned. `num_computed_tokens` says how many tokens (from the
         start) are done; only whole blocks within that count get cached.
 
-        Every node returned gets its ref_count bumped -- this is a hold,
-        the same as acquire()'s, just reached via "I just computed this"
-        instead of "I matched something someone else computed" -- UNLESS
-        its block_hash is in `previously_owned`, meaning *this same
-        caller* already holds it (see `previously_owned`'s own note
-        below). Two different requests independently computing the same
-        content (e.g. concurrent admission before either has registered
-        anything, so neither matched the other at admission time) both
-        get their own hold on the resulting shared node, exactly like two
-        requests that matched it via `acquire()` would.
+        Every block walked here (i.e. everything beyond `known_prefix`,
+        see below) gets its ref_count bumped -- this is a hold, the same
+        as acquire()'s, just reached via "I just computed this" instead of
+        "I matched something someone else computed". Two different
+        requests independently computing the same content (e.g.
+        concurrent admission before either has registered anything, so
+        neither matched the other at admission time) both get their own
+        hold on the resulting shared node, exactly like two requests that
+        matched it via `acquire()` would.
 
-        `previously_owned`: block hashes this exact caller already holds
-        a ref on from an earlier call -- pass `{n.block_hash for n in
-        request.cached_prefix_nodes}` before overwriting it. Needed
-        because this can safely be called again and again as more of a
-        request's prompt gets computed (chunked prefill, computed a bit
-        at a time across several steps): it always re-walks from the very
-        first block, so calling it repeatedly just re-finds blocks it
-        already registered before and adds any new ones on top. Without
-        this, every repeat call would re-bump ref_count for blocks the
-        caller already holds, inflating it far past the number of
-        requests actually depending on the block.
+        `known_prefix`: this exact caller's own already-established prefix
+        nodes, in order -- pass `request.cached_prefix_nodes` (whatever it
+        currently holds: `()` for a request that's never registered
+        anything, the matched nodes from admission-time `allocate()`, or
+        the return value of an earlier `insert()` call for this same
+        request). The walk resumes right after these, skipping re-hashing
+        and re-looking-up every block the caller already knows about --
+        needed both for correctness (this can safely be called again and
+        again as more of a request's prompt gets computed across chunked
+        prefill steps, so without skipping already-known blocks, every
+        repeat call would re-bump their ref_count, inflating it far past
+        the number of requests actually depending on the block) and for
+        performance (a request whose entire prompt prefix was matched at
+        admission has already paid for that walk once, in `match()` --
+        re-walking all of it again here, every step until its tiny
+        unmatched remainder finishes, is pure waste that scales with
+        matched-prefix length instead of with what's actually new; this
+        showed up as real, measured multi-second stalls -- see
+        benchmarks/prefix_caching/README.md).
 
-        Returns the list of blocks now registered (existing ones it found
-        again, plus any brand new ones). This list may be shorter than
-        expected if a hash collision is hit partway through -- see below.
+        Returns the list of blocks now registered: `known_prefix` plus
+        whatever's newly found/created beyond it. May end up shorter than
+        `num_computed_tokens // block_size` if a hash collision is hit
+        partway through -- see below.
 
         Hash collision safety: if a block's hash matches an existing entry
         but the actual tokens are different, we stop right there instead of
         overwriting that entry. Overwriting would corrupt an
         already-cached block that some other request might still be using.
         """
-        self._clock += 1
         n_blocks = num_computed_tokens // self.block_size
-        parent_hash = ROOT_HASH
-        level = self._roots
-        nodes = []
-        for i in range(n_blocks):
+        nodes = list(known_prefix)
+        start = len(nodes)
+        if start >= n_blocks:
+            return nodes[:n_blocks]  # nothing new -- num_computed_tokens didn't grow
+        self._clock += 1
+        parent_hash = nodes[-1].block_hash if nodes else ROOT_HASH
+        level = nodes[-1].children if nodes else self._roots
+        for i in range(start, n_blocks):
             block = tuple(token_ids[i * self.block_size:(i + 1) * self.block_size])
             h = self.hash_fn(parent_hash, block)
             node = level.get(h)
@@ -267,9 +278,8 @@ class RadixTrie:
                 )
                 level[h] = node
                 self._by_hash[h] = node
-            if h not in previously_owned:
-                node.ref_count += 1
-                node.last_used = self._clock
+            node.ref_count += 1
+            node.last_used = self._clock
             nodes.append(node)
             parent_hash = h
             level = node.children
