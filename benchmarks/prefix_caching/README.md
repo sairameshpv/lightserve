@@ -75,6 +75,9 @@ caching. Raw data: `prefix_cache_ttft_summary.csv` /
 `prefix_cache_ttft_raw.csv` / `prefix_cache_step_latency.csv` in this
 directory (`repeat_index` column included -- repeat 0, discarded from
 the aggregate above, is still in there for anyone who wants to look).
+Chart: [Prefix Cache Payoff](https://claude.ai/code/artifact/575c141e-11c9-4800-a322-bc2cb9786963)
+(both figures above, plus the full table, as an interactive page --
+same pattern as `../profiling/roofline/README.md`'s).
 
 ### Bug 1: ref-count double-release (real correctness bug)
 
