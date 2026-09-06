@@ -83,6 +83,38 @@ class TestGenerate:
         assert out_a.output_token_ids == _reference_generate(weights, config, prompt_a, max_tokens=4)
         assert out_b.output_token_ids == _reference_generate(weights, config, prompt_b, max_tokens=4)
 
+    def test_multi_step_chunked_prefill_matches_reference(self):
+        """Regression test: a prompt long enough, and a chunk size small
+        enough relative to it, that Scheduler._schedule_running must
+        resume this request's prefill across multiple steps before it's
+        done (prompt_len=10, chunk=3 -- doesn't divide evenly, so the tail
+        chunk has only 1 real prompt token left after 3 full chunks).
+        Every other test in this class uses prompts of 3-5 tokens against
+        max_num_batched_tokens=64 -- none of them ever force this path, so
+        this genuinely new coverage caught a real bug: model_runner.py's
+        execute_model() used to sample and record a token for *every*
+        scheduled request every step, including one still mid-prefill.
+        That inflated Request.get_num_new_tokens() (which assumes
+        output_token_ids only grows once prefill is genuinely done) by
+        one per already-run mid-prefill chunk, and once the chunk size
+        didn't evenly divide the prompt length, that inflation pushed the
+        tail chunk's token slice past the real prompt boundary into those
+        garbage samples -- confirmed as an actual divergence from the
+        dense reference (not just a theoretical concern) via
+        benchmarks/chunked_prefill/verify_multi_chunk_correctness.py
+        before this test existed. Fixed by only recording a sample once
+        `not request.is_prefill()`.
+        """
+        torch.manual_seed(0)
+        config = replace(TOY_CONFIG, dtype=torch.float32)
+        weights = init_weights(config, device="cuda", seed=0)
+        engine = _make_engine(config, weights, max_num_batched_tokens=3)
+
+        prompt = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        [output] = engine.generate([prompt], sampling_params=SamplingParams(max_tokens=5))
+
+        assert output.output_token_ids == _reference_generate(weights, config, prompt, max_tokens=5)
+
     def test_eos_stops_generation_before_max_tokens(self):
         torch.manual_seed(0)
         config = replace(TOY_CONFIG, dtype=torch.float32)

@@ -204,12 +204,14 @@ class ModelRunner:
     def execute_model(self, scheduler_output: SchedulerOutput) -> list:
         """Runs one forward pass covering every request in
         scheduler_output.scheduled_new + scheduled_running, samples (greedy)
-        each one's next token, appends it to output_token_ids, and calls
-        Request.maybe_finish() on it. Returns the stepped Request objects
-        (scheduled_new's, then scheduled_running's, same order
-        SchedulerOutput carries them in) -- preempted requests aren't in
-        `scheduled` at all (nothing to run for them this step, see
-        scheduler.py's SchedulerOutput.preempted docstring).
+        each one's next token, and -- for whichever of them are actually
+        done prefilling as of this step, see the loop at the bottom --
+        appends it to output_token_ids and calls Request.maybe_finish() on
+        it. Returns the stepped Request objects (scheduled_new's, then
+        scheduled_running's, same order SchedulerOutput carries them in) --
+        preempted requests aren't in `scheduled` at all (nothing to run for
+        them this step, see scheduler.py's SchedulerOutput.preempted
+        docstring).
         """
         scheduled = list(scheduler_output.scheduled_new) + list(scheduler_output.scheduled_running)
         if not scheduled:
@@ -254,6 +256,26 @@ class ModelRunner:
         next_token_ids = self._sample(logits)
 
         for i, sr in enumerate(scheduled):
+            if sr.request.is_prefill():
+                # More of this request's prompt remains after this step's
+                # chunk (a genuinely multi-step chunked prefill, see
+                # engine/README.md's "Chunked prefill" section) -- the
+                # sample above was predicted from an incomplete prefix and
+                # must not be recorded. Recording it here used to be a real
+                # bug: Request.get_num_new_tokens() is
+                # len(prompt)+len(output_token_ids)-num_computed_tokens,
+                # which assumes output_token_ids only grows once a request
+                # is genuinely done prefilling -- appending a token every
+                # chunk instead inflated that count by however many
+                # mid-prefill chunks had already run, and once a chunk size
+                # didn't evenly divide the prompt length, that inflation
+                # pushed the tail chunk's token slice in _build_flat_batch
+                # past the real prompt boundary into these garbage samples.
+                # Confirmed as a real divergence from the dense reference,
+                # not just a theoretical concern -- see
+                # benchmarks/chunked_prefill/verify_multi_chunk_correctness.py
+                # and this fix's own git history.
+                continue
             sr.request.output_token_ids.append(int(next_token_ids[i].item()))
             sr.request.maybe_finish()
         return [sr.request for sr in scheduled]
