@@ -271,8 +271,18 @@ class Scheduler:
             # remainder. Must happen before num_new is read, not after --
             # reading it first (this design's pre-prefix-caching order)
             # would schedule the matched tokens for compute all over again.
+            #
+            # Capped at len(prompt)-1, never the full prompt even on a 100%
+            # match: model/model_runner.py's execute_model() samples this
+            # request's next token from *this step's own* real forward
+            # pass, and a request that computes literally nothing this step
+            # has no row anywhere to sample from -- confirmed as a real
+            # crash (not a theoretical concern), see git history. Capping
+            # here means get_num_new_tokens() below always schedules that
+            # one real token itself, so a "full" cache hit still costs one
+            # token's worth of genuine compute, not zero.
             if match is not None:
-                request.num_computed_tokens = match.num_matched_tokens
+                request.num_computed_tokens = min(match.num_matched_tokens, len(request.prompt_token_ids) - 1)
                 cache_hit_context_budget -= matched_tokens
             num_new = request.get_num_new_tokens()
             # Chunked prefill: admit with whatever's left of this step's

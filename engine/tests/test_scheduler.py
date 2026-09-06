@@ -645,7 +645,17 @@ class TestPrefixCaching:
         follower_table = sched.block_manager.get_block_table(follower)
         assert follower_table[:2] == donor_table  # matched blocks reused, not fresh
 
-    def test_a_full_cache_hit_needs_no_new_compute_this_step(self):
+    def test_a_full_cache_hit_still_schedules_exactly_one_real_token(self):
+        """Even a 100% match never seeds num_computed_tokens past
+        len(prompt)-1 -- model/model_runner.py's execute_model() samples a
+        request's next token from *this step's own* real forward pass, and
+        a request scheduled for zero tokens has no row anywhere to sample
+        from (a real crash, not a theoretical concern -- see
+        Scheduler._schedule_waiting's own comment and git history). So a
+        full cache hit still costs exactly one token of genuine compute,
+        not zero -- the cheapest a matched request can ever get, but never
+        free.
+        """
         sched = make_scheduler(enable_prefix_caching=True)
         donor = make_request("donor", prompt_len=8)
         sched.add_request(donor)
@@ -656,9 +666,9 @@ class TestPrefixCaching:
         sched.add_request(follower)
         output = sched.schedule()
 
-        assert output.scheduled_new[0].num_scheduled_tokens == 0
-        assert follower.num_computed_tokens == 8
-        assert not follower.is_prefill()  # already fully "prefilled" via the cache hit
+        assert output.scheduled_new[0].num_scheduled_tokens == 1
+        assert follower.num_computed_tokens == 8  # 7 seeded from the match + 1 scheduled for real
+        assert not follower.is_prefill()  # that one real token completes it this same step
 
     def test_free_finished_requests_releases_the_cache_ref(self):
         sched = make_scheduler(enable_prefix_caching=True)
