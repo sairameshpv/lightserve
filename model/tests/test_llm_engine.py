@@ -183,11 +183,21 @@ class TestPrefixCaching:
         # assumed they held.
         assert run(enable_prefix_caching=True) == run(enable_prefix_caching=False)
 
-    def test_matched_region_is_never_rewritten(self):
+    def test_matched_region_is_never_rewritten_except_its_last_token(self):
         # Positive confirmation (not just inference from the seeded-
         # num_computed_tokens trick) that model_runner.py genuinely never
         # calls PagedKVCache.write for the matched token range once a cache
-        # hit has seeded num_computed_tokens past it.
+        # hit has seeded num_computed_tokens past it -- except the very
+        # last matched token, which Scheduler._schedule_waiting
+        # deliberately never seeds as already-computed even on a 100%
+        # match (see its own comment): execute_model() needs at least one
+        # row of *this step's own* real forward pass to sample a request's
+        # next token from, and a request scheduled for zero tokens has no
+        # hidden state anywhere to sample from -- a real crash, not a
+        # theoretical concern, see this fix's git history. So the last
+        # matched token is always genuinely recomputed once more
+        # (deterministically re-deriving the same KV values) rather than
+        # never touched at all.
         torch.manual_seed(0)
         config = replace(TOY_CONFIG, dtype=torch.float32)
         weights = init_weights(config, device="cuda", seed=0)
@@ -209,4 +219,8 @@ class TestPrefixCaching:
         _run_to_completion(engine, follower_prompt, "follower", max_tokens=1)
 
         assert write_starts  # the decode step still wrote something
-        assert min(write_starts) >= len(donor_prompt)  # never wrote inside the matched region
+        # Never wrote inside the matched region *before* its last token --
+        # position len(donor_prompt)-1 is the one always-recomputed
+        # exception, not a hole in the "matched region is never rewritten"
+        # property.
+        assert min(write_starts) >= len(donor_prompt) - 1
