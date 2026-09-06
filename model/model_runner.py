@@ -172,6 +172,21 @@ class ModelRunner:
             fs, fe = flat_starts[i], flat_ends[i]
             ss, se = seq_starts[i], seq_ends[i]
             L = fe - fs
+            if L == 0:
+                # A fully-cached-prefix request with nothing new to
+                # compute this step (e.g. a 100% prefix-cache hit -- see
+                # engine/block_manager.py's allocate()) contributes zero
+                # rows here (fs == fe): nothing to write to the KV cache
+                # (k[fs:fe]/v[fs:fe] are already empty) and nothing to
+                # fill into attn_out (attn_out[fs:fe] is already the
+                # correct empty range). Skip entirely -- `[-L:]` below
+                # with L=0 is Python's `[0:]` (the *whole* tensor, not
+                # empty), which used to try to assign a full se-length
+                # tensor into this empty slice and crash. Confirmed via
+                # model/tests/test_llm_engine.py::TestPrefixCaching::
+                # test_matched_region_is_never_rewritten, which failed
+                # with exactly this error before this fix.
+                continue
             request = scheduled[i].request
 
             self.kv_cache.write(layer_idx, request, ss, k[fs:fe], v[fs:fe])
