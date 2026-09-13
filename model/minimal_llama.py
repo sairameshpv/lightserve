@@ -40,6 +40,7 @@ has 32; running all 32 isn't necessary to demonstrate the integration or
 the CUDA-graph mechanics in model/cuda_graph_decode.py, so that script
 defaults to a handful of layers and lets you scale up.
 """
+import math
 from dataclasses import dataclass, field
 
 import torch
@@ -65,6 +66,12 @@ class LlamaConfig:
     # repeat_kv-broadcast K/V up to n_heads before every attention call.
     num_kv_heads: int = None
     rope_theta: float = 500000.0  # LLaMA-3's real value (LLaMA-1/2 used 10000)
+    # None -> plain RoPE. Llama-3.1/3.2's config.json sets this to a dict
+    # (HF's "llama3" rope_type -- NTK-aware frequency scaling for
+    # long-context models); see precompute_rope. Only "llama3" is
+    # implemented -- the other HF rope_types (linear/dynamic/yarn/
+    # longrope) use different formulas this repo doesn't have.
+    rope_scaling: dict = None
     rms_eps: float = 1e-5
     dtype: torch.dtype = torch.bfloat16
 
@@ -79,6 +86,11 @@ class LlamaConfig:
             f"n_heads ({self.n_heads}) must be a multiple of num_kv_heads "
             f"({self.num_kv_heads})"
         )
+        if self.rope_scaling is not None:
+            assert self.rope_scaling.get("rope_type") == "llama3", (
+                f"only rope_scaling rope_type 'llama3' is implemented, got "
+                f"{self.rope_scaling.get('rope_type')!r}"
+            )
 
 
 # Small, fast -- for correctness tests and quick smoke runs.
@@ -157,6 +169,30 @@ def init_weights(config: LlamaConfig, device: str = "cuda", seed: int = 0) -> Ll
     )
 
 
+def _llama3_rope_scaling(inv_freq: torch.Tensor, rope_scaling: dict) -> torch.Tensor:
+    """HF's Llama-3.1/3.2 NTK-aware RoPE frequency scaling (rope_type
+    "llama3", see LlamaConfig.rope_scaling): short wavelengths (high
+    frequencies) are left alone, long wavelengths (low frequencies) are
+    divided by `factor`, and the band in between is smoothly interpolated
+    -- lets a model trained at original_max_position_embeddings extrapolate
+    to a much longer max_position_embeddings without retraining.
+    """
+    factor = rope_scaling["factor"]
+    low_freq_factor = rope_scaling["low_freq_factor"]
+    high_freq_factor = rope_scaling["high_freq_factor"]
+    old_context_len = rope_scaling["original_max_position_embeddings"]
+
+    low_freq_wavelen = old_context_len / low_freq_factor
+    high_freq_wavelen = old_context_len / high_freq_factor
+    wavelen = 2 * math.pi / inv_freq
+
+    scaled = torch.where(wavelen > low_freq_wavelen, inv_freq / factor, inv_freq)
+    smooth = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
+    smoothed = smooth * scaled / factor + (1 - smooth) * scaled
+    is_medium = ~(wavelen < high_freq_wavelen) & ~(wavelen > low_freq_wavelen)
+    return torch.where(is_medium, smoothed, scaled)
+
+
 def precompute_rope(config: LlamaConfig, device: str):
     """cos/sin lookup tables, [max_seq_len, head_dim] each -- a fixed buffer
     sliced identically on every call (same [0:N] range every decode step in
@@ -166,6 +202,8 @@ def precompute_rope(config: LlamaConfig, device: str):
     """
     half = config.head_dim // 2
     inv_freq = 1.0 / (config.rope_theta ** (torch.arange(0, half, device=device, dtype=torch.float32) / half))
+    if config.rope_scaling is not None:
+        inv_freq = _llama3_rope_scaling(inv_freq, config.rope_scaling)
     positions = torch.arange(config.max_seq_len, device=device, dtype=torch.float32)
     freqs = torch.outer(positions, inv_freq)  # [max_seq_len, head_dim/2]
     cos = torch.cat([freqs.cos(), freqs.cos()], dim=-1).to(config.dtype)  # [max_seq_len, head_dim]

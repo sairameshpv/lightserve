@@ -16,12 +16,15 @@ tight elsewhere: no precision-mode ambiguity to cause a legitimate gap.
 
 Skipped on machines without a CUDA GPU, same as kernels 1-4.
 """
+import math
 from dataclasses import replace
 
 import pytest
 import torch
 
-from model.minimal_llama import LlamaConfig, TOY_CONFIG, init_weights, llama_forward, reference_llama_forward
+from model.minimal_llama import (
+    LlamaConfig, TOY_CONFIG, _llama3_rope_scaling, init_weights, llama_forward, reference_llama_forward,
+)
 
 requires_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Triton kernels need a CUDA GPU (none available here)"
@@ -77,3 +80,51 @@ def test_config_rejects_hidden_size_mismatch():
             n_layers=1, n_heads=4, head_dim=64,  # 4*64=256 != hidden_size=100
             max_seq_len=8,
         )
+
+
+def test_config_rejects_unsupported_rope_scaling_type():
+    with pytest.raises(AssertionError):
+        LlamaConfig(
+            vocab_size=100, hidden_size=256, intermediate_size=64,
+            n_layers=1, n_heads=4, head_dim=64, max_seq_len=8,
+            rope_scaling={"rope_type": "yarn"},  # only "llama3" is implemented
+        )
+
+
+def test_llama3_rope_scaling_matches_reference_formula():
+    """_llama3_rope_scaling (vectorized torch.where) checked against an
+    independent, per-frequency-index Python loop reimplementation of HF's
+    llama3 rope_type formula -- same "second independent implementation of
+    the same public math" pattern reference_llama_forward uses for the
+    rest of the forward pass.
+    """
+    head_dim, rope_theta = 8, 500000.0
+    rope_scaling = {
+        "factor": 32.0, "low_freq_factor": 1.0, "high_freq_factor": 4.0,
+        "original_max_position_embeddings": 8192, "rope_type": "llama3",
+    }
+    half = head_dim // 2
+    inv_freq = torch.tensor(
+        [1.0 / (rope_theta ** (j / half)) for j in range(half)], dtype=torch.float64,
+    )
+
+    factor = rope_scaling["factor"]
+    low_freq_factor = rope_scaling["low_freq_factor"]
+    high_freq_factor = rope_scaling["high_freq_factor"]
+    old_context_len = rope_scaling["original_max_position_embeddings"]
+    low_freq_wavelen = old_context_len / low_freq_factor
+    high_freq_wavelen = old_context_len / high_freq_factor
+
+    expected = []
+    for f in inv_freq.tolist():
+        wavelen = 2 * math.pi / f
+        if wavelen < high_freq_wavelen:
+            expected.append(f)
+        elif wavelen > low_freq_wavelen:
+            expected.append(f / factor)
+        else:
+            smooth = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
+            expected.append(smooth * f / factor + (1 - smooth) * f)
+
+    actual = _llama3_rope_scaling(inv_freq, rope_scaling)
+    torch.testing.assert_close(actual, torch.tensor(expected, dtype=torch.float64), atol=1e-10, rtol=1e-10)

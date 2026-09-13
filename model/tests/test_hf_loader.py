@@ -9,7 +9,10 @@ correctly? Two tiers:
     heads), the n_layers-truncation override, and the sharded
     model.safetensors.index.json layout large real checkpoints use.
   - requires_cuda, skipped unless a real checkpoint is present on disk:
-    loads it for real and checks the forward pass runs and is stable.
+    loads it for real (both the real Llama-3-8B-Instruct target and the
+    real Llama-3.2-1B-Instruct draft, the latter's config.json carrying
+    the "llama3" rope_scaling minimal_llama.py's precompute_rope has to
+    handle) and checks the forward pass runs and is stable.
 """
 import json
 import os
@@ -25,18 +28,16 @@ requires_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="the real-checkpoint smoke test needs a CUDA GPU"
 )
 
-# The real Llama-3-8B-Instruct checkpoint lives in the L40S's HF hub cache
-# (already downloaded for the vLLM/SGLang benchmark containers -- see
-# ~/.claude/plans/agile-rolling-gray.md's Context section). Resolved by
-# glob, not a hardcoded snapshot hash, so a re-download under a new commit
-# hash doesn't break this.
-_LLAMA3_8B_HUB_DIR = os.path.expanduser(
-    "~/.cache/huggingface/hub/models--meta-llama--Meta-Llama-3-8B-Instruct"
-)
+# The real checkpoints live in the L40S's HF hub cache (already downloaded
+# for the vLLM/SGLang benchmark containers, and -- for the 1B draft -- for
+# this feature directly; see ~/.claude/plans/agile-rolling-gray.md's
+# Context section). Resolved by glob, not a hardcoded snapshot hash, so a
+# re-download under a new commit hash doesn't break this.
+_HF_HUB_DIR = os.path.expanduser("~/.cache/huggingface/hub")
 
 
-def _find_real_checkpoint_dir():
-    snapshots_dir = os.path.join(_LLAMA3_8B_HUB_DIR, "snapshots")
+def _find_snapshot_dir(model_repo_dir_name):
+    snapshots_dir = os.path.join(_HF_HUB_DIR, model_repo_dir_name, "snapshots")
     if not os.path.isdir(snapshots_dir):
         return None
     for name in os.listdir(snapshots_dir):
@@ -46,18 +47,20 @@ def _find_real_checkpoint_dir():
     return None
 
 
-_REAL_CHECKPOINT_DIR = _find_real_checkpoint_dir()
+_REAL_8B_CHECKPOINT_DIR = _find_snapshot_dir("models--meta-llama--Meta-Llama-3-8B-Instruct")
+_REAL_1B_CHECKPOINT_DIR = _find_snapshot_dir("models--meta-llama--Llama-3.2-1B-Instruct")
 
 
 def _write_fake_checkpoint(tmp_path, *, hidden_size, intermediate_size, n_layers, n_heads,
-                            num_key_value_heads, head_dim, vocab_size, tie_word_embeddings):
+                            num_key_value_heads, head_dim, vocab_size, tie_word_embeddings,
+                            rope_scaling=None):
     hf_config = {
         "hidden_size": hidden_size, "intermediate_size": intermediate_size,
         "num_hidden_layers": n_layers, "num_attention_heads": n_heads,
         "num_key_value_heads": num_key_value_heads, "head_dim": head_dim,
         "vocab_size": vocab_size, "max_position_embeddings": 128,
         "rope_theta": 500000.0, "rms_norm_eps": 1e-5,
-        "tie_word_embeddings": tie_word_embeddings,
+        "tie_word_embeddings": tie_word_embeddings, "rope_scaling": rope_scaling,
     }
     (tmp_path / "config.json").write_text(json.dumps(hf_config))
 
@@ -121,6 +124,20 @@ def test_maps_names_and_transposes_correctly(tmp_path, tie_word_embeddings):
         assert torch.equal(layer.down_proj, raw[p + "mlp.down_proj.weight"].t())
 
 
+def test_rope_scaling_passes_through(tmp_path):
+    llama3_scaling = {
+        "factor": 32.0, "low_freq_factor": 1.0, "high_freq_factor": 4.0,
+        "original_max_position_embeddings": 8192, "rope_type": "llama3",
+    }
+    _write_fake_checkpoint(
+        tmp_path, hidden_size=16, intermediate_size=24, n_layers=1, n_heads=2,
+        num_key_value_heads=2, head_dim=8, vocab_size=32, tie_word_embeddings=True,
+        rope_scaling=llama3_scaling,
+    )
+    config, _ = load_hf_checkpoint(str(tmp_path), device="cpu")
+    assert config.rope_scaling == llama3_scaling
+
+
 def test_n_layers_override_truncates(tmp_path):
     _write_fake_checkpoint(
         tmp_path, hidden_size=16, intermediate_size=24, n_layers=4, n_heads=2,
@@ -167,8 +184,8 @@ def _greedy_generate(weights, config, prompt_ids, num_new_tokens):
 
 
 @requires_cuda
-@pytest.mark.skipif(_REAL_CHECKPOINT_DIR is None, reason="real Llama-3-8B-Instruct checkpoint not found on disk")
-def test_real_checkpoint_smoke():
+@pytest.mark.skipif(_REAL_8B_CHECKPOINT_DIR is None, reason="real Llama-3-8B-Instruct checkpoint not found on disk")
+def test_real_8b_checkpoint_smoke():
     """Loads the real Llama-3-8B-Instruct checkpoint and greedy-generates a
     few tokens with reference_llama_forward (dense, no KV cache -- see its
     own docstring) from an arbitrary real token-id prompt. Tokenizer-free
@@ -177,10 +194,31 @@ def test_real_checkpoint_smoke():
     without NaN/Inf, and is the greedy continuation stable across two
     independent runs from scratch.
     """
-    config, weights = load_hf_checkpoint(_REAL_CHECKPOINT_DIR, device="cuda")
+    config, weights = load_hf_checkpoint(_REAL_8B_CHECKPOINT_DIR, device="cuda")
     assert (config.n_layers, config.hidden_size, config.n_heads, config.num_kv_heads) == (32, 4096, 32, 8)
+    assert config.rope_scaling is None  # this checkpoint's config.json has rope_scaling: null
 
     prompt_ids = [128000, 9906, 1917, 11, 420, 374, 264, 1296]  # arbitrary ids within vocab_size, not tokenized text
+    continuation_a = _greedy_generate(weights, config, prompt_ids, num_new_tokens=3)
+    continuation_b = _greedy_generate(weights, config, prompt_ids, num_new_tokens=3)
+    assert continuation_a == continuation_b
+
+
+@requires_cuda
+@pytest.mark.skipif(_REAL_1B_CHECKPOINT_DIR is None, reason="real Llama-3.2-1B-Instruct checkpoint not found on disk")
+def test_real_1b_checkpoint_smoke():
+    """Same systems check as test_real_8b_checkpoint_smoke, but for the
+    real Llama-3.2-1B-Instruct draft checkpoint -- also the first real
+    exercise of both the llama3 rope_scaling code path (this checkpoint's
+    config.json sets it; the 8B one doesn't) and hf_loader.py's
+    single-file (non-sharded model.safetensors) branch, since 1B ships as
+    one file where 8B is sharded.
+    """
+    config, weights = load_hf_checkpoint(_REAL_1B_CHECKPOINT_DIR, device="cuda")
+    assert (config.n_layers, config.hidden_size, config.n_heads, config.num_kv_heads) == (16, 2048, 32, 8)
+    assert config.rope_scaling is not None and config.rope_scaling["rope_type"] == "llama3"
+
+    prompt_ids = [128000, 9906, 1917, 11, 420, 374, 264, 1296]
     continuation_a = _greedy_generate(weights, config, prompt_ids, num_new_tokens=3)
     continuation_b = _greedy_generate(weights, config, prompt_ids, num_new_tokens=3)
     assert continuation_a == continuation_b

@@ -28,6 +28,7 @@ def _config_from_hf(hf_config: dict, n_layers: int = None) -> LlamaConfig:
         max_seq_len=hf_config["max_position_embeddings"],
         num_kv_heads=hf_config.get("num_key_value_heads"),  # None -> MHA, see __post_init__
         rope_theta=hf_config.get("rope_theta", 500000.0),
+        rope_scaling=hf_config.get("rope_scaling"),  # None -> plain RoPE, see LlamaConfig/precompute_rope
         rms_eps=hf_config.get("rms_norm_eps", 1e-5),
     )
 
