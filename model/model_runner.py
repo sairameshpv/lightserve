@@ -80,7 +80,7 @@ from kernels.flash_attention import flash_attention_forward
 from kernels.fused_rmsnorm_residual import fused_add_rmsnorm
 from kernels.tiled_matmul import matmul
 from model.kv_cache import PagedKVCache
-from model.minimal_llama import LlamaConfig, LlamaWeights, precompute_rope
+from model.minimal_llama import LlamaConfig, LlamaWeights, precompute_rope, repeat_kv
 
 
 def _rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -160,12 +160,14 @@ class ModelRunner:
         return input_ids, positions, flat_starts, flat_ends, seq_starts, seq_ends
 
     def _attention(self, layer_idx, q, k, v, scheduled, flat_starts, flat_ends, seq_starts, seq_ends):
-        """q, k, v: [T, n_heads, head_dim], already RoPE'd. Writes this
-        step's new k/v into the KV cache and returns attn_out shaped like q
-        -- see module docstring on why this loops per request instead of
-        one batched call, and on the zero-pad-Q-to-K's-length trick used
-        here to keep calling flash_attention_forward with its own
-        q.shape == k.shape == v.shape contract intact.
+        """q: [T, n_heads, head_dim]; k, v: [T, num_kv_heads, head_dim] --
+        all already RoPE'd. Writes this step's new k/v into the KV cache
+        (at num_kv_heads, GQA's narrower head count) and returns attn_out
+        shaped like q -- see module docstring on why this loops per request
+        instead of one batched call, and on the zero-pad-Q-to-K's-length
+        trick used here to keep calling flash_attention_forward with its own
+        q.shape == k.shape == v.shape contract intact (which is also why
+        k/v get repeat_kv'd back up to n_heads below, right before that call).
         """
         attn_out = torch.empty_like(q)
         for i in range(len(scheduled)):
@@ -190,7 +192,9 @@ class ModelRunner:
             request = scheduled[i].request
 
             self.kv_cache.write(layer_idx, request, ss, k[fs:fe], v[fs:fe])
-            k_full, v_full = self.kv_cache.read(layer_idx, request, se)  # [se, n_heads, head_dim]
+            k_full, v_full = self.kv_cache.read(layer_idx, request, se)  # [se, num_kv_heads, head_dim]
+            n_rep = self.config.n_heads // self.config.num_kv_heads
+            k_full, v_full = repeat_kv(k_full, n_rep), repeat_kv(v_full, n_rep)  # -> [se, n_heads, head_dim]
 
             q_new = q[fs:fe]  # [L, n_heads, head_dim] -- this step's real query rows
             if L < se:
@@ -244,8 +248,8 @@ class ModelRunner:
             normed, residual = fused_add_rmsnorm(x, residual, layer.input_layernorm_weight, eps=self.config.rms_eps)
 
             q = matmul(normed, layer.q_proj).reshape(-1, self.config.n_heads, self.config.head_dim)
-            k = matmul(normed, layer.k_proj).reshape(-1, self.config.n_heads, self.config.head_dim)
-            v = matmul(normed, layer.v_proj).reshape(-1, self.config.n_heads, self.config.head_dim)
+            k = matmul(normed, layer.k_proj).reshape(-1, self.config.num_kv_heads, self.config.head_dim)
+            v = matmul(normed, layer.v_proj).reshape(-1, self.config.num_kv_heads, self.config.head_dim)
             q, k = _apply_rope_at_positions(q, k, self.cos, self.sin, positions)
 
             attn_out = self._attention(layer_idx, q, k, v, scheduled, flat_starts, flat_ends, seq_starts, seq_ends)

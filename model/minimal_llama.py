@@ -56,6 +56,11 @@ class LlamaConfig:
     n_heads: int
     head_dim: int
     max_seq_len: int
+    # None -> plain MHA (num_kv_heads == n_heads). Set it lower for
+    # grouped-query attention (LLaMA-3-8B: 8 KV heads vs 32 Q heads); the
+    # kernel is still MHA-only, so model_runner.py/minimal_llama.py
+    # repeat_kv-broadcast K/V up to n_heads before every attention call.
+    num_kv_heads: int = None
     rope_theta: float = 500000.0  # LLaMA-3's real value (LLaMA-1/2 used 10000)
     rms_eps: float = 1e-5
     dtype: torch.dtype = torch.bfloat16
@@ -63,8 +68,13 @@ class LlamaConfig:
     def __post_init__(self):
         assert self.hidden_size == self.n_heads * self.head_dim, (
             f"hidden_size ({self.hidden_size}) must equal n_heads*head_dim "
-            f"({self.n_heads}*{self.head_dim}={self.n_heads * self.head_dim}) -- "
-            "plain MHA only here, see module docstring on GQA"
+            f"({self.n_heads}*{self.head_dim}={self.n_heads * self.head_dim})"
+        )
+        if self.num_kv_heads is None:
+            self.num_kv_heads = self.n_heads
+        assert self.n_heads % self.num_kv_heads == 0, (
+            f"n_heads ({self.n_heads}) must be a multiple of num_kv_heads "
+            f"({self.num_kv_heads})"
         )
 
 
@@ -120,14 +130,15 @@ def init_weights(config: LlamaConfig, device: str = "cuda", seed: int = 0) -> Ll
 
     H, I, V = config.hidden_size, config.intermediate_size, config.vocab_size
     qkv_dim = config.n_heads * config.head_dim
+    kv_dim = config.num_kv_heads * config.head_dim  # == qkv_dim under plain MHA
 
     layers = []
     for _ in range(config.n_layers):
         layers.append(LayerWeights(
             input_layernorm_weight=ones(H),
             q_proj=randn(H, qkv_dim),
-            k_proj=randn(H, qkv_dim),
-            v_proj=randn(H, qkv_dim),
+            k_proj=randn(H, kv_dim),
+            v_proj=randn(H, kv_dim),
             o_proj=randn(qkv_dim, H),
             post_attention_layernorm_weight=ones(H),
             gate_proj=randn(H, I),
@@ -175,6 +186,20 @@ def apply_rope(q, k, cos, sin, n):
     return q_rot, k_rot
 
 
+def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """Broadcasts the head dim (always x's dim 1, e.g. this file's own
+    [B, num_kv_heads, N, head_dim] or model_runner.py::_attention's
+    [seq_len, num_kv_heads, head_dim]) from num_kv_heads up to
+    num_kv_heads*n_rep. Each KV head is repeated n_rep times contiguously
+    (HF's repeat_kv layout: heads [0,0,1,1,...] for n_rep=2, not interleaved
+    [0,1,0,1,...]) so query head i attends to KV head i // n_rep. No-op
+    (returns x) when n_rep == 1, i.e. plain MHA.
+    """
+    if n_rep == 1:
+        return x
+    return x.repeat_interleave(n_rep, dim=1)
+
+
 def _linear(x_2d: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
     """x_2d: [M, in], w: [in, out] -- see module docstring on why weights
     are stored transposed from nn.Linear's convention.
@@ -214,9 +239,13 @@ def llama_forward(weights: LlamaWeights, config: LlamaConfig, input_ids: torch.T
         normed_2d = normed.reshape(B * N, H)
 
         q = _linear(normed_2d, layer.q_proj).reshape(B, N, config.n_heads, config.head_dim).transpose(1, 2)
-        k = _linear(normed_2d, layer.k_proj).reshape(B, N, config.n_heads, config.head_dim).transpose(1, 2)
-        v = _linear(normed_2d, layer.v_proj).reshape(B, N, config.n_heads, config.head_dim).transpose(1, 2)
+        k = _linear(normed_2d, layer.k_proj).reshape(B, N, config.num_kv_heads, config.head_dim).transpose(1, 2)
+        v = _linear(normed_2d, layer.v_proj).reshape(B, N, config.num_kv_heads, config.head_dim).transpose(1, 2)
         q, k = apply_rope(q, k, cos, sin, N)
+        # GQA: kernel needs q/k/v head counts to match (see module docstring),
+        # so broadcast K/V's fewer heads up to n_heads here. No-op under MHA.
+        n_rep = config.n_heads // config.num_kv_heads
+        k, v = repeat_kv(k, n_rep), repeat_kv(v, n_rep)
 
         attn_out = flash_attention_forward(q, k, v, causal=causal)  # [B, n_heads, N, head_dim]
         attn_out = attn_out.transpose(1, 2).reshape(B * N, config.n_heads * config.head_dim)
@@ -272,9 +301,13 @@ def reference_llama_forward(weights: LlamaWeights, config: LlamaConfig, input_id
         normed = rmsnorm(residual, layer.input_layernorm_weight)
 
         q = F.linear(normed, layer.q_proj.t()).view(B, N, config.n_heads, config.head_dim).transpose(1, 2)
-        k = F.linear(normed, layer.k_proj.t()).view(B, N, config.n_heads, config.head_dim).transpose(1, 2)
-        v = F.linear(normed, layer.v_proj.t()).view(B, N, config.n_heads, config.head_dim).transpose(1, 2)
+        k = F.linear(normed, layer.k_proj.t()).view(B, N, config.num_kv_heads, config.head_dim).transpose(1, 2)
+        v = F.linear(normed, layer.v_proj.t()).view(B, N, config.num_kv_heads, config.head_dim).transpose(1, 2)
         q, k = apply_rope(q, k, cos, sin, N)
+        # repeat_kv, not SDPA's enable_gqa, so this stays a like-for-like
+        # reference for llama_forward's kernel path (see module docstring).
+        n_rep = config.n_heads // config.num_kv_heads
+        k, v = repeat_kv(k, n_rep), repeat_kv(v, n_rep)
 
         attn_out = F.scaled_dot_product_attention(q, k, v, is_causal=causal)
         attn_out = attn_out.transpose(1, 2).reshape(B, N, config.n_heads * config.head_dim)

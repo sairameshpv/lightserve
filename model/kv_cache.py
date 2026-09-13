@@ -4,7 +4,7 @@ owned by which request (see its module docstring); this is the "actual GPU
 memory a block id refers to" it explicitly says isn't its job.
 
 One tensor per layer per K/V, shaped
-`[num_gpu_blocks, block_size, n_heads, head_dim]` -- `write`/`read` translate
+`[num_gpu_blocks, block_size, num_kv_heads, head_dim]` -- `write`/`read` translate
 a request's logical token positions into `(physical_block_id, offset_in_block)`
 pairs via its `block_table` (BlockManager.allocate/append_slot already sized
 and populated that list; this module only ever reads it) and gather/scatter
@@ -24,8 +24,10 @@ PagedAttention kernel does that gather *inside* the kernel across the whole
 batch; this doesn't, on purpose, to avoid new Triton kernel-authoring/tuning
 work here.
 
-Same plain-MHA assumption as minimal_llama.py: `n_heads` here is also the
-KV head count (no GQA broadcast) -- see that file's module docstring.
+Stores K/V at `num_kv_heads` (== `n_heads` under plain MHA, fewer under GQA
+-- see minimal_llama.py's module docstring). The repeat_kv broadcast up to
+`n_heads` happens in model_runner.py, after read(), not here -- this file
+only ever stores/gathers what the model actually projected.
 """
 import torch
 
@@ -41,7 +43,7 @@ class PagedKVCache:
         self.device = device
         shape = (
             model_config.n_layers, cache_config.num_gpu_blocks, cache_config.block_size,
-            model_config.n_heads, model_config.head_dim,
+            model_config.num_kv_heads, model_config.head_dim,
         )
         # zeros, not empty: a never-written slot (e.g. a block's tail past a
         # request's real length) must read back as inert, not NaN/garbage --
@@ -66,7 +68,7 @@ class PagedKVCache:
         """Scatter this step's freshly computed k/v for `request` into the
         physical blocks its block_table already reserves, at logical
         positions [start, start + k.shape[0]). k, v: [num_new_tokens,
-        n_heads, head_dim]. `start` is the *sequence* position of the first
+        num_kv_heads, head_dim]. `start` is the *sequence* position of the first
         new token -- 0 for a fresh/resumed prefill's first chunk (the whole
         prompt in one step, or just its first slice under chunked prefill,
         see engine/README.md), num_computed_tokens (pre-this-step) for a
@@ -85,7 +87,7 @@ class PagedKVCache:
 
     def read(self, layer_idx: int, request: Request, seq_len: int):
         """Gather `request`'s first `seq_len` logical positions' K/V back
-        into one dense [seq_len, n_heads, head_dim] tensor each -- includes
+        into one dense [seq_len, num_kv_heads, head_dim] tensor each -- includes
         whatever `write` just stored this same step, since write-then-read
         against the same block ids is exactly how a decode step's new token
         ends up included in its own attention call's K/Nkv.
