@@ -5,11 +5,12 @@ torch.nn.Linear / F.rms_norm / F.scaled_dot_product_attention.
 
 Scope, on purpose ("minimal"):
 
-  - Plain multi-head attention, not LLaMA-3's real grouped-query attention
-    (8 KV heads vs 32 Q heads) -- kernels/flash_attention.py's kernel
-    requires q.shape == k.shape == v.shape (same H), so it can't express
-    GQA's K/V-head-broadcast without a kernel change. hidden_size =
-    n_heads * head_dim, every head count matches.
+  - kernels/flash_attention.py's kernel itself is still MHA-only
+    (requires q.shape == k.shape == v.shape, same H) -- LLaMA-3's real
+    grouped-query attention (8 KV heads vs 32 Q heads) is expressed on top
+    of it by `repeat_kv`-broadcasting K/V up to n_heads before every
+    attention call (see LlamaConfig.num_kv_heads, model_runner.py's
+    `_attention`), not by changing the kernel.
   - RoPE and the MLP's SiLU-gate-multiply are plain PyTorch ops, not fused
     Triton kernels. Both are pure elementwise/broadcast math with no
     reduction and no reuse-across-threads to exploit (unlike kernel 1's
@@ -21,13 +22,15 @@ Scope, on purpose ("minimal"):
     transpose of nn.Linear's usual [out, in]) purely so `matmul(x, w)`
     (kernels/tiled_matmul.py's `C = A @ B`, no transpose argument) can be
     called directly -- no separate transpose kernel or op needed.
-  - Random weights, not real LLaMA-3 checkpoint weights. This file is a
-    systems/integration exercise (does the forward pass compose correctly,
-    is it fast, does it graph-capture) not a quality one -- loading real
-    HF weights would need a name-mapping layer with zero kernel-integration
-    value added. `reference_llama_forward` (pure PyTorch, same random
-    weights) is what correctness is checked against -- see
-    model/tests/test_minimal_llama.py.
+  - `init_weights` below is random, not a real LLaMA-3 checkpoint -- kept
+    for the systems/integration tests and benchmarks in this file's own
+    test/benchmark scripts, where the point is whether the forward pass
+    composes correctly and is fast, not output quality.
+    `reference_llama_forward` (pure PyTorch, same weights) is what
+    correctness is checked against -- see model/tests/test_minimal_llama.py.
+    `model/hf_loader.py` loads a real checkpoint into these same
+    LlamaConfig/LlamaWeights dataclasses when real weights are wanted (see
+    model/tests/test_hf_loader.py).
 
 LLAMA3_8B_SHAPE below uses LLaMA-3-8B-Instruct's real per-layer dimensions
 (hidden=4096, n_heads=32, head_dim=128, intermediate=14336, vocab=128256 --
