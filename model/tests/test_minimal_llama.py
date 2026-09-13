@@ -29,12 +29,14 @@ requires_cuda = pytest.mark.skipif(
 
 
 @requires_cuda
+@pytest.mark.parametrize("num_kv_heads", [None, 2])  # None=plain MHA, 2=GQA (n_heads=4)
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("B,N", [(1, 8), (2, 37), (1, 64)])  # includes a non-block-multiple N (37)
-def test_matches_reference(B, N, dtype, causal):
+def test_matches_reference(B, N, dtype, causal, num_kv_heads):
     torch.manual_seed(0)
-    config = replace(TOY_CONFIG, dtype=dtype)  # fresh copy -- don't mutate the shared TOY_CONFIG instance
+    # fresh copy -- don't mutate the shared TOY_CONFIG instance
+    config = replace(TOY_CONFIG, dtype=dtype, num_kv_heads=num_kv_heads)
     weights = init_weights(config, device="cuda", seed=0)
     input_ids = torch.randint(0, config.vocab_size, (B, N), device="cuda")
 

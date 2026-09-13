@@ -46,10 +46,11 @@ def _make_scheduler_and_runner(config, weights, block_size=4, num_gpu_blocks=64,
 
 
 @requires_cuda
+@pytest.mark.parametrize("num_kv_heads", [None, 2])  # None=plain MHA, 2=GQA (n_heads=4)
 class TestIncrementalGenerationMatchesReference:
-    def test_single_request_step_by_step(self):
+    def test_single_request_step_by_step(self, num_kv_heads):
         torch.manual_seed(0)
-        config = replace(TOY_CONFIG, dtype=torch.float32)
+        config = replace(TOY_CONFIG, dtype=torch.float32, num_kv_heads=num_kv_heads)
         weights = init_weights(config, device="cuda", seed=0)
         scheduler, runner = _make_scheduler_and_runner(config, weights)
 
@@ -68,13 +69,13 @@ class TestIncrementalGenerationMatchesReference:
 
         assert req.output_token_ids == reference_tokens[len(prompt):]
 
-    def test_mixed_batch_prefill_and_decode_in_one_execute_model_call(self):
+    def test_mixed_batch_prefill_and_decode_in_one_execute_model_call(self, num_kv_heads):
         # One request already RUNNING (about to take a decode step) and one
         # freshly WAITING (about to be admitted as a prefill) scheduled
         # together -- exercises _build_flat_batch/_attention's heterogeneous
         # num_scheduled_tokens handling within a single call.
         torch.manual_seed(0)
-        config = replace(TOY_CONFIG, dtype=torch.float32)
+        config = replace(TOY_CONFIG, dtype=torch.float32, num_kv_heads=num_kv_heads)
         weights = init_weights(config, device="cuda", seed=0)
         scheduler, runner = _make_scheduler_and_runner(config, weights)
 
@@ -106,9 +107,9 @@ class TestIncrementalGenerationMatchesReference:
         assert running_req.output_token_ids[1] == expected_running
         assert waiting_req.output_token_ids[0] == expected_waiting
 
-    def test_two_simultaneous_prefills_of_different_lengths_dont_contaminate(self):
+    def test_two_simultaneous_prefills_of_different_lengths_dont_contaminate(self, num_kv_heads):
         torch.manual_seed(0)
-        config = replace(TOY_CONFIG, dtype=torch.float32)
+        config = replace(TOY_CONFIG, dtype=torch.float32, num_kv_heads=num_kv_heads)
         weights = init_weights(config, device="cuda", seed=0)
         scheduler, runner = _make_scheduler_and_runner(config, weights)
 
