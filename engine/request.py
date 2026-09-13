@@ -73,6 +73,12 @@ class Request:
     block_table: list[int] = field(default_factory=list)
     cached_prefix_nodes: list = field(default_factory=list)
 
+    # Speculative decoding (model/draft_proposer.py): tokens the draft
+    # model has proposed for this round but the target hasn't verified
+    # yet. Cleared every round regardless of how many were accepted --
+    # see model/draft_proposer.py's module docstring.
+    draft_token_ids: list[int] = field(default_factory=list)
+
     # How many of this request's tokens (prompt + output, in that order)
     # already have a KV-cache entry computed. Scheduler.schedule() advances
     # this by num_scheduled_tokens each time the request is scheduled for a

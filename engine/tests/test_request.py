@@ -79,6 +79,20 @@ class TestNumBlocksNeeded:
         assert req.num_blocks_needed(block_size=4) == 3
 
 
+class TestDraftTokenIds:
+    def test_defaults_to_empty_list(self):
+        req = make_request()
+        assert req.draft_token_ids == []
+
+    def test_default_is_not_shared_across_instances(self):
+        # field(default_factory=list), not a bare `[]` default -- mutating
+        # one request's list must never leak into another's (the classic
+        # mutable-default-argument trap, here for a dataclass field).
+        a, b = make_request(), make_request()
+        a.draft_token_ids.append(7)
+        assert b.draft_token_ids == []
+
+
 class TestMaybeFinish:
     def test_no_stop_condition_stays_running(self):
         req = make_request(max_tokens=16)
