@@ -70,7 +70,7 @@ variable "nebius_token" {
 
 variable "hf_token" {
   type        = string
-  description = "Hugging Face access token (must have accepted the Llama-3 license). Pass via TF_VAR_hf_token env var or a secrets manager — never hardcode or commit."
+  description = "Hugging Face access token (must have accepted the Llama-3 license). Pass via TF_VAR_hf_token env var or a secrets manager — never hardcode or commit. Injected post-boot over SSH by push_hf_token (main.tf), not templated into cloud-init -- never lands in cloud_init_user_data or terraform.tfstate."
   sensitive   = true
 }
 

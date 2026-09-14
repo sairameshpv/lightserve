@@ -21,6 +21,12 @@ write_files:
       # capture doesn't leave the instance without a server.
       set -uo pipefail
 
+      # Token is pushed post-boot to a root-only file (see main.tf's
+      # push_hf_token) instead of being templated into this script or
+      # cloud-init's runcmd -- never baked into cloud_init_user_data.
+      source /root/hf_token.env
+      HF_TOKEN="$HUGGING_FACE_HUB_TOKEN"
+
       TRACES=/tmp/traces
       PROFILES=/tmp/vllm-profiles
       mkdir -p "$TRACES" "$PROFILES"
@@ -186,17 +192,11 @@ runcmd:
   - systemctl restart docker
   - sysctl -w kernel.perf_event_paranoid=1
 
-  # vLLM (Triton ships as a dependency inside the image, no separate install)
+  # vLLM (Triton ships as a dependency inside the image, no separate install).
+  # Actually launching the container (or run_profiling.sh) needs the HF
+  # token, which is deliberately *not* templated into this file -- see
+  # main.tf's push_hf_token, which pushes /root/hf_token.env over SSH
+  # post-boot and starts things from there instead.
 %{ if enable_profiling ~}
   - mkdir -p /tmp/traces
-  - >
-    bash -c 'HF_TOKEN=${hf_token} MODEL_NAME=${model_name} /root/run_profiling.sh
-    > /tmp/traces/run_profiling.log 2>&1'
-%{ else ~}
-  - >
-    docker run -d --name vllm-server --restart unless-stopped --gpus all
-    -v /root/.cache/huggingface:/root/.cache/huggingface
-    --env HUGGING_FACE_HUB_TOKEN=${hf_token}
-    -p 8000:8000 --ipc=host
-    vllm/vllm-openai:latest --model ${model_name}
 %{ endif ~}
