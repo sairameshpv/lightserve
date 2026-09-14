@@ -182,7 +182,15 @@ class Scheduler:
         scheduled = []
         while pending:
             request = pending.popleft()
-            num_new = request.get_num_new_tokens()
+            # Speculative verify (model/draft_proposer.py's proposals,
+            # model_runner.py's _accept_reject): all K+1 rows or none --
+            # _build_flat_batch asserts exactly K+1, so this can't be
+            # chunked down to fit the budget like prefill can. Budget still
+            # gets decremented (possibly negative for this one step); the
+            # token_budget <= 0 check below still protects *other* pending
+            # requests this same round.
+            is_spec = bool(request.draft_token_ids)
+            num_new = len(request.draft_token_ids) + 1 if is_spec else request.get_num_new_tokens()
             if num_new <= 0:
                 # Nothing new to compute -- shouldn't normally happen for a
                 # RUNNING request, but harmless if it does. Keep it running,
@@ -198,16 +206,25 @@ class Scheduler:
                 continue
             # Chunked prefill: take whatever's left of this step's budget,
             # not necessarily all of num_new -- see this module's docstring.
-            # For steady-state decode num_new == 1 == chunk always.
-            chunk = min(num_new, token_budget)
-            while not self.block_manager.can_append_slot(request):
+            # For steady-state decode num_new == 1 == chunk always. Spec
+            # verify: chunk == num_new always, never capped (see above).
+            chunk = num_new if is_spec else min(num_new, token_budget)
+            target_len = request.num_computed_tokens + chunk
+            fits = (self.block_manager.can_ensure_capacity(request, target_len) if is_spec
+                    else self.block_manager.can_append_slot(request))
+            while not fits:
                 if pending:
                     self._preempt(pending.pop(), output)
                 else:
                     self._preempt(request, output)
                     break
+                fits = (self.block_manager.can_ensure_capacity(request, target_len) if is_spec
+                        else self.block_manager.can_append_slot(request))
             else:
-                self.block_manager.append_slot(request)
+                if is_spec:
+                    self.block_manager.ensure_capacity(request, target_len)
+                else:
+                    self.block_manager.append_slot(request)
                 # += chunk, not = request.get_len(): during a chunked-prefill
                 # continuation get_len() is the *whole* prompt length (no
                 # output tokens yet), not this step's partial progress.

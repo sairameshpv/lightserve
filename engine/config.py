@@ -99,3 +99,36 @@ class SchedulerConfig:
         assert self.max_cache_hit_context_tokens is None or self.max_cache_hit_context_tokens > 0, (
             "max_cache_hit_context_tokens must be positive if set"
         )
+
+
+@dataclass(frozen=True)
+class SpeculativeConfig:
+    """Presence/absence of this config (LLMEngine's speculative_config,
+    None by default) is the on/off switch for speculative decoding --
+    everything else stays exactly as it was when unset.
+
+    draft_model_path: HF checkpoint directory for the draft model (see
+    model/hf_loader.py's load_hf_checkpoint) -- a real, cheaper model
+    correlated with the target, not a random one.
+
+    num_speculative_tokens: K, how many tokens the draft proposes per
+    round (model/draft_proposer.py). More = fewer target forward passes
+    per accepted token if the acceptance rate holds up, but a wasted
+    draft-model pass past the first rejection.
+
+    draft_num_gpu_blocks: the draft's own PagedKVCache size, required
+    (no default) rather than reusing CacheConfig.num_gpu_blocks -- the
+    draft model has fewer layers/kv-heads than the target, so its
+    per-token KV footprint is smaller; reusing the target's block count
+    would badly over-allocate GPU memory that could otherwise go to the
+    target's own batch size.
+    """
+    draft_model_path: str
+    num_speculative_tokens: int = 4
+    draft_num_gpu_blocks: int = None
+
+    def __post_init__(self):
+        assert self.num_speculative_tokens > 0, "num_speculative_tokens must be positive"
+        assert self.draft_num_gpu_blocks is not None and self.draft_num_gpu_blocks > 0, (
+            "draft_num_gpu_blocks is required and must be positive"
+        )

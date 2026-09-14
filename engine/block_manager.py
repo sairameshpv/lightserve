@@ -201,6 +201,35 @@ class BlockManager:
                 )
             table.append(self._free_block_ids.pop())
 
+    def can_ensure_capacity(self, request: Request, target_len: int) -> bool:
+        """Like can_append_slot, but for a caller that knows a multi-token
+        jump is coming before request.get_len() reflects it (speculative
+        verify: the K+1 tokens about to be committed by execute_model
+        aren't in output_token_ids yet at schedule time -- see
+        Scheduler._schedule_running). True if enough free blocks exist to
+        grow up to target_len total tokens.
+        """
+        table = self.block_tables.get(request.request_id, [])
+        needed = -(-target_len // self.block_size) - len(table)  # ceil div
+        return needed <= self.num_free_blocks
+
+    def ensure_capacity(self, request: Request, target_len: int) -> None:
+        """append_slot's one-block-at-a-time loop, generalized to an
+        explicit target length instead of request.get_len() -- see
+        can_ensure_capacity's docstring for why that's needed here.
+        """
+        table = self.block_tables.get(request.request_id)
+        if table is None:
+            raise ValueError(f"{request.request_id} has no block table -- call allocate() first")
+        needed_blocks = -(-target_len // self.block_size)
+        while len(table) < needed_blocks:
+            if not self._free_block_ids:
+                raise OutOfMemoryError(
+                    f"{request.request_id} needs a new block, none free -- "
+                    "caller must check can_ensure_capacity() first"
+                )
+            table.append(self._free_block_ids.pop())
+
     def _needs_new_block(self, request: Request) -> bool:
         """True when the request's token count exceeds its block table's
         capacity -- the new token doesn't fit in an already-reserved block.

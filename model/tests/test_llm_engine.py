@@ -14,8 +14,11 @@ import torch
 
 from engine.config import CacheConfig, SchedulerConfig
 from engine.request import RequestStatus, SamplingParams
+from model.draft_proposer import DraftProposer
+from model.kv_cache import PagedKVCache
 from model.llm_engine import LLMEngine
 from model.minimal_llama import TOY_CONFIG, init_weights, reference_llama_forward
+from model.model_runner import ModelRunner
 
 requires_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="LLMEngine needs Triton kernels on a real CUDA GPU"
@@ -224,3 +227,68 @@ class TestPrefixCaching:
         # exception, not a hole in the "matched region is never rewritten"
         # property.
         assert min(write_starts) >= len(donor_prompt) - 1
+
+
+def _attach_draft_proposer(engine, draft_config, draft_weights, num_speculative_tokens=3,
+                            block_size=4, num_gpu_blocks=64):
+    # Bypasses LLMEngine.__init__'s speculative_config path on purpose --
+    # that one always loads a real HF checkpoint from disk
+    # (SpeculativeConfig.draft_model_path), which a toy random-weight
+    # model has no directory for. Directly assigning engine.draft_proposer
+    # (a plain instance attribute, every step() branch just checks whether
+    # it's None) is the same pattern this file already uses for engine.
+    # kv_cache.write = spy_write above.
+    draft_cache_config = CacheConfig(block_size=block_size, num_gpu_blocks=num_gpu_blocks)
+    draft_kv_cache = PagedKVCache(draft_cache_config, draft_config, device="cuda")
+    draft_runner = ModelRunner(draft_config, draft_weights, draft_kv_cache,
+                                max_model_len=draft_config.max_seq_len, device="cuda")
+    engine.draft_proposer = DraftProposer(draft_runner, num_speculative_tokens)
+
+
+@requires_cuda
+class TestSpeculative:
+    """LLMEngine wired to a DraftProposer (Stage E): under greedy sampling,
+    speculative decoding must produce output byte-identical to plain
+    decoding -- it only changes how many target forward passes it takes,
+    never what gets generated. Toy random weights (not the real 1B/8B
+    checkpoints -- that's Stage F) prove the verify/accept/rollback
+    machinery itself, per the master plan's Assumption 1 fallback: a toy
+    random draft's proposals are ~0% correlated with the target's, so
+    acceptance rate here is meaningless -- only byte-for-byte correctness
+    is being checked.
+    """
+    def test_matches_dense_reference_with_an_uncorrelated_draft(self):
+        # Different draft/target weights (and even a different n_layers)
+        # -- with vocab_size=256 the odds of an uncorrelated draft's
+        # argmax matching the target's by chance are low, so this mostly
+        # exercises the immediate-mismatch/partial-rollback path.
+        torch.manual_seed(0)
+        config = replace(TOY_CONFIG, dtype=torch.float32)
+        weights = init_weights(config, device="cuda", seed=0)
+        engine = _make_engine(config, weights)
+
+        draft_config = replace(TOY_CONFIG, dtype=torch.float32, n_layers=1)
+        draft_weights = init_weights(draft_config, device="cuda", seed=1)
+        _attach_draft_proposer(engine, draft_config, draft_weights)
+
+        prompt = [1, 2, 3, 4]
+        [output] = engine.generate([prompt], sampling_params=SamplingParams(max_tokens=10))
+
+        assert output.output_token_ids == _reference_generate(weights, config, prompt, max_tokens=10)
+
+    def test_matches_dense_reference_with_full_acceptance(self):
+        # Draft and target share the exact same config/weights -> the
+        # draft's greedy proposals are, by construction, always exactly
+        # what the target would independently compute -- deterministically
+        # forces every round to be a full accept (K matches + the bonus
+        # token), rather than leaving that path to chance.
+        torch.manual_seed(0)
+        config = replace(TOY_CONFIG, dtype=torch.float32)
+        weights = init_weights(config, device="cuda", seed=0)
+        engine = _make_engine(config, weights)
+        _attach_draft_proposer(engine, config, weights)
+
+        prompt = [1, 2, 3, 4]
+        [output] = engine.generate([prompt], sampling_params=SamplingParams(max_tokens=10))
+
+        assert output.output_token_ids == _reference_generate(weights, config, prompt, max_tokens=10)

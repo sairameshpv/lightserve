@@ -86,6 +86,32 @@ def test_propose_again_continues_from_newly_committed_tokens():
 
 
 @requires_cuda
+def test_rollback_then_propose_continues_from_only_the_accepted_prefix():
+    torch.manual_seed(0)
+    config = replace(TOY_CONFIG, dtype=torch.float32)
+    weights = init_weights(config, device="cuda", seed=0)
+    proposer = _make_draft_proposer(config, weights, num_speculative_tokens=3)
+
+    prompt = [1, 2, 3, 4, 5]
+    request = Request(request_id="r0", prompt_token_ids=prompt, sampling_params=SamplingParams(max_tokens=50))
+
+    first_round = proposer.propose(request)  # K=3 proposed
+    # Simulate partial acceptance: only the first of the 3 proposed tokens
+    # survived verification (Stage E's real job -- this is what it does).
+    accepted = first_round[:1]
+    request.output_token_ids.extend(accepted)
+    proposer.rollback(request.request_id, num_accepted=len(accepted))
+
+    second_round = proposer.propose(request)
+
+    # If rollback hadn't corrected the shadow's num_computed_tokens, this
+    # would either crash (negative num_new inside propose()'s loop) or
+    # silently skip tokens the shadow wrongly believed were already
+    # computed -- diverging from the reference below.
+    assert second_round == _reference_continuation(weights, config, prompt + accepted, num_new_tokens=3)
+
+
+@requires_cuda
 def test_propose_isolates_different_requests():
     torch.manual_seed(0)
     config = replace(TOY_CONFIG, dtype=torch.float32)

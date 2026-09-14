@@ -163,6 +163,56 @@ class TestSteadyStateDecode:
         assert len(sched.block_manager.get_block_table(req)) == 2
 
 
+class TestSpeculativeVerify:
+    """A running request with draft_token_ids set (model/draft_proposer.py's
+    proposals) -- _schedule_running's spec branch, see its module comment.
+    """
+    def test_schedules_exactly_k_plus_one_tokens(self):
+        sched = make_scheduler(block_size=4)
+        req = make_request("r0", prompt_len=8)
+        sched.add_request(req)
+        sched.schedule()  # prefill
+        req.output_token_ids.append(1)
+        sched.schedule()  # one steady-state decode step, num_computed_tokens=9
+
+        req.draft_token_ids = [10, 20, 30]  # K=3
+        output = sched.schedule()
+
+        assert len(output.scheduled_running) == 1
+        assert output.scheduled_running[0].num_scheduled_tokens == 4  # K+1
+        assert req.num_computed_tokens == 13  # 9 + 4
+
+    def test_not_chunked_down_by_a_tight_budget(self):
+        # Unlike chunked prefill, a spec-verify request either gets its
+        # full K+1 or (implicitly, untested here) waits -- never a partial
+        # chunk, since _build_flat_batch's assert requires exactly K+1.
+        sched = make_scheduler(block_size=4, max_num_batched_tokens=1)
+        req = make_request("r0", prompt_len=8)
+        sched.add_request(req)
+        sched.schedule()
+        req.output_token_ids.append(1)
+        sched.schedule()
+
+        req.draft_token_ids = [10, 20, 30]
+        output = sched.schedule()
+        assert output.scheduled_running[0].num_scheduled_tokens == 4
+
+    def test_grows_multiple_blocks_in_one_step(self):
+        # 1 block (capacity 4) reserved after prefill; K=5 needs
+        # target_len=4+6=10 -> ceil(10/4)=3 blocks, i.e. 2 new blocks in
+        # one schedule() call -- can_append_slot/append_slot alone
+        # couldn't do this (one block per call, see block_manager.py).
+        sched = make_scheduler(block_size=4)
+        req = make_request("r0", prompt_len=4, max_tokens=100)
+        sched.add_request(req)
+        sched.schedule()
+        assert len(sched.block_manager.get_block_table(req)) == 1
+
+        req.draft_token_ids = [1, 2, 3, 4, 5]  # K=5
+        sched.schedule()
+        assert len(sched.block_manager.get_block_table(req)) == 3
+
+
 class TestMixedBatching:
     """One schedule() call handling a running decode and a new admission
     together -- the actual "continuous batching, mixed request lengths"

@@ -76,6 +76,38 @@ class DraftProposer:
         self._shadow_requests[request.request_id] = shadow
         return shadow
 
+    def rollback(self, request_id: str, num_accepted: int) -> None:
+        """Corrects the shadow's num_computed_tokens after a verify round.
+        num_accepted is the *total* tokens committed this round (model/
+        model_runner.py's _accept_reject's return length) -- anywhere from
+        1 (immediate mismatch, target's own correction only, zero draft
+        tokens survived) up to num_speculative_tokens + 1 (every draft
+        token matched, plus the target's bonus token; note this can
+        exceed num_speculative_tokens).
+
+        shadow.num_computed_tokens always advances by exactly
+        num_speculative_tokens during generation (propose()'s loop
+        advances it once per proposed token, unconditionally), so once
+        request.output_token_ids -- what the next propose() call resyncs
+        shadow.output_token_ids to -- reflects only num_accepted tokens,
+        it overshoots by (num_speculative_tokens - num_accepted) whenever
+        that's positive.
+
+        Clamped at 0: num_accepted >= num_speculative_tokens (an exact or
+        bonus-token accept) needs no correction here -- the shadow never
+        independently generated that bonus token, so leaving
+        num_computed_tokens where propose() left it is exactly right,
+        and the resync-then-catch-up flow already in
+        _get_or_create_shadow/propose picks up the (at most one) extra
+        token the same way it handles pre-existing output on a shadow's
+        first call. No-op if this request has no shadow yet (nothing
+        proposed for it before).
+        """
+        shadow = self._shadow_requests.get(request_id)
+        if shadow is None:
+            return
+        shadow.num_computed_tokens -= max(0, self.num_speculative_tokens - num_accepted)
+
     def propose(self, request: Request) -> list:
         """Runs num_speculative_tokens sequential decode steps on the
         draft model, seeded from `request`'s currently-committed tokens

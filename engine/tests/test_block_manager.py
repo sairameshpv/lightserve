@@ -111,6 +111,50 @@ class TestAppendSlot:
             bm.append_slot(req)
 
 
+class TestEnsureCapacity:
+    """can_ensure_capacity/ensure_capacity: like TestAppendSlot's cases, but
+    for a caller that knows a multi-token jump is coming before
+    request.get_len() reflects it (speculative verify's K+1-row commit --
+    see engine/scheduler.py's _schedule_running).
+    """
+    def test_grows_multiple_blocks_in_one_call(self):
+        bm = BlockManager(block_size=4, num_gpu_blocks=10)
+        req = make_request(prompt_len=4)  # 1 block, capacity 4
+        bm.allocate(req)
+        free_before = bm.num_free_blocks
+        # target_len=13 needs ceil(13/4)=4 blocks total, not just 1 more --
+        # a single append_slot() call couldn't do this (it only ever adds
+        # one block per call, sized for 1-token-at-a-time growth).
+        assert bm.can_ensure_capacity(req, 13)
+        bm.ensure_capacity(req, 13)
+        assert len(bm.get_block_table(req)) == 4
+        assert bm.num_free_blocks == free_before - 3
+
+    def test_no_growth_when_target_already_fits(self):
+        bm = BlockManager(block_size=4, num_gpu_blocks=10)
+        req = make_request(prompt_len=4)
+        bm.allocate(req)
+        free_before = bm.num_free_blocks
+        bm.ensure_capacity(req, 4)  # already exactly covered
+        assert len(bm.get_block_table(req)) == 1
+        assert bm.num_free_blocks == free_before
+
+    def test_ensure_capacity_without_allocate_raises(self):
+        bm = BlockManager(block_size=4, num_gpu_blocks=10)
+        req = make_request(prompt_len=4)
+        with pytest.raises(ValueError):
+            bm.ensure_capacity(req, 8)
+
+    def test_can_ensure_capacity_false_when_pool_too_small(self):
+        bm = BlockManager(block_size=4, num_gpu_blocks=2)
+        req = make_request(prompt_len=4)  # takes the only... one of two blocks
+        bm.allocate(req)
+        # target_len=13 needs 4 total blocks, only 2 exist in the whole pool.
+        assert not bm.can_ensure_capacity(req, 13)
+        with pytest.raises(OutOfMemoryError):
+            bm.ensure_capacity(req, 13)
+
+
 class TestFree:
     def test_free_returns_blocks_to_pool(self):
         bm = BlockManager(block_size=4, num_gpu_blocks=10)
