@@ -12,9 +12,12 @@ from dataclasses import replace
 import pytest
 import torch
 
-from engine.config import CacheConfig, SchedulerConfig
+import os
+
+from engine.config import CacheConfig, SchedulerConfig, SpeculativeConfig
 from engine.request import RequestStatus, SamplingParams
 from model.draft_proposer import DraftProposer
+from model.hf_loader import load_hf_checkpoint
 from model.kv_cache import PagedKVCache
 from model.llm_engine import LLMEngine
 from model.minimal_llama import TOY_CONFIG, init_weights, reference_llama_forward
@@ -23,6 +26,26 @@ from model.model_runner import ModelRunner
 requires_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="LLMEngine needs Triton kernels on a real CUDA GPU"
 )
+
+# Same glob-by-repo-dir-name resolution as model/tests/test_hf_loader.py's
+# _find_snapshot_dir -- see its module docstring for why glob, not a
+# hardcoded snapshot hash.
+_HF_HUB_DIR = os.path.expanduser("~/.cache/huggingface/hub")
+
+
+def _find_snapshot_dir(model_repo_dir_name):
+    snapshots_dir = os.path.join(_HF_HUB_DIR, model_repo_dir_name, "snapshots")
+    if not os.path.isdir(snapshots_dir):
+        return None
+    for name in os.listdir(snapshots_dir):
+        candidate = os.path.join(snapshots_dir, name)
+        if os.path.exists(os.path.join(candidate, "config.json")):
+            return candidate
+    return None
+
+
+_REAL_8B_CHECKPOINT_DIR = _find_snapshot_dir("models--meta-llama--Meta-Llama-3-8B-Instruct")
+_REAL_1B_CHECKPOINT_DIR = _find_snapshot_dir("models--meta-llama--Llama-3.2-1B-Instruct")
 
 
 def _reference_generate(weights, config, prompt, max_tokens, eos_token_id=None):
@@ -292,3 +315,55 @@ class TestSpeculative:
         [output] = engine.generate([prompt], sampling_params=SamplingParams(max_tokens=10))
 
         assert output.output_token_ids == _reference_generate(weights, config, prompt, max_tokens=10)
+
+    @pytest.mark.skipif(_REAL_1B_CHECKPOINT_DIR is None or _REAL_8B_CHECKPOINT_DIR is None,
+                         reason="real Llama-3.2-1B/3-8B checkpoints not found on disk")
+    def test_real_checkpoints_match_dense_reference(self):
+        """Stage F: the real 1B draft / 8B target pair, through LLMEngine's
+        actual speculative_config=SpeculativeConfig(...) constructor path
+        -- unlike every other case in this class, which hand-assigns
+        engine.draft_proposer directly since a toy model has no HF
+        checkpoint directory to load (see _attach_draft_proposer's
+        docstring). This is the only place in the test suite that
+        exercises speculative_config actually loading a real checkpoint.
+        No forced accept/reject pattern here (contrast the two toy-config
+        cases above) -- draft and target are genuinely correlated real
+        checkpoints, so whatever natural mix of acceptances and rejections
+        happens is exactly what's being proven byte-identical.
+        """
+        target_config, target_weights = load_hf_checkpoint(_REAL_8B_CHECKPOINT_DIR, device="cuda")
+        cache_config = CacheConfig(block_size=16, num_gpu_blocks=64)
+        scheduler_config = SchedulerConfig(max_num_seqs=4, max_num_batched_tokens=64)
+        spec_config = SpeculativeConfig(draft_model_path=_REAL_1B_CHECKPOINT_DIR,
+                                         num_speculative_tokens=4, draft_num_gpu_blocks=64)
+        engine = LLMEngine(cache_config, scheduler_config, target_config, weights=target_weights,
+                            device="cuda", speculative_config=spec_config)
+
+        prompt_ids = [128000, 9906, 1917, 11, 420, 374, 264, 1296]  # arbitrary real vocab ids, not tokenized text
+        [output] = engine.generate([prompt_ids], sampling_params=SamplingParams(max_tokens=8))
+
+        assert output.output_token_ids == _reference_generate(target_weights, target_config, prompt_ids,
+                                                                max_tokens=8)
+
+    @pytest.mark.skipif(_REAL_8B_CHECKPOINT_DIR is None, reason="real Llama-3-8B-Instruct checkpoint not found on disk")
+    def test_real_checkpoint_full_acceptance(self):
+        """Same deterministic-full-acceptance trick as
+        test_matches_dense_reference_with_full_acceptance above (draft
+        shares the target's exact weights), but on the real 8B checkpoint
+        instead of TOY_CONFIG -- proves the accept/rollback machinery
+        against real (not random) computation without depending on the
+        real 1B/8B pair happening to agree every round. Only needs the 8B
+        checkpoint present, not 1B, since it's used for both roles.
+        """
+        target_config, target_weights = load_hf_checkpoint(_REAL_8B_CHECKPOINT_DIR, device="cuda")
+        cache_config = CacheConfig(block_size=16, num_gpu_blocks=64)
+        scheduler_config = SchedulerConfig(max_num_seqs=4, max_num_batched_tokens=64)
+        engine = LLMEngine(cache_config, scheduler_config, target_config, weights=target_weights, device="cuda")
+        _attach_draft_proposer(engine, target_config, target_weights, num_speculative_tokens=4,
+                                block_size=16, num_gpu_blocks=64)
+
+        prompt_ids = [128000, 9906, 1917, 11, 420, 374, 264, 1296]
+        [output] = engine.generate([prompt_ids], sampling_params=SamplingParams(max_tokens=8))
+
+        assert output.output_token_ids == _reference_generate(target_weights, target_config, prompt_ids,
+                                                                max_tokens=8)
