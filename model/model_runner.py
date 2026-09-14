@@ -104,6 +104,31 @@ def _apply_rope_at_positions(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor
     return q_rot, k_rot
 
 
+def _accept_reject(draft_token_ids: list, row_tokens: list) -> list:
+    """Speculative decoding's greedy verify/accept rule. `draft_token_ids`:
+    the K proposed ids (model/draft_proposer.py). `row_tokens`: this step's
+    K+1 greedy argmaxes -- row i (0-indexed) predicts the candidate for
+    draft_token_ids[i] when i < K, or the "bonus" token past a fully-
+    accepted draft when i == K (the last row).
+
+    Accepts the longest greedy-matching prefix of draft_token_ids; at the
+    first mismatch, commits the target's own prediction there instead
+    (not the wrong draft guess) and stops -- every committed token is
+    always what plain greedy decoding would have produced at that
+    position, whether it happened to come from the draft or not, which is
+    exactly why this is byte-identical to plain decoding, never
+    approximate. If every draft token matches, the bonus token is
+    committed too (K+1 total instead of K).
+    """
+    committed = []
+    for draft_id, t in zip(draft_token_ids, row_tokens[:-1]):
+        committed.append(t)  # == draft_id when they match, the target's own correction otherwise
+        if draft_id != t:
+            return committed
+    committed.append(row_tokens[-1])  # every draft token matched -- bonus token
+    return committed
+
+
 class ModelRunner:
     """Owns the weights and the physical KV cache; `execute_model` is the
     once-per-step call the engine loop (model/llm_engine.py) makes after
@@ -134,6 +159,19 @@ class ModelRunner:
         request, its (flat_start, flat_end) row range in that batch and its
         (seq_start, seq_end) *sequence* position range (the latter is what
         kv_cache.py's write/read and the causal-or-not test need).
+
+        A request with draft_token_ids (speculative verification, see
+        module docstring / model/draft_proposer.py) is the one exception
+        to "input tokens come from all_token_ids()": its K draft tokens
+        are proposals, not committed tokens, so they don't exist in
+        all_token_ids() yet. seq_start still lands exactly on the one
+        real already-committed-but-uncached token's position (algebra:
+        seq_end is num_computed_tokens after the caller's optimistic
+        pre-advance by n = len(draft_token_ids)+1, so seq_start = seq_end
+        - n is where it was *before* that advance) -- so input becomes
+        [that one real token] + draft_token_ids instead of the usual
+        all_token_ids() slice. positions/flat_starts/flat_ends/seq_starts/
+        seq_ends bookkeeping is identical either way.
         """
         input_ids, positions = [], []
         flat_starts, flat_ends, seq_starts, seq_ends = [], [], [], []
@@ -143,7 +181,15 @@ class ModelRunner:
             n = sr.num_scheduled_tokens
             seq_end = request.num_computed_tokens  # already advanced -- see scheduler.py's docstring
             seq_start = seq_end - n
-            input_ids.extend(request.all_token_ids()[seq_start:seq_end])
+            if request.draft_token_ids:
+                assert n == len(request.draft_token_ids) + 1, (
+                    f"{request.request_id}: scheduled {n} tokens but has "
+                    f"{len(request.draft_token_ids)} draft tokens (expected {len(request.draft_token_ids) + 1})"
+                )
+                input_ids.append(request.all_token_ids()[seq_start])
+                input_ids.extend(request.draft_token_ids)
+            else:
+                input_ids.extend(request.all_token_ids()[seq_start:seq_end])
             positions.extend(range(seq_start, seq_end))
             flat_starts.append(cursor)
             cursor += n
@@ -269,6 +315,8 @@ class ModelRunner:
         # Only the last row of each request's flat range predicts its next
         # token -- no need to run lm_head (a [*, H] @ [H, vocab_size] matmul)
         # over every prefilled prompt position, just the one that matters.
+        # Exception, handled separately below: a request with
+        # draft_token_ids has K+1 rows to verify, not one.
         last_idx = torch.tensor([e - 1 for e in flat_ends], dtype=torch.long, device=self.device)
         last_hidden = final_normed.index_select(0, last_idx)  # [num_requests, H]
         logits = matmul(last_hidden, self.weights.lm_head)  # [num_requests, vocab_size]
@@ -295,7 +343,18 @@ class ModelRunner:
                 # benchmarks/chunked_prefill/verify_multi_chunk_correctness.py
                 # and this fix's own git history.
                 continue
-            sr.request.output_token_ids.append(int(next_token_ids[i].item()))
+            if sr.request.draft_token_ids:
+                # K+1 rows for this request (see _build_flat_batch) -- redo
+                # lm_head + sample over all of them, not just last_idx's
+                # one row, then run the accept/reject rule to see how many
+                # of the K+1 greedy tokens actually get committed.
+                row_hidden = final_normed[flat_starts[i]:flat_ends[i]]
+                row_logits = matmul(row_hidden, self.weights.lm_head)
+                row_tokens = [int(t) for t in self._sample(row_logits).tolist()]
+                committed = _accept_reject(sr.request.draft_token_ids, row_tokens)
+            else:
+                committed = [int(next_token_ids[i].item())]
+            sr.request.output_token_ids.extend(committed)
             sr.request.maybe_finish()
         return [sr.request for sr in scheduled]
 

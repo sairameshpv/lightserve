@@ -21,11 +21,33 @@ from engine.request import Request, SamplingParams
 from engine.scheduler import Scheduler, SchedulerOutput
 from model.kv_cache import PagedKVCache
 from model.minimal_llama import TOY_CONFIG, init_weights, reference_llama_forward
-from model.model_runner import ModelRunner
+from model.model_runner import ModelRunner, _accept_reject
 
 requires_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="ModelRunner needs Triton kernels on a real CUDA GPU"
 )
+
+
+class TestAcceptReject:
+    # No CUDA needed -- _accept_reject is pure Python, see its docstring.
+    def test_all_drafts_match_commits_bonus_token_too(self):
+        committed = _accept_reject(draft_token_ids=[10, 20, 30], row_tokens=[10, 20, 30, 99])
+        assert committed == [10, 20, 30, 99]
+
+    def test_immediate_mismatch_still_commits_one_token(self):
+        # Forward progress even on total rejection: the target's own
+        # prediction at the first row is committed instead of the wrong
+        # draft guess, never zero tokens.
+        committed = _accept_reject(draft_token_ids=[10, 20, 30], row_tokens=[77, 20, 30, 99])
+        assert committed == [77]
+
+    def test_partial_match_commits_matched_prefix_plus_correction(self):
+        committed = _accept_reject(draft_token_ids=[10, 20, 30], row_tokens=[10, 20, 88, 99])
+        assert committed == [10, 20, 88]
+
+    def test_single_draft_token(self):
+        assert _accept_reject(draft_token_ids=[10], row_tokens=[10, 99]) == [10, 99]
+        assert _accept_reject(draft_token_ids=[10], row_tokens=[77, 99]) == [77]
 
 
 def _reference_next_token(weights, config, token_ids):
