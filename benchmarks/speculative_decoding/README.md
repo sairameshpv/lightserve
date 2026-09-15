@@ -78,6 +78,76 @@ measured conclusion for this implementation on this hardware: correct
 Raw data: `accept_summary.csv` / `accept_raw.csv` / `step_latency.csv` in
 this directory.
 
+## vLLM comparison
+
+The natural follow-up to the finding above: is "no wall-clock speedup"
+specific to lightserve's own unoptimized per-step overhead (no CUDA
+graphs, plain Python scheduling), or does it hold even for a
+production-optimized engine? Answered by running the *same* real
+Llama-3.2-1B draft / Llama-3-8B target pair, on the same L40S, through
+vLLM's own built-in speculative decoding instead.
+
+**Methodology** — run manually this session, not via a committed
+script (informal follow-up, not institutionalized the way
+`measure_speedup.py` is): the same 5 real tokenized prompts as the table
+above (`prompts_tokenized.jsonl`), same 80-token cap, sent concurrently
+(one thread per prompt) to vLLM's `/v1/completions` endpoint. For each
+`num_speculative_tokens` swept, the `vllm-server` container was
+restarted fresh (`docker run ... vllm/vllm-openai:latest --model
+meta-llama/Meta-Llama-3-8B-Instruct --speculative-config '{"method":
+"draft_model", "model": "meta-llama/Llama-3.2-1B-Instruct",
+"num_speculative_tokens": K}'`, `HF_HUB_OFFLINE=1` since both checkpoints
+are already cached, omitted entirely for the `k=0` baseline) — a launch-
+time config can't change on a running server, and a fresh container also
+means its Prometheus counters start at 0, so each sweep point's numbers
+are read directly off one `/metrics` scrape at the end, no delta math
+needed. vLLM exposes exactly the metrics needed natively, so no custom
+client-side timing was required: `vllm:inter_token_latency_seconds_sum`
+/ `_count` (ITL), `vllm:spec_decode_num_draft_tokens_total` /
+`_num_accepted_tokens_total` / `_num_drafts_total` (acceptance rate =
+accepted/draft; mean accepted per round = 1 + accepted/drafts, same
+framing the table above uses, bonus token included), and
+`vllm:generation_tokens_total` ÷ client-measured wall-clock for tokens/s.
+vLLM 0.26.0 (confirmed via `python3 -c "import vllm; print(vllm.
+__version__)"` inside the container before starting — well above the
+0.10.0 minimum `--speculative-config`'s `draft_model` method needs).
+Same `sudo docker stop vllm-server` GPU-freeing step as above, run
+against a separately-named test container so the production one was
+never touched; restarted at the end.
+
+| num_speculative_tokens | acceptance_rate | mean_accepted_per_round | itl_ms | tokens_per_second |
+|-----------------------:|-----------------:|--------------------------:|--------:|---------------------:|
+| 0 (baseline)           | --                | 1.00                      | 22.0    | 208.0                |
+| 1                       | 81.7%             | 1.82                      | 36.9    | 122.8                |
+| 2                       | 63.6%             | 2.27                      | 108.3   | 65.7                 |
+| 4                       | 58.1%             | 3.32                      | 220.8   | 48.5                 |
+| 8                       | 40.2%             | 4.22                      | 190.9   | 47.3                 |
+
+**Same qualitative shape as lightserve's own result, on a fully
+production-optimized system.** vLLM's non-speculative baseline alone
+(208 tok/s) is already ~4.7x faster than lightserve's (44.5 tok/s) --
+real CUDA graphs and optimized kernels matter -- but *every* speculative
+configuration is still slower than *that* baseline, and it gets worse as
+K grows, same monotonic direction lightserve showed. This is a
+meaningfully stronger conclusion than Stage G alone could support: **the
+"no wall-clock speedup" finding is not specific to lightserve's
+unoptimized per-step overhead** -- it reproduces on a production-grade
+implementation with CUDA graphs and no Python-level scheduling overhead
+to blame. The likely explanation shifts from "implementation overhead"
+to workload shape: 5 concurrent, short (80-token) generations isn't
+enough concurrent traffic for an 8x-smaller draft model's own cost to be
+"free" relative to the batch it's competing against for the same GPU.
+
+One side observation, not otherwise explained here: vLLM's acceptance
+rate is consistently *lower* than lightserve's at every K (82% vs. 100%
+at K=1, 40% vs. 54% at K=8) despite both using the identical checkpoints
+and greedy sampling. Not dug into -- could be a real difference in
+kernel-level numerics (this project already found one genuine
+engine-vs-reference tie-breaking divergence at real-model scale, see
+`verify_speculative_correctness.py`'s `EXCLUDED_IDS`), a difference in
+exactly how each implementation seeds/advances the draft's own KV cache,
+or something else entirely.
+
 ## Files
 
 - `generate_tokenized_prompts.py` / `prompts_tokenized.jsonl`: real
