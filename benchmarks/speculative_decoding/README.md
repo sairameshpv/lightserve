@@ -299,16 +299,43 @@ both domains show the same qualitative shape (peak around K=2, decline
 through K=8) as the aggregate result, so the concurrency finding isn't
 an artifact of one particular prompt mix.
 
-Not done here (would double the cost of an already-expensive session):
-the equivalent vLLM domain split, and a higher-resolution K sweep near
-each domain's actual crossover (this run only samples K∈{0,1,2,4,8}, so
-"crossover between K=4 and K=8" for code is as precise as this data
-gets).
+Not done here: the equivalent vLLM domain split (would double the cost
+of an already-expensive session).
+
+### Pinning down code's crossover exactly
+
+The table above only brackets it between K=4 and K=8. Reran just the
+code domain at K∈{0,4,5,6,7,8} (`--tag code_fine`, same prompts, same
+`--concurrency 1`, `measure_speedup.py` needed no changes -- `--num-
+speculative-tokens-values` already took an arbitrary list):
+
+| K | acceptance | mean_accepted_per_round | tokens_per_second | Δ vs. baseline |
+|--:|--:|--:|--:|--:|
+| 0 (baseline) | -- | 1.00 | 21.9 | -- |
+| 4 | 74.1% | 3.50 | 25.2 | +15.1% |
+| 5 | 68.7% | 3.91 | 24.1 | +10.1% |
+| 6 | 66.3% | 4.39 | 23.8 | +8.6% |
+| 7 | 60.6% | 4.59 | 22.1 | +0.8% |
+| 8 | 56.9% | 4.88 | 21.2 | −3.5% |
+
+**The crossover is between K=7 and K=8** -- K=7 is essentially breakeven
+(+0.8%, within the noise of a single non-repeated run), K=8 is clearly
+negative. Acceptance rate declines smoothly and roughly linearly across
+this whole range (74%→57%, no cliff), so there's no single structural
+reason K=8 specifically tips over -- it's just the point where the
+steadily-eroding acceptance finally stops covering the fixed cost of
+proposing that many tokens. (These acceptance/tok/s numbers differ
+slightly from the same K=4/K=8 rows in the table above -- both are real,
+independent single-repeat runs on the same 5 prompts, not a
+discrepancy; the gap is ordinary run-to-run noise, consistent with
+every other unrepeated measurement in this file.)
 
 Raw data: `accept_summary_code.csv` / `accept_raw_code.csv` /
-`step_latency_code.csv` and the `_prose` equivalents, plus the prompt
-sets themselves (`prompts_tokenized_code.jsonl` / `prompts_tokenized_
-prose.jsonl`) in this directory.
+`step_latency_code.csv` and the `_prose` equivalents (the domain
+comparison above), `accept_summary_code_fine.csv` / `accept_raw_
+code_fine.csv` / `step_latency_code_fine.csv` (the crossover pin-down),
+plus the prompt sets themselves (`prompts_tokenized_code.jsonl` /
+`prompts_tokenized_prose.jsonl`) in this directory.
 
 ## Files
 
@@ -334,3 +361,6 @@ prose.jsonl`) in this directory.
 - `accept_summary_code.csv` / `accept_raw_code.csv` /
   `step_latency_code.csv` and the `_prose` equivalents: the two
   domain-isolated runs backing "Speculative tuning"'s table.
+- `accept_summary_code_fine.csv` / `accept_raw_code_fine.csv` /
+  `step_latency_code_fine.csv`: the K∈{0,4,5,6,7,8} rerun backing
+  "Pinning down code's crossover exactly".
