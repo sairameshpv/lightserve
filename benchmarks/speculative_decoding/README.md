@@ -330,12 +330,45 @@ independent single-repeat runs on the same 5 prompts, not a
 discrepancy; the gap is ordinary run-to-run noise, consistent with
 every other unrepeated measurement in this file.)
 
+### Pinning down prose's crossover exactly
+
+Prose hadn't crossed yet at K=8 in the domain table above (+1.5%, still
+ahead) -- unlike code, this one needed sweeping *past* K=8, not just
+filling in the gap below it. Reran prose at K∈{0,8,9,10,11,12} (`--tag
+prose_fine`):
+
+| K | acceptance | mean_accepted_per_round | tokens_per_second | Δ vs. baseline |
+|--:|--:|--:|--:|--:|
+| 0 (baseline) | -- | 1.00 | 21.8 | -- |
+| 8 | 59.9% | 5.06 | 22.0 | +0.9% |
+| 9 | 57.2% | 5.34 | 21.1 | −3.4% |
+| 10 | 53.2% | 5.49 | 19.9 | −8.9% |
+| 11 | 49.9% | 5.64 | 18.9 | −13.5% |
+| 12 | 46.6% | 5.72 | 17.7 | −18.8% |
+
+**Prose's crossover is between K=8 and K=9** -- one step later than
+code's (K=7→8), and once past it the decline is steeper and doesn't
+level off (−3.4% → −8.9% → −13.5% → −18.8%, roughly linear in K, not
+flattening the way it might if diminishing acceptance were the whole
+story). Same qualitative shape as code otherwise: acceptance keeps
+eroding smoothly through the crossover (60%→47% from K=8 to K=12) rather
+than falling off a cliff right at the tipping point -- the crossover
+itself isn't a special structural event, just where the (still-positive
+but shrinking) benefit of accepted tokens stops outweighing the (fixed,
+K-proportional) cost of proposing them.
+
+Both domains land within one K of each other despite prose's
+consistently higher acceptance rate throughout -- a reminder that
+acceptance rate alone doesn't determine the crossover; the shape of its
+*decline* relative to K matters too.
+
 Raw data: `accept_summary_code.csv` / `accept_raw_code.csv` /
 `step_latency_code.csv` and the `_prose` equivalents (the domain
-comparison above), `accept_summary_code_fine.csv` / `accept_raw_
-code_fine.csv` / `step_latency_code_fine.csv` (the crossover pin-down),
-plus the prompt sets themselves (`prompts_tokenized_code.jsonl` /
-`prompts_tokenized_prose.jsonl`) in this directory.
+comparison above); `accept_summary_code_fine.csv` / `accept_raw_
+code_fine.csv` / `step_latency_code_fine.csv` and the `_prose_fine`
+equivalents (the two crossover pin-downs); plus the prompt sets
+themselves (`prompts_tokenized_code.jsonl` / `prompts_tokenized_
+prose.jsonl`) in this directory.
 
 ## Files
 
@@ -364,3 +397,6 @@ plus the prompt sets themselves (`prompts_tokenized_code.jsonl` /
 - `accept_summary_code_fine.csv` / `accept_raw_code_fine.csv` /
   `step_latency_code_fine.csv`: the K∈{0,4,5,6,7,8} rerun backing
   "Pinning down code's crossover exactly".
+- `accept_summary_prose_fine.csv` / `accept_raw_prose_fine.csv` /
+  `step_latency_prose_fine.csv`: the K∈{0,8,9,10,11,12} rerun backing
+  "Pinning down prose's crossover exactly".
