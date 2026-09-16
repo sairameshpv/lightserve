@@ -28,6 +28,19 @@ calibrated for cheap, toy-shaped runs; repeating a real-weight reload
 plus generation loop several times per sweep point would multiply an
 already-long run. The flag stays available if more rigor is wanted.
 
+--concurrency controls how many of the 5 prompts run together per group
+(groups run sequentially, a fresh engine each; default is len(prompts),
+i.e. today's original one-group-of-5 behavior, unchanged). Lower
+concurrency means *more* engine constructions per repeat (one per group,
+not one per repeat), so it directly multiplies the draft-reload cost
+above -- --concurrency 1 reloads the draft 5x more often than the
+default. Worth sweeping deliberately, not just for cost reasons: this
+implementation's speedup story is most plausible at low concurrency (a
+lone decode step is usually memory-bandwidth-bound, i.e. the GPU has
+slack a K+1-row verify pass can exploit almost for free -- see
+benchmarks/speculative_decoding/README.md's vLLM comparison section for
+why concurrency=5 may have been too high a bar).
+
 IMPORTANT -- unverified end to end without a GPU, same caveat as
 measure_itl.py: load_prompts()/summarize_run()/aggregate_repeats() have
 no CUDA dependency and can be sanity-checked anywhere; main()'s actual
@@ -95,7 +108,7 @@ def load_prompts(path: Path, max_tokens: int) -> list:
     return records
 
 
-def run_speculative_workload(engine, prompts: list) -> tuple:
+def run_speculative_workload(engine, prompts: list, step_offset: int = 0) -> tuple:
     """Submits every prompt as its own request (mirrors benchmarks/
     speculative_decoding/verify_speculative_correctness.py's run_to_
     completion) and steps until all are done, instrumenting each step()
@@ -105,6 +118,11 @@ def run_speculative_workload(engine, prompts: list) -> tuple:
 
     Returns (itl_records, accept_records, step_records, total_time,
     total_output_tokens).
+
+    itl_records: one dict per output token (not per step() call -- a
+    verify round can commit several tokens in one call, see the loop
+    below for how that gap gets split across them) -- {"request_id",
+    "token_index", "itl_seconds"}.
 
     accept_records: one dict per individual verify round (a request with
     draft_token_ids going into a step() call) -- {"request_id",
@@ -131,7 +149,10 @@ def run_speculative_workload(engine, prompts: list) -> tuple:
     last_token_time = {rid: t0 for rid in requests}
     prev_len = {rid: 0 for rid in requests}
     itl_records, accept_records, step_records = [], [], []
-    step_index = 0
+    # step_offset lets a caller running several groups sequentially within
+    # one --concurrency < len(prompts) repeat keep step_index increasing
+    # across groups instead of restarting at 0 each time (see main()).
+    step_index = step_offset
 
     while engine.scheduler.has_unfinished_requests():
         pre_spec = {
@@ -151,12 +172,26 @@ def run_speculative_workload(engine, prompts: list) -> tuple:
         step_index += 1
 
         for rid, request in requests.items():
-            if len(request.output_token_ids) > prev_len[rid]:
-                itl_records.append({
-                    "request_id": rid,
-                    "token_index": len(request.output_token_ids) - 1,
-                    "itl_seconds": now - last_token_time[rid],
-                })
+            num_new = len(request.output_token_ids) - prev_len[rid]
+            if num_new > 0:
+                # A verify round can commit multiple tokens at once
+                # (speculative decoding's whole point) -- one raw
+                # timestamp per step() call would silently under-count
+                # how many tokens actually arrived, making "itl" really
+                # "time per round" for K>0 configs and not comparable to
+                # K=0's genuine one-token-per-step number (a real gap in
+                # this script, caught comparing a low-concurrency run's
+                # itl_ms against its own tokens_per_second, which
+                # disagreed). Split the round's wall-clock gap evenly
+                # across however many tokens actually landed instead --
+                # one record per token, matching total_output_tokens.
+                per_token_seconds = (now - last_token_time[rid]) / num_new
+                for offset in range(num_new):
+                    itl_records.append({
+                        "request_id": rid,
+                        "token_index": prev_len[rid] + offset,
+                        "itl_seconds": per_token_seconds,
+                    })
                 last_token_time[rid] = now
                 prev_len[rid] = len(request.output_token_ids)
 
@@ -235,7 +270,7 @@ def aggregate_repeats(num_speculative_tokens: int, repeat_summaries: list) -> di
 def write_results(summary_rows: list, raw_rows: list, step_rows: list) -> None:
     with SUMMARY_CSV.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "num_speculative_tokens", "num_repeats",
+            "num_speculative_tokens", "concurrency", "num_repeats",
             "acceptance_rate_mean", "acceptance_rate_stdev",
             "mean_accepted_tokens_per_round_mean", "mean_accepted_tokens_per_round_stdev",
             "target_forward_passes_per_output_token",
@@ -247,7 +282,7 @@ def write_results(summary_rows: list, raw_rows: list, step_rows: list) -> None:
 
     with RAW_CSV.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "num_speculative_tokens", "repeat_index", "request_id",
+            "num_speculative_tokens", "concurrency", "repeat_index", "request_id",
             "num_proposed", "num_accepted_total", "num_draft_accepted",
         ])
         writer.writeheader()
@@ -255,7 +290,7 @@ def write_results(summary_rows: list, raw_rows: list, step_rows: list) -> None:
 
     with STEP_CSV.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "num_speculative_tokens", "repeat_index", "step_index", "duration_ms",
+            "num_speculative_tokens", "concurrency", "repeat_index", "step_index", "duration_ms",
             "num_scheduled_tokens", "num_waiting", "num_running",
         ])
         writer.writeheader()
@@ -284,21 +319,22 @@ def _make_engine(target_config, target_weights, draft_dir, num_speculative_token
                       device="cuda", speculative_config=spec_config)
 
 
-def warmup(k_values: list, prompts: list, draft_dir, target_config, target_weights,
+def warmup(k_values: list, prompts: list, concurrency: int, draft_dir, target_config, target_weights,
            cache_num_gpu_blocks, draft_num_gpu_blocks, block_size) -> None:
     """One small untimed run per sweep point before real measurement --
     same rationale as measure_itl.py's warmup(): match the real batch
-    shape (same prompts, same requests), only shrink what's safe to
-    shrink (here: nothing needs shrinking, the prompt set is already
-    small -- this just primes Triton autotuning/CUDA kernel caches for
-    every k value before the timed runs).
+    shape, only shrink what's safe to shrink. Primes with one group of
+    `concurrency` prompts (the shape every real group will have, or the
+    closest thing to it if len(prompts) isn't an exact multiple) rather
+    than every group -- Triton autotuning keys on batch size, and groups
+    are all the same size except possibly the last one.
     """
     t0 = time.perf_counter()
-    tiny_prompts = [{**p, "max_tokens": 4} for p in prompts]
+    tiny_group = [{**p, "max_tokens": 4} for p in prompts[:concurrency]]
     for k in k_values:
         engine = _make_engine(target_config, target_weights, draft_dir, k,
-                               cache_num_gpu_blocks, draft_num_gpu_blocks, block_size, len(prompts))
-        run_speculative_workload(engine, tiny_prompts)
+                               cache_num_gpu_blocks, draft_num_gpu_blocks, block_size, concurrency)
+        run_speculative_workload(engine, tiny_group)
     print(f"Warmup done ({len(k_values)} sweep points) in {time.perf_counter() - t0:.1f}s")
 
 
@@ -308,6 +344,10 @@ def main():
                      help="Comma-separated K values to sweep; 0 means the non-speculative baseline")
     ap.add_argument("--max-tokens", default=MAX_TOKENS, type=int,
                      help="Overrides prompts_tokenized.jsonl's own (much smaller) per-prompt cap")
+    ap.add_argument("--concurrency", default=None, type=int,
+                     help="How many prompts run together per group; groups run sequentially, a fresh "
+                          "engine each. Defaults to len(prompts) (today's behavior: one group, all "
+                          "concurrent). --concurrency 1 runs every prompt fully alone.")
     ap.add_argument("--block-size", default=BLOCK_SIZE, type=int)
     ap.add_argument("--num-gpu-blocks", default=None, type=int,
                      help="Target's KV cache; defaults to exact-fit for all prompts at --max-tokens, +1 block margin")
@@ -343,11 +383,17 @@ def main():
 
     num_gpu_blocks = args.num_gpu_blocks
     if num_gpu_blocks is None:
+        # Sized off every prompt regardless of grouping -- safe (if a
+        # touch generous for concurrency < len(prompts)) since it's just
+        # an upper bound on how many could ever be resident at once.
         num_gpu_blocks = sum(-(-(len(p["prompt"]) + p["max_tokens"]) // args.block_size) for p in prompts) + 1
     draft_num_gpu_blocks = args.draft_num_gpu_blocks or num_gpu_blocks
 
+    concurrency = args.concurrency or len(prompts)
+    prompt_groups = [prompts[i:i + concurrency] for i in range(0, len(prompts), concurrency)]
+
     if not args.skip_warmup:
-        warmup(k_values, prompts, draft_dir, target_config, target_weights,
+        warmup(k_values, prompts, concurrency, draft_dir, target_config, target_weights,
                num_gpu_blocks, draft_num_gpu_blocks, args.block_size)
 
     discard_first_repeat = not args.keep_first_repeat
@@ -357,21 +403,39 @@ def main():
     for k in k_values:
         repeat_summaries = []
         for repeat_index in range(total_repeats):
-            engine = _make_engine(target_config, target_weights, draft_dir, k,
-                                   num_gpu_blocks, draft_num_gpu_blocks, args.block_size, len(prompts))
-            itl_records, accept_records, step_records, total_time, total_output_tokens = \
-                run_speculative_workload(engine, prompts)
+            # Groups run sequentially (fresh engine each), never
+            # overlapping -- --concurrency 1 means every prompt runs
+            # fully alone; --concurrency == len(prompts) (the default)
+            # is one group, identical to this script's original,
+            # ungrouped behavior. Records/time/tokens accumulate across
+            # groups before this repeat's own summary is computed.
+            all_itl, all_accept, all_step = [], [], []
+            total_time, total_output_tokens, step_offset = 0.0, 0, 0
+            for group in prompt_groups:
+                engine = _make_engine(target_config, target_weights, draft_dir, k,
+                                       num_gpu_blocks, draft_num_gpu_blocks, args.block_size, len(group))
+                itl_records, accept_records, step_records, group_time, group_tokens = \
+                    run_speculative_workload(engine, group, step_offset=step_offset)
+                all_itl.extend(itl_records)
+                all_accept.extend(accept_records)
+                all_step.extend(step_records)
+                total_time += group_time
+                total_output_tokens += group_tokens
+                step_offset += len(step_records)
 
-            repeat_summaries.append(summarize_run(k, itl_records, accept_records, total_time, total_output_tokens))
-            for rec in accept_records:
-                raw_rows.append({"num_speculative_tokens": k, "repeat_index": repeat_index, **rec})
-            for step in step_records:
-                step_rows.append({"num_speculative_tokens": k, "repeat_index": repeat_index, **step})
+            repeat_summaries.append(summarize_run(k, all_itl, all_accept, total_time, total_output_tokens))
+            for rec in all_accept:
+                raw_rows.append({"num_speculative_tokens": k, "concurrency": concurrency,
+                                  "repeat_index": repeat_index, **rec})
+            for step in all_step:
+                step_rows.append({"num_speculative_tokens": k, "concurrency": concurrency,
+                                   "repeat_index": repeat_index, **step})
 
         kept_summaries = repeat_summaries[1:] if discard_first_repeat else repeat_summaries
         aggregated = aggregate_repeats(k, kept_summaries)
+        aggregated["concurrency"] = concurrency
         summary_rows.append(aggregated)
-        print(f"num_speculative_tokens={k}: {aggregated}")
+        print(f"num_speculative_tokens={k} concurrency={concurrency}: {aggregated}")
 
     write_results(summary_rows, raw_rows, step_rows)
 

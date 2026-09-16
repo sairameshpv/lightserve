@@ -8,7 +8,9 @@ is actually faster on the real checkpoint pair, not just correct (that's
 `verify_speculative_correctness.py`'s job, in this same directory) --
 acceptance rate, mean accepted tokens per target forward pass, wall-clock
 inter-token latency (ITL), and tokens/s, swept over
-`num_speculative_tokens` in `{0 (non-speculative baseline), 1, 2, 4, 8}`.
+`num_speculative_tokens` in `{0 (non-speculative baseline), 1, 2, 4, 8}`
+-- and, via `--concurrency`, over how many prompts run at once, which
+turns out to matter a lot (see "Concurrency matters" below).
 
 ```bash
 # once, if prompts_tokenized.jsonl doesn't exist yet:
@@ -30,53 +32,124 @@ round, `k>0` only), and `step_latency.csv` (one row per `engine.step()`
 call) into this directory. `--repeats` defaults to 1 here, not the
 5-with-first-discarded most other benchmarks in this repo use -- see the
 script's own module docstring on why (real-weight reload cost per sweep
-point, not toy-shaped).
+point, not toy-shaped). `--concurrency N` groups the 5 prompts into
+groups of N, run sequentially (fresh engine each) -- defaults to 5 (all
+prompts in one group, the table below); `--concurrency 1` writes to the
+same three filenames, so the `_concurrency1` copies in this directory
+are separate runs, not this script's normal output.
 
 ## Status
 
-Run for real on a Nebius L40S (2026-09-14, default sweep: 5 real
-tokenized prompts, 80 max tokens each, `--repeats 1` with the first
-discarded):
+Run for real on a Nebius L40S (2026-09-15, default sweep:
+`--concurrency 5`, 5 real tokenized prompts, 80 max tokens each,
+`--repeats 1` with the first discarded):
 
 | num_speculative_tokens | acceptance_rate | mean_accepted_per_round | fwd_passes_per_token | itl_ms | tokens_per_second |
 |-----------------------:|-----------------:|--------------------------:|-----------------------:|--------:|---------------------:|
-| 0 (baseline)           | --                | 1.00                      | 1.00                   | 112.5   | 44.5                 |
-| 1                      | 100.0%            | 1.77                      | 0.56                   | 224.6   | 37.7                 |
-| 2                      | 89.9%             | 2.48                      | 0.40                   | 333.3   | 35.7                 |
-| 4                      | 72.6%             | 3.38                      | 0.30                   | 531.5   | 29.2                 |
-| 8                      | 53.7%             | 4.54                      | 0.22                   | 895.3   | 22.1                 |
+| 0 (baseline)           | --                | 1.00                      | 1.00                   | 113.3   | 44.1                 |
+| 1                      | 100.0%            | 1.78                      | 0.56                   | 128.8   | 37.6                 |
+| 2                      | 90.4%             | 2.52                      | 0.40                   | 136.7   | 36.0                 |
+| 4                      | 72.0%             | 3.35                      | 0.30                   | 163.0   | 28.9                 |
+| 8                      | 53.3%             | 4.49                      | 0.22                   | 209.6   | 21.8                 |
 
-**No configuration beats the non-speculative baseline.** Acceptance rate
-degrades with K in exactly the expected shape -- each further draft
-token is conditioned on an increasingly risky chain of prior guesses, so
-100% at K=1 falling to 54% at K=8 is not a surprise. What is notable:
-forward-pass efficiency improves monotonically with K (0.22 target
-forward passes per output token at K=8, a genuine ~4.5x reduction from
-the baseline's 1.00) -- the FLOP-level saving speculative decoding is
-supposed to deliver is real and measured here -- but wall-clock ITL gets
-*monotonically worse* over the same range, and tokens/s monotonically
-lower. The forward-pass saving never translates into a wall-clock win.
+*(`itl_ms` here corrects a real bug in an earlier version of this
+table's numbers -- see "A real bug in this script's own ITL metric"
+below. `acceptance_rate`/`mean_accepted_per_round`/`tokens_per_second`
+were never affected by it and are consistent with the original run,
+modulo ordinary run-to-run noise.)*
 
-Most likely cause, not separately profiled here (out of this stage's
-scope, see the question this was checked against before writing this
-section up): `DraftProposer.propose()`'s K proposed tokens come from K
-*sequential* single-token decode steps on the draft model -- each one a
-full `engine.step()`-shaped round-trip (Python scheduling, block
+**No configuration beats the non-speculative baseline, at this
+concurrency.** Acceptance rate degrades with K in exactly the expected
+shape -- each further draft token is conditioned on an increasingly
+risky chain of prior guesses, so 100% at K=1 falling to 53% at K=8 is
+not a surprise. What is notable: forward-pass efficiency improves
+monotonically with K (0.22 target forward passes per output token at
+K=8, a genuine ~4.5x reduction from the baseline's 1.00) -- the
+FLOP-level saving speculative decoding is supposed to deliver is real
+and measured here -- but wall-clock ITL still gets *monotonically worse*
+over the same range, and tokens/s monotonically lower. The forward-pass
+saving never translates into a wall-clock win **at this concurrency**
+(5) -- turns out that qualifier matters a lot, see below.
+
+Most likely cause: `DraftProposer.propose()`'s K proposed tokens come
+from K *sequential* single-token decode steps on the draft model -- each
+one a full `engine.step()`-shaped round-trip (Python scheduling, block
 management, a real Triton kernel launch) -- and this repo has no CUDA
 graphs or other per-step-overhead amortization (a deliberate, documented
-scope choice throughout this project, see `engine/README.md`). At this
-scale, that fixed per-step overhead on the draft side is real wall-clock
-cost that the target-side saving doesn't outrun, and it compounds with K:
-more proposed tokens means more sequential draft round-trips paid for
-up front, even on a round that's later only partially accepted. This is
-a known, real phenomenon in the speculative-decoding literature (the
-technique's wall-clock payoff generally assumes an already-low-overhead
-serving stack), not unique to this codebase -- but it's the actual,
-measured conclusion for this implementation on this hardware: correct
-(Stage F), but not faster here.
+scope choice throughout this project, see `engine/README.md`). At
+concurrency=5, that fixed per-step overhead on the draft side is real
+wall-clock cost that the target-side saving doesn't outrun, and it
+compounds with K: more proposed tokens means more sequential draft
+round-trips paid for up front, even on a round that's later only
+partially accepted.
+
+### A real bug in this script's own ITL metric
+
+The table above originally showed much worse ITL numbers (e.g. 895ms at
+K=8, not 209.6ms) -- traced to a real bug in `run_speculative_workload`,
+found while investigating why concurrency=1's `itl_ms` and
+`tokens_per_second` seemed to disagree with each other (see "Concurrency
+matters" below for how that investigation started). The bug: one
+`itl_seconds` sample was recorded per `step()` call, timestamped
+whenever a request's `output_token_ids` grew -- but a single verify
+round can commit *multiple* tokens at once (that's the whole mechanism
+of speculative decoding), so each sample silently represented "time
+since the last round," not "time for the last token," without dividing
+by how many tokens actually landed. For K=0 this is harmless (always
+exactly 1 token per step), which is exactly why nothing caught it until
+a K>0 config's `itl_ms` and `tokens_per_second` stopped agreeing with
+each other. Fixed: the gap is now split evenly across however many
+tokens a round actually committed, one record per token (so
+`len(itl_records) == total_output_tokens`, which wasn't true before for
+any `k > 0`). `acceptance_rate`/`mean_accepted_tokens_per_round`/
+`tokens_per_second` were computed via entirely separate code paths and
+were never affected -- only `itl_ms` in this table, and the identically-
+sourced number in the vLLM comparison table is vLLM's own metric,
+unaffected either.
 
 Raw data: `accept_summary.csv` / `accept_raw.csv` / `step_latency.csv` in
 this directory.
+
+## Concurrency matters
+
+The result above raised an obvious question: is "no wall-clock speedup"
+really about this implementation, or about only ever testing 5
+concurrent requests? `--concurrency 1` (every prompt run fully alone,
+sequentially) answers it -- same prompts, same K sweep, same
+`max_tokens`, nothing else changed:
+
+| num_speculative_tokens | acceptance_rate | mean_accepted_per_round | itl_ms | tokens_per_second |
+|-----------------------:|-----------------:|--------------------------:|--------:|---------------------:|
+| 0 (baseline)           | --                | 1.00                      | 45.6    | 21.9                 |
+| 1                      | 100.0%            | 1.78                      | **39.3**| **25.5**             |
+| 2                      | 90.2%             | 2.50                      | **37.3**| **26.8**             |
+| 4                      | 72.0%             | 3.35                      | **41.4**| **24.1**             |
+| 8                      | 53.3%             | 4.49                      | 51.1    | 19.6                 |
+
+**K=1, 2, and 4 all genuinely beat the non-speculative baseline at
+concurrency=1** -- up to ~19% lower ITL and ~22% higher throughput (K=2).
+K=8 is the exception, tipping back below baseline (too much wasted
+draft compute past the first rejection at that depth). This flips the
+concurrency=5 conclusion for moderate K: the technique *does* pay off
+here, just not at the concurrency originally tested.
+
+Why concurrency changes the answer: a lone decode step is normally
+memory-bandwidth-bound, not compute-bound, so the GPU has slack a K+1-row
+verify pass can absorb for close to the cost of a single row -- the
+classic mechanism behind speculative decoding's real-world wins. At
+concurrency=5, the target's step is already batching 5 requests' rows,
+so a meaningful part of that slack is used up before speculation gets a
+turn at it; at concurrency=1, it's still there. The draft's own
+sequential per-round overhead (the likely cause of concurrency=5's
+across-the-board loss, above) doesn't disappear at concurrency=1 either
+-- it's the same cost regardless of how many *other* requests exist --
+but apparently it's small enough, on this hardware, to be outrun by the
+target-side saving once that saving is actually available to exploit.
+
+Raw data for this run: `accept_summary_concurrency1.csv` /
+`accept_raw_concurrency1.csv` / `step_latency_concurrency1.csv` in this
+directory (same schema as the default-run CSVs, `concurrency` column
+included for traceability in both).
 
 ## vLLM comparison
 
@@ -90,8 +163,10 @@ vLLM's own built-in speculative decoding instead.
 **Methodology** — run manually this session, not via a committed
 script (informal follow-up, not institutionalized the way
 `measure_speedup.py` is): the same 5 real tokenized prompts as the table
-above (`prompts_tokenized.jsonl`), same 80-token cap, sent concurrently
-(one thread per prompt) to vLLM's `/v1/completions` endpoint. For each
+above (`prompts_tokenized.jsonl`), same 80-token cap, same concurrency=5
+(all 5 sent at once, one thread per prompt -- this comparison predates
+the concurrency=1 finding below and hasn't been rerun at concurrency=1)
+against vLLM's `/v1/completions` endpoint. For each
 `num_speculative_tokens` swept, the `vllm-server` container was
 restarted fresh (`docker run ... vllm/vllm-openai:latest --model
 meta-llama/Meta-Llama-3-8B-Instruct --speculative-config '{"method":
@@ -138,6 +213,14 @@ to workload shape: 5 concurrent, short (80-token) generations isn't
 enough concurrent traffic for an 8x-smaller draft model's own cost to be
 "free" relative to the batch it's competing against for the same GPU.
 
+**That workload-shape hypothesis is no longer just a hypothesis** --
+"Concurrency matters" below reruns lightserve itself at concurrency=1
+and finds a genuine speedup at K=1/2/4, exactly consistent with this
+theory (a lone decode step has GPU slack a verify pass can absorb almost
+for free; a 5-request batch has already used some of that slack up).
+vLLM hasn't been rerun at concurrency=1 to check whether it shows the
+same shift -- would be the natural next step to fully close this out.
+
 One side observation, not otherwise explained here: vLLM's acceptance
 rate is consistently *lower* than lightserve's at every K (82% vs. 100%
 at K=1, 40% vs. 54% at K=8) despite both using the identical checkpoints
@@ -157,3 +240,9 @@ or something else entirely.
   this speedup measurement -- byte-identical output is proven there, not
   re-checked here.
 - `measure_speedup.py`: this benchmark.
+- `accept_summary.csv` / `accept_raw.csv` / `step_latency.csv`: the
+  default (`--concurrency 5`) run's raw data, backing the `## Status`
+  table.
+- `accept_summary_concurrency1.csv` / `accept_raw_concurrency1.csv` /
+  `step_latency_concurrency1.csv`: the `--concurrency 1` run's raw data,
+  backing "Concurrency matters"'s table.
