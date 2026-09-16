@@ -163,11 +163,11 @@ vLLM's own built-in speculative decoding instead.
 **Methodology** — run manually this session, not via a committed
 script (informal follow-up, not institutionalized the way
 `measure_speedup.py` is): the same 5 real tokenized prompts as the table
-above (`prompts_tokenized.jsonl`), same 80-token cap, same concurrency=5
-(all 5 sent at once, one thread per prompt -- this comparison predates
-the concurrency=1 finding below and hasn't been rerun at concurrency=1)
-against vLLM's `/v1/completions` endpoint. For each
-`num_speculative_tokens` swept, the `vllm-server` container was
+above (`prompts_tokenized.jsonl`), same 80-token cap, sent to vLLM's
+`/v1/completions` endpoint. This first table is concurrency=5 (all 5
+sent at once, one thread per prompt); "vLLM at concurrency=1" further
+below reruns the same sweep with the prompts sent one at a time instead.
+For each `num_speculative_tokens` swept, the `vllm-server` container was
 restarted fresh (`docker run ... vllm/vllm-openai:latest --model
 meta-llama/Meta-Llama-3-8B-Instruct --speculative-config '{"method":
 "draft_model", "model": "meta-llama/Llama-3.2-1B-Instruct",
@@ -218,8 +218,32 @@ enough concurrent traffic for an 8x-smaller draft model's own cost to be
 and finds a genuine speedup at K=1/2/4, exactly consistent with this
 theory (a lone decode step has GPU slack a verify pass can absorb almost
 for free; a 5-request batch has already used some of that slack up).
-vLLM hasn't been rerun at concurrency=1 to check whether it shows the
-same shift -- would be the natural next step to fully close this out.
+
+### vLLM at concurrency=1
+
+Confirms it a second way, on the independent implementation: same 5
+prompts, same 80-token cap, same K sweep, sent **one at a time** instead
+of all 5 concurrently (`send_workload_solo.py`, the sequential
+counterpart of the concurrent sender used above -- also throwaway, not
+committed). Metrics read the same way, off the same fresh-container-per-K
+`/metrics` scrape.
+
+| num_speculative_tokens | acceptance_rate | mean_accepted_per_round | itl_ms | tokens_per_second |
+|-----------------------:|-----------------:|--------------------------:|--------:|---------------------:|
+| 0 (baseline)           | --                | 1.00                      | 21.3    | 46.7                 |
+| 1                       | 80.8%             | 1.81                      | 29.8    | **53.4**             |
+| 2                       | 69.0%             | 2.38                      | 35.0    | **56.7**             |
+| 4                       | 56.7%             | 3.27                      | 44.2    | **60.1**             |
+| 8                       | 35.2%             | 3.81                      | 81.3    | 40.2                 |
+
+**Same reversal as lightserve, even more pronounced.** K=1/2/4 all beat
+the non-speculative baseline (up to **+29% throughput at K=4**, vs.
+lightserve's own concurrency=1 result topping out around +22% at K=2),
+and K=8 still tips back below baseline. This closes out the question
+raised above: the workload-shape hypothesis holds on *both*
+implementations, at *both* concurrency levels tested, in the same
+direction each time -- concurrency, not which engine is running, decides
+whether speculative decoding pays off here.
 
 One side observation, not otherwise explained here: vLLM's acceptance
 rate is consistently *lower* than lightserve's at every K (82% vs. 100%
