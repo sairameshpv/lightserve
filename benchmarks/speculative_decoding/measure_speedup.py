@@ -267,8 +267,20 @@ def aggregate_repeats(num_speculative_tokens: int, repeat_summaries: list) -> di
     }
 
 
-def write_results(summary_rows: list, raw_rows: list, step_rows: list) -> None:
-    with SUMMARY_CSV.open("w", newline="") as f:
+def _tagged_path(path: Path, tag: str) -> Path:
+    """path with `tag` inserted before the extension when tag is set
+    (accept_summary.csv -> accept_summary_code.csv), unchanged otherwise
+    -- lets a --tag run avoid overwriting the default sweep's CSVs.
+    """
+    return path if not tag else path.with_name(f"{path.stem}_{tag}{path.suffix}")
+
+
+def write_results(summary_rows: list, raw_rows: list, step_rows: list, tag: str = "") -> None:
+    summary_csv = _tagged_path(SUMMARY_CSV, tag)
+    raw_csv = _tagged_path(RAW_CSV, tag)
+    step_csv = _tagged_path(STEP_CSV, tag)
+
+    with summary_csv.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "num_speculative_tokens", "concurrency", "num_repeats",
             "acceptance_rate_mean", "acceptance_rate_stdev",
@@ -280,7 +292,7 @@ def write_results(summary_rows: list, raw_rows: list, step_rows: list) -> None:
         writer.writeheader()
         writer.writerows(summary_rows)
 
-    with RAW_CSV.open("w", newline="") as f:
+    with raw_csv.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "num_speculative_tokens", "concurrency", "repeat_index", "request_id",
             "num_proposed", "num_accepted_total", "num_draft_accepted",
@@ -288,7 +300,7 @@ def write_results(summary_rows: list, raw_rows: list, step_rows: list) -> None:
         writer.writeheader()
         writer.writerows(raw_rows)
 
-    with STEP_CSV.open("w", newline="") as f:
+    with step_csv.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "num_speculative_tokens", "concurrency", "repeat_index", "step_index", "duration_ms",
             "num_scheduled_tokens", "num_waiting", "num_running",
@@ -296,9 +308,9 @@ def write_results(summary_rows: list, raw_rows: list, step_rows: list) -> None:
         writer.writeheader()
         writer.writerows(step_rows)
 
-    print(f"Wrote {len(summary_rows)} summary rows to {SUMMARY_CSV}")
-    print(f"Wrote {len(raw_rows)} raw rows to {RAW_CSV}")
-    print(f"Wrote {len(step_rows)} step rows to {STEP_CSV}")
+    print(f"Wrote {len(summary_rows)} summary rows to {summary_csv}")
+    print(f"Wrote {len(raw_rows)} raw rows to {raw_csv}")
+    print(f"Wrote {len(step_rows)} step rows to {step_csv}")
 
 
 def _make_engine(target_config, target_weights, draft_dir, num_speculative_tokens,
@@ -344,6 +356,12 @@ def main():
                      help="Comma-separated K values to sweep; 0 means the non-speculative baseline")
     ap.add_argument("--max-tokens", default=MAX_TOKENS, type=int,
                      help="Overrides prompts_tokenized.jsonl's own (much smaller) per-prompt cap")
+    ap.add_argument("--prompts-path", default=str(PROMPTS_PATH), type=Path,
+                     help="Defaults to prompts_tokenized.jsonl; point at a different file "
+                          "(e.g. one built with generate_tokenized_prompts.py --categories) to sweep it instead")
+    ap.add_argument("--tag", default="",
+                     help="Suffixes all three output CSVs (accept_summary_<tag>.csv etc.) instead of "
+                          "overwriting the default filenames -- use whenever --prompts-path isn't the default")
     ap.add_argument("--concurrency", default=None, type=int,
                      help="How many prompts run together per group; groups run sequentially, a fresh "
                           "engine each. Defaults to len(prompts) (today's behavior: one group, all "
@@ -374,11 +392,12 @@ def main():
     from model.hf_loader import load_hf_checkpoint
     target_config, target_weights = load_hf_checkpoint(target_dir, device="cuda")
 
-    prompts = load_prompts(PROMPTS_PATH, args.max_tokens)
+    prompts = load_prompts(args.prompts_path, args.max_tokens)
     if not prompts:
         raise SystemExit(
-            f"No prompts found at {PROMPTS_PATH} -- run "
-            "python3 -m benchmarks.speculative_decoding.generate_tokenized_prompts first."
+            f"No prompts found at {args.prompts_path} -- run "
+            "python3 -m benchmarks.speculative_decoding.generate_tokenized_prompts first "
+            "(pass --categories/--out to build a different prompts file)."
         )
 
     num_gpu_blocks = args.num_gpu_blocks
@@ -437,7 +456,7 @@ def main():
         summary_rows.append(aggregated)
         print(f"num_speculative_tokens={k} concurrency={concurrency}: {aggregated}")
 
-    write_results(summary_rows, raw_rows, step_rows)
+    write_results(summary_rows, raw_rows, step_rows, tag=args.tag)
 
 
 if __name__ == "__main__":

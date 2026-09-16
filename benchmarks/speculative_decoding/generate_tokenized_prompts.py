@@ -21,7 +21,19 @@ representative workload.
 
 Regenerate after editing this file or baseline_prompts.jsonl:
     python3 -m benchmarks.speculative_decoding.generate_tokenized_prompts
+
+--categories (comma-separated category:count pairs, e.g. "medium-code:5")
+selects exactly that many of each named category instead of the default
+"first NUM_PROMPTS records regardless of category" -- for building a
+domain-isolated prompt set (see benchmarks/speculative_decoding/
+README.md's "Speculative tuning" section) without disturbing the default
+prompts_tokenized.jsonl, which existing correctness/speedup runs already
+depend on. Pair with --out to write somewhere else instead of overwriting
+it:
+    python3 -m benchmarks.speculative_decoding.generate_tokenized_prompts \\
+        --categories medium-code:5 --out prompts_tokenized_code.jsonl
 """
+import argparse
 import json
 import os
 from pathlib import Path
@@ -64,7 +76,47 @@ def _find_snapshot_dir(model_repo_dir_name):
     return None
 
 
+def _select_sources(categories_arg: str) -> list:
+    """Reads every non-excluded source record once (baseline_prompts.jsonl
+    is small, ~1000 lines -- loading it fully is simpler than an
+    interleaved single pass). Unset categories_arg: first NUM_PROMPTS in
+    file order, today's original behavior. Set: exactly count of each
+    named category, in file order within that category.
+    """
+    all_sources = []
+    with IN_PATH.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            src = json.loads(line)
+            if src["id"] not in EXCLUDED_IDS:
+                all_sources.append(src)
+
+    if not categories_arg:
+        return all_sources[:NUM_PROMPTS]
+
+    selected = []
+    for part in categories_arg.split(","):
+        category, count_str = part.split(":")
+        count = int(count_str)
+        matching = [s for s in all_sources if s["category"] == category][:count]
+        if len(matching) < count:
+            raise SystemExit(f"Only {len(matching)} non-excluded '{category}' records available, "
+                              f"needed {count}")
+        selected.extend(matching)
+    return selected
+
+
 def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--categories", default=None,
+                     help="Comma-separated category:count pairs (e.g. medium-code:5,medium-reasoning:5); "
+                          "unset keeps the default first-NUM_PROMPTS-in-file-order behavior")
+    ap.add_argument("--out", default=str(OUT_PATH), help="Output path; defaults to prompts_tokenized.jsonl")
+    args = ap.parse_args()
+    out_path = Path(args.out)
+
     checkpoint_dir = _find_snapshot_dir("models--meta-llama--Meta-Llama-3-8B-Instruct")
     if checkpoint_dir is None:
         raise SystemExit(
@@ -74,29 +126,20 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
 
     records = []
-    with IN_PATH.open() as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            if len(records) >= NUM_PROMPTS:
-                break
-            src = json.loads(line)
-            if src["id"] in EXCLUDED_IDS:
-                continue
-            token_ids = tokenizer.encode(src["prompt"])  # real tokenization, BOS included by default
-            records.append({
-                "id": src["id"],
-                "category": src["category"],
-                "prompt": token_ids,
-                "max_tokens": min(src["max_tokens"], MAX_TOKENS),
-            })
+    for src in _select_sources(args.categories):
+        token_ids = tokenizer.encode(src["prompt"])  # real tokenization, BOS included by default
+        records.append({
+            "id": src["id"],
+            "category": src["category"],
+            "prompt": token_ids,
+            "max_tokens": min(src["max_tokens"], MAX_TOKENS),
+        })
 
-    with OUT_PATH.open("w") as f:
+    with out_path.open("w") as f:
         for r in records:
             f.write(json.dumps(r) + "\n")
 
-    print(f"Wrote {len(records)} records to {OUT_PATH}")
+    print(f"Wrote {len(records)} records to {out_path}")
 
 
 if __name__ == "__main__":

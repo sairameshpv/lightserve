@@ -10,7 +10,9 @@ acceptance rate, mean accepted tokens per target forward pass, wall-clock
 inter-token latency (ITL), and tokens/s, swept over
 `num_speculative_tokens` in `{0 (non-speculative baseline), 1, 2, 4, 8}`
 -- and, via `--concurrency`, over how many prompts run at once, which
-turns out to matter a lot (see "Concurrency matters" below).
+turns out to matter a lot (see "Concurrency matters" below), and via
+`generate_tokenized_prompts.py --categories`, over prompt domain (see
+"Speculative tuning" below).
 
 ```bash
 # once, if prompts_tokenized.jsonl doesn't exist yet:
@@ -255,18 +257,80 @@ engine-vs-reference tie-breaking divergence at real-model scale, see
 exactly how each implementation seeds/advances the draft's own KV cache,
 or something else entirely.
 
+## Speculative tuning: acceptance by domain, and each domain's own crossover
+
+The K sweeps above use `prompts_tokenized.jsonl`'s default mix (4 of 5
+prompts happen to be `medium-code`) -- not a real domain comparison.
+Built two domain-isolated prompt sets instead (`generate_tokenized_
+prompts.py --categories`, new flag, added for this): 5 `medium-code`
+prompts and 5 `medium-reasoning` prompts (real natural-language math/
+logic word problems, not code -- verified by reading actual records, not
+assumed from the category name) from `baseline_prompts.jsonl`, same
+"medium" length bucket so prompt length isn't a confound. Both run at
+`--concurrency 1` (only concurrency level where speculation showed any
+benefit at all, per above), same K sweep, `--tag code`/`--tag prose` so
+neither run's CSVs collide with any other run's:
+
+| K | code acceptance | code tok/s (Δ vs. own baseline) | prose acceptance | prose tok/s (Δ vs. own baseline) |
+|--:|--:|--:|--:|--:|
+| 0 (baseline) | -- | 22.0 | -- | 21.7 |
+| 1 | 100.0% | 25.9 (+18.0%) | 100.0% | 25.6 (+18.2%) |
+| 2 | 91.6% | 27.4 (**+24.9%**) | 94.0% | 27.9 (**+28.9%**) |
+| 4 | 73.5% | 24.8 (+13.0%) | 78.9% | 26.0 (+20.0%) |
+| 8 | 57.7% | 21.3 (−3.0%) | 60.9% | 22.0 (+1.5%) |
+
+**Not the assumption going in.** The instinct is that code, being more
+syntactically repetitive/predictable token-to-token, should accept
+better than free-form prose -- these 10 prompts show the opposite:
+prose's acceptance rate is higher than code's at every single K (94.0%
+vs. 91.6% at K=2, 60.9% vs. 57.7% at K=8), and prose's crossover point is
+later too -- code has already dipped below its own baseline by K=8
+(−3.0%), prose is still (barely) ahead of its own baseline at the same
+K=8 (+1.5%). Both domains peak in *relative* terms around K=2 (code
++24.9%, prose +28.9%), matching the aggregate concurrency=1 finding
+above.
+
+Worth being honest about the limits of this particular reading: 5
+prompts per domain, one repeat, no stdev -- real variance at this sample
+size hasn't been characterized, so "prose beats code" here is a real,
+measured result on these 10 specific prompts, not a claim about code vs.
+prose in general. What *is* fairly measured regardless of sample size:
+both domains show the same qualitative shape (peak around K=2, decline
+through K=8) as the aggregate result, so the concurrency finding isn't
+an artifact of one particular prompt mix.
+
+Not done here (would double the cost of an already-expensive session):
+the equivalent vLLM domain split, and a higher-resolution K sweep near
+each domain's actual crossover (this run only samples K∈{0,1,2,4,8}, so
+"crossover between K=4 and K=8" for code is as precise as this data
+gets).
+
+Raw data: `accept_summary_code.csv` / `accept_raw_code.csv` /
+`step_latency_code.csv` and the `_prose` equivalents, plus the prompt
+sets themselves (`prompts_tokenized_code.jsonl` / `prompts_tokenized_
+prose.jsonl`) in this directory.
+
 ## Files
 
 - `generate_tokenized_prompts.py` / `prompts_tokenized.jsonl`: real
   tokenized prompts (Stage F), reused here with `--max-tokens` overriding
-  their capped values for a meaningful throughput reading.
+  their capped values for a meaningful throughput reading. `--categories`
+  builds a different, domain-isolated prompt file instead (see
+  "Speculative tuning" above) without touching the default file.
+- `prompts_tokenized_code.jsonl` / `prompts_tokenized_prose.jsonl`: the
+  domain-isolated prompt sets "Speculative tuning" above uses.
 - `verify_speculative_correctness.py`: the correctness counterpart to
   this speedup measurement -- byte-identical output is proven there, not
   re-checked here.
-- `measure_speedup.py`: this benchmark.
+- `measure_speedup.py`: this benchmark. `--prompts-path`/`--tag` let a
+  run target a different prompt file and write differently-named CSVs
+  instead of overwriting the default sweep's.
 - `accept_summary.csv` / `accept_raw.csv` / `step_latency.csv`: the
   default (`--concurrency 5`) run's raw data, backing the `## Status`
   table.
 - `accept_summary_concurrency1.csv` / `accept_raw_concurrency1.csv` /
   `step_latency_concurrency1.csv`: the `--concurrency 1` run's raw data,
   backing "Concurrency matters"'s table.
+- `accept_summary_code.csv` / `accept_raw_code.csv` /
+  `step_latency_code.csv` and the `_prose` equivalents: the two
+  domain-isolated runs backing "Speculative tuning"'s table.
