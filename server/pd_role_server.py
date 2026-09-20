@@ -280,7 +280,8 @@ def build_engine(args: argparse.Namespace):
             "see ~/.claude/plans/agile-rolling-gray.md's Context section."
         )
     model_config, weights = load_hf_checkpoint(checkpoint_dir, device="cuda")
-    cache_config = CacheConfig(block_size=args.block_size, num_gpu_blocks=args.num_gpu_blocks)
+    cache_config = CacheConfig(block_size=args.block_size, num_gpu_blocks=args.num_gpu_blocks,
+                                int8_kv=args.int8_kv)
     scheduler_config = SchedulerConfig(max_num_seqs=args.max_num_seqs, max_num_batched_tokens=2048)
     return LLMEngine(cache_config, scheduler_config, model_config, weights=weights, device="cuda")
 
@@ -296,6 +297,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                               "workload the caller knows about, same as this repo's other real-"
                               "checkpoint scripts' own --num-gpu-blocks handling.")
     parser.add_argument("--max-num-seqs", type=int, default=16)
+    parser.add_argument("--int8-kv", action="store_true",
+                         help="Store this engine's KV cache at int8 instead of the checkpoint's "
+                              "own dtype (see engine/config.py's CacheConfig.int8_kv). Off by "
+                              "default -- prefill and decode nodes choose this independently, "
+                              "each on their own command line.")
     return parser.parse_args(argv)
 
 

@@ -41,6 +41,11 @@ class PagedKVCache:
         self.block_size = cache_config.block_size
         self.num_gpu_blocks = cache_config.num_gpu_blocks
         self.device = device
+        # compute_dtype is what every *caller* (write()'s k/v args, read()'s
+        # return value) always sees, regardless of int8_kv -- storage dtype
+        # is an internal detail of this class alone (see write()/read()).
+        self.compute_dtype = model_config.dtype
+        self.int8_kv = cache_config.int8_kv
         shape = (
             model_config.n_layers, cache_config.num_gpu_blocks, cache_config.block_size,
             model_config.num_kv_heads, model_config.head_dim,
@@ -49,8 +54,41 @@ class PagedKVCache:
         # request's real length) must read back as inert, not NaN/garbage --
         # matters if anything ever reads a whole block rather than exactly
         # `seq_len` positions (nothing here does today, but cheap insurance).
-        self.k_cache = torch.zeros(shape, dtype=model_config.dtype, device=device)
-        self.v_cache = torch.zeros(shape, dtype=model_config.dtype, device=device)
+        cache_dtype = torch.int8 if self.int8_kv else self.compute_dtype
+        self.k_cache = torch.zeros(shape, dtype=cache_dtype, device=device)
+        self.v_cache = torch.zeros(shape, dtype=cache_dtype, device=device)
+        if self.int8_kv:
+            # One scale per token per KV head -- head_dim collapsed out,
+            # since the quantization below is per-token-per-head (see
+            # _quantize's docstring for why that granularity, not
+            # per-tensor or per-channel). fp32 regardless of compute_dtype:
+            # this is a scale factor, not a cached activation, and needs to
+            # survive the round trip precisely.
+            scale_shape = shape[:-1]
+            self.k_scale = torch.ones(scale_shape, dtype=torch.float32, device=device)
+            self.v_scale = torch.ones(scale_shape, dtype=torch.float32, device=device)
+
+    def _quantize(self, x: torch.Tensor):
+        """Symmetric int8, one scale per token per KV head, computed fresh
+        from x itself -- no calibration pass needed. x: [num_new_tokens,
+        num_kv_heads, head_dim]. Per-token (not per-tensor, which risks one
+        outlier channel crushing every other channel's resolution; not
+        per-channel, which needs calibration statistics gathered ahead of
+        time) -- same "reduce fresh, every call" spirit as
+        kernels/fused_rmsnorm_residual.py's per-row variance.
+        """
+        # .float() before anything else: x arrives at compute_dtype (bf16
+        # for the real checkpoint), and computing scale from x directly
+        # would silently inherit that dtype -- k_scale/v_scale are
+        # allocated fp32 (see __init__), so a bf16 scale here is a dtype
+        # mismatch on the very next scatter, not just reduced precision.
+        x_fp32 = x.float()
+        scale = x_fp32.abs().amax(dim=-1).clamp(min=1e-8) / 127.0
+        x_int8 = (x_fp32 / scale.unsqueeze(-1)).round().clamp(-127, 127).to(torch.int8)
+        return x_int8, scale
+
+    def _dequantize(self, x_int8: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+        return (x_int8.float() * scale.unsqueeze(-1)).to(self.compute_dtype)
 
     def _physical_locations(self, request: Request, start: int, end: int):
         """positions [start, end) -> (physical_block_ids, offsets), both
@@ -82,6 +120,11 @@ class PagedKVCache:
         """
         num_new = k.shape[0]
         physical_block_ids, offset = self._physical_locations(request, start, start + num_new)
+        if self.int8_kv:
+            k, k_scale = self._quantize(k)
+            v, v_scale = self._quantize(v)
+            self.k_scale[layer_idx, physical_block_ids, offset] = k_scale
+            self.v_scale[layer_idx, physical_block_ids, offset] = v_scale
         self.k_cache[layer_idx, physical_block_ids, offset] = k
         self.v_cache[layer_idx, physical_block_ids, offset] = v
 
@@ -95,6 +138,9 @@ class PagedKVCache:
         physical_block_ids, offset = self._physical_locations(request, 0, seq_len)
         k = self.k_cache[layer_idx, physical_block_ids, offset]
         v = self.v_cache[layer_idx, physical_block_ids, offset]
+        if self.int8_kv:
+            k = self._dequantize(k, self.k_scale[layer_idx, physical_block_ids, offset])
+            v = self._dequantize(v, self.v_scale[layer_idx, physical_block_ids, offset])
         return k, v
 
     # -- Cross-instance transfer (P/D disaggregation) ------------------------
@@ -149,8 +195,14 @@ class PagedKVCache:
             f"{(n_layers, num_kv_heads, head_dim)}, but this cache is {expected} -- "
             "the two instances aren't running the same model shape"
         )
-        assert k.dtype == self.k_cache.dtype, (
-            f"exported KV dtype {k.dtype} != this cache's {self.k_cache.dtype}"
+        # Against compute_dtype, not k_cache.dtype: export_request_kv/read()
+        # always hand back compute_dtype regardless of this cache's own
+        # storage dtype (see read()'s int8_kv branch) -- k_cache.dtype is
+        # int8 on an int8_kv cache, and the incoming tensor is correctly
+        # still compute_dtype at this point, not yet re-quantized (write()
+        # does that internally, below).
+        assert k.dtype == self.compute_dtype, (
+            f"exported KV dtype {k.dtype} != this cache's compute dtype {self.compute_dtype}"
         )
         k = k.to(self.device)
         v = v.to(self.device)

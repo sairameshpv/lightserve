@@ -247,7 +247,11 @@ def run_monolithic(target_config, target_weights, num_gpu_blocks: int, args: arg
     from model.llm_engine import LLMEngine
     from benchmarks.chunked_prefill.measure_itl import build_decode_prompts, build_prefill_prompt, run_mixed_workload
 
-    cache_config = CacheConfig(block_size=args.block_size, num_gpu_blocks=num_gpu_blocks)
+    # One cache_config, shared by both the warmup engine and the real one
+    # below -- int8_kv applies identically to each, same as every other
+    # CacheConfig field here.
+    cache_config = CacheConfig(block_size=args.block_size, num_gpu_blocks=num_gpu_blocks,
+                                int8_kv=args.int8_kv)
     scheduler_config = SchedulerConfig(max_num_seqs=args.num_decode_requests + 1, max_num_batched_tokens=2048)
 
     decode_prompts = build_decode_prompts(args.num_decode_requests, args.decode_prompt_len, seed=0)
@@ -400,6 +404,12 @@ def main():
     ap.add_argument("--num-gpu-blocks", type=int, required=True,
                      help="For this script's own monolithic-condition engine; the two role-servers "
                           "size their own separately when started.")
+    ap.add_argument("--int8-kv", action="store_true",
+                     help="int8 KV cache for this script's own monolithic-condition engine (see "
+                          "engine/config.py's CacheConfig.int8_kv). The disaggregated condition's "
+                          "role-servers choose this independently on their own command line "
+                          "(server/pd_role_server.py's own --int8-kv) -- this flag only covers "
+                          "run_monolithic's engine.")
     args = ap.parse_args()
 
     prefill_base = f"http://{args.prefill_host}:{args.prefill_port}"

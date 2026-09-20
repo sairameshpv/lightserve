@@ -36,11 +36,20 @@ class CacheConfig:
     are unaffected; when on, BlockManager.allocate reuses another request's
     already-computed blocks for a shared prompt prefix instead of always
     allocating fresh ones (see block_manager.py's module docstring).
+
+    int8_kv: opt-in flag telling model/kv_cache.py's PagedKVCache to store
+    K/V at int8 (symmetric, per-token-per-KV-head scale) instead of the
+    model's own dtype -- halves KV cache bytes, at the cost of a lossy
+    round trip. A plain bool, not a torch.dtype: this package stays
+    torch-free (see engine/README.md) -- the actual quantize/dequantize
+    logic lives entirely in model/kv_cache.py, which already imports
+    torch. Off by default so existing behavior/tests are unaffected.
     """
     block_size: int = 16
     num_gpu_blocks: int = 0
     watermark_blocks: int = 0
     enable_prefix_caching: bool = False
+    int8_kv: bool = False
 
     def __post_init__(self):
         assert self.block_size > 0, "block_size must be positive"
