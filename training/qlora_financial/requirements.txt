@@ -1,0 +1,20 @@
+# QLoRA training stack -- deliberately separate from lightserve's own
+# .venv (that one's built for the inference stack; model/hf_loader.py
+# does manual safetensors loading, not transformers.AutoModel, so none
+# of this is already installed there).
+#
+# Minimum-version constraints, not exact pins: current stable versions
+# were checked live (transformers ~5.17, peft ~0.21, bitsandbytes
+# ~0.50, mlflow ~3.15 as of this session), but pinning to one exact
+# patch version risks a resolve failure on the real node for versions
+# not independently confirmed here (accelerate, trl, datasets). Real
+# plan: install with these floors on the actual L40S node, then
+# `pip freeze > requirements.lock.txt` to capture the exact resolved
+# set as the real, verified lock -- checked live, not guessed twice.
+transformers>=5.0
+peft>=0.21
+bitsandbytes>=0.50
+accelerate>=1.0
+trl>=0.12
+datasets>=3.0
+mlflow>=3.15
