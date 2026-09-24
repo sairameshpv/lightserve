@@ -38,6 +38,7 @@ import json
 import random
 import re
 import statistics
+from collections import Counter
 from pathlib import Path
 
 SYSTEM_PROMPT = (
@@ -49,7 +50,9 @@ SYSTEM_PROMPT = (
 SEED = 0
 
 
-def _make_example(user_content: str, assistant_content: str, source: str) -> dict:
+def _make_example(user_content: str, assistant_content: str, source: str, group: str) -> dict:
+    # group: which source document this example is about -- split() keeps
+    # every example sharing a group in the same split (no test leakage).
     return {
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -57,7 +60,12 @@ def _make_example(user_content: str, assistant_content: str, source: str) -> dic
             {"role": "assistant", "content": assistant_content},
         ],
         "source": source,
+        "group": group,
     }
+
+
+def _text_key(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 def render_table(table) -> str:
@@ -149,7 +157,8 @@ def load_financial_qa_10k() -> list:
             f"{row.get('filing', '10-K')} filing):\n{row['context']}\n\n"
             f"Question: {row['question']}"
         )
-        out.append(_make_example(user, row["answer"], "financial-qa-10K"))
+        out.append(_make_example(user, row["answer"], "financial-qa-10K",
+                                 f"10K:{_text_key(row['context'])}"))
     return out
 
 
@@ -163,8 +172,12 @@ def load_convfinqa() -> list:
     out = []
     for row in ds:
         user = f"{row['instruction']}\n\n{row['input']}"
+        # One row per conversation turn; later turns repeat the same
+        # document, so the document text (before the Q/A history) is the group.
+        doc = row["input"].split("\nQuestion:")[0]
         # Output stays a bare number, as-is -- see module docstring.
-        out.append(_make_example(user, str(row["output"]), "ConvFinQA"))
+        out.append(_make_example(user, str(row["output"]), "ConvFinQA",
+                                 f"ConvFinQA:{_text_key(doc)}"))
     return out
 
 
@@ -196,7 +209,7 @@ def load_finqa() -> list:
     # dreamerdeo mirror is missing -- checked live, not assumed.
     ds = load_dataset("wandb/finqa-data-processed", split="train")
     first = ds[0]
-    assert {"pre_text", "post_text", "table", "query", "output"} <= set(first.keys()), (
+    assert {"pre_text", "post_text", "table", "query", "output", "program", "id"} <= set(first.keys()), (
         f"FinQA schema mismatch, got fields: {list(first.keys())}"
     )
     fallback_count = 0
@@ -216,7 +229,9 @@ def load_finqa() -> list:
         if steps is None:
             fallback_count += 1
         target = _format_answer_with_steps(steps, answer)
-        out.append(_make_example(user, target, "FinQA"))
+        # id is "<page>-<question number>", e.g. "ABMD/2015/page_53.pdf-2".
+        out.append(_make_example(user, target, "FinQA",
+                                 f"FinQA:{row['id'].rsplit('-', 1)[0]}"))
     if fallback_count:
         print(f"FinQA: {fallback_count}/{len(out)} rows fell back to plain "
               f"question->answer (program not present or unparseable)")
@@ -231,7 +246,7 @@ def load_tatqa() -> list:
         f"TAT-QA schema mismatch, got fields: {list(first.keys())}"
     )
     out = []
-    for context_row in ds:
+    for context_idx, context_row in enumerate(ds):
         table_text = render_table(context_row["table"].get("table", context_row["table"]))
         paragraphs = {p["order"]: p["text"] for p in context_row["paragraphs"]}
         for q in context_row["questions"]:
@@ -249,7 +264,7 @@ def load_tatqa() -> list:
             target = answer if not scale or scale == "None" else f"{answer} {scale}"
             if derivation:
                 target = f"Step 1: compute {derivation}.\nAnswer: {target}"
-            out.append(_make_example(user, target, "TAT-QA"))
+            out.append(_make_example(user, target, "TAT-QA", f"TAT-QA:{context_idx}"))
     return out
 
 
@@ -277,16 +292,80 @@ def dedup(examples: list) -> list:
     return out
 
 
+def _long_sentences(text: str) -> set:
+    """Fingerprint of a document: its long sentences, normalized to
+    lowercase letters and digits only. FinQA and ConvFinQA both store the
+    same S&P 500 report text as " . "-separated sentences, just wrapped
+    differently -- normalizing makes a shared sentence compare equal.
+    Short sentences (< 60 chars) are skipped: boilerplate like "in
+    millions" would link unrelated documents together.
+    """
+    out = set()
+    for sentence in re.split(r"\s\.\s|\n", text):
+        normalized = re.sub(r"[^a-z0-9]+", "", sentence.lower())
+        if len(normalized) >= 60:
+            out.add(normalized)
+    return out
+
+
+def link_overlapping_documents(examples: list) -> list:
+    """ConvFinQA was built from FinQA's own source reports, so the same
+    document shows up in both under different group keys. Any ConvFinQA
+    document sharing >= 2 long sentences with a FinQA page gets merged
+    into that page's group (union-find, so chains of matches merge too).
+    """
+    index = {}  # long sentence -> FinQA groups containing it
+    for ex in examples:
+        if ex["source"] == "FinQA":
+            for s in _long_sentences(ex["messages"][1]["content"]):
+                index.setdefault(s, set()).add(ex["group"])
+
+    parent = {}
+
+    def find(g):
+        while parent.get(g, g) != g:
+            g = parent[g]
+        return g
+
+    seen, linked = set(), 0
+    for ex in examples:
+        if ex["source"] != "ConvFinQA" or ex["group"] in seen:
+            continue
+        seen.add(ex["group"])
+        hits = Counter(g for s in _long_sentences(ex["messages"][1]["content"])
+                       for g in index.get(s, ()))
+        matched = [g for g, n in hits.items() if n >= 2]
+        for g in matched:
+            parent[find(g)] = find(ex["group"])
+        linked += bool(matched)
+
+    for ex in examples:
+        ex["group"] = find(ex["group"])
+    print(f"Linked {linked}/{len(seen)} ConvFinQA documents to FinQA pages "
+          f"from the same report")
+    return examples
+
+
 def split(examples: list, seed: int = SEED) -> tuple:
+    # Split by document group, not by example: every question about one
+    # document lands in the same split, so test never shares a document
+    # (or an earlier ConvFinQA turn's answer) with train.
     rng = random.Random(seed)
-    shuffled = examples[:]
-    rng.shuffle(shuffled)
-    n = len(shuffled)
-    n_val = int(n * 0.05)
-    n_test = int(n * 0.05)
-    val = shuffled[:n_val]
-    test = shuffled[n_val:n_val + n_test]
-    train = shuffled[n_val + n_test:]
+    by_group = {}
+    for ex in examples:
+        by_group.setdefault(ex["group"], []).append(ex)
+    groups = sorted(by_group)
+    rng.shuffle(groups)
+    target = int(len(examples) * 0.05)
+    train, val, test = [], [], []
+    for g in groups:
+        bucket = val if len(val) < target else test if len(test) < target else train
+        bucket.extend(by_group[g])
+    rng.shuffle(train)  # groups were added whole; mix them for training order
+    seen = [{ex["group"] for ex in part} for part in (train, val, test)]
+    assert not (seen[0] & seen[1] or seen[0] & seen[2] or seen[1] & seen[2]), (
+        "a document group landed in more than one split"
+    )
     return train, val, test
 
 
@@ -337,6 +416,7 @@ def main():
 
     all_examples = dedup(all_examples)
     print(f"Combined: {len(all_examples)} examples after dedup")
+    all_examples = link_overlapping_documents(all_examples)
 
     train, val, test = split(all_examples, seed=args.seed)
     print(f"Split: train={len(train)} val={len(val)} test={len(test)}")
