@@ -11,3 +11,6 @@ terraform/terraform.tfvars
 terraform/tfplan
 
 benchmarks/profiling/traces/
+
+training/qlora_financial/data/
+training/qlora_financial/outputs/

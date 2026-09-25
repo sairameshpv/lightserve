@@ -15,6 +15,6 @@ transformers>=5.0
 peft>=0.21
 bitsandbytes>=0.50
 accelerate>=1.0
-trl>=0.12
+trl>=1.13
 datasets>=3.0
 mlflow>=3.15
