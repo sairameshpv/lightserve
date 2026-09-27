@@ -262,10 +262,33 @@ def load_tatqa() -> list:
             derivation = q.get("derivation")
             scale = q.get("scale")
             target = answer if not scale or scale == "None" else f"{answer} {scale}"
-            if derivation:
-                target = f"Step 1: compute {derivation}.\nAnswer: {target}"
+            step = _tatqa_step(q.get("answer_type"), (derivation or "").strip())
+            if step:
+                target = f"{step}\nAnswer: {target}"
             out.append(_make_example(user, target, "TAT-QA", f"TAT-QA:{context_idx}"))
     return out
+
+
+_COMPARISON_RE = re.compile(r"^[\s\d.,$%()\-]+([<>]=?[\s\d.,$%()\-]+)+$")
+
+
+def _tatqa_step(answer_type: str, derivation: str):
+    """Only some TAT-QA derivations are reasoning (checked on the real
+    train split): arithmetic formulas (5,553), '##'-joined items for count
+    questions (305), and pure numeric comparisons like '5,216 > 5,107'
+    for span questions (480). The rest (282) are annotator notes such as
+    'locate and analyze X in row 4' -- about row numbers the model never
+    sees -- so they're dropped (answer only) instead of trained on."""
+    if not derivation:
+        return None
+    if answer_type == "arithmetic":
+        return f"Step 1: compute {derivation}."
+    if answer_type == "count":
+        items = "; ".join(i.strip() for i in derivation.split("##"))
+        return f"Step 1: count the matching items: {items}."
+    if _COMPARISON_RE.match(derivation):
+        return f"Step 1: compare {derivation}."
+    return None
 
 
 # -- Combine, dedup, split, audit ---------------------------------------
