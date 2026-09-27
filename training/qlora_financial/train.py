@@ -29,6 +29,9 @@ def parse_args():
     ap.add_argument("--max-length", type=int, default=3200)
     ap.add_argument("--smoke", action="store_true",
                     help="32 longest train examples, 2 optimizer steps, separate MLflow experiment")
+    ap.add_argument("--resume", action="store_true",
+                    help="continue from the newest checkpoint in the output folder "
+                         "(the node is preemptible -- a reclaim loses at most ~250 steps)")
     return ap.parse_args()
 
 
@@ -114,7 +117,7 @@ def main():
     config = sft_config(args)
     trainer = SFTTrainer(model=args.model, args=config, train_dataset=train_ds,
                          eval_dataset=val_ds, quantization_config=quant, peft_config=lora)
-    trainer.train()
+    trainer.train(resume_from_checkpoint=True if args.resume else None)
     adapter_dir = Path(config.output_dir) / "adapter"
     trainer.save_model(str(adapter_dir))  # LoRA adapter only, not a merged model
     print(f"Saved adapter to {adapter_dir}")
