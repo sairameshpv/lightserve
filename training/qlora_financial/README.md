@@ -165,3 +165,39 @@ general ability (catastrophic forgetting); and the scorer's ×100 leniency
 can rarely accept a wrong answer. Efficiency is also unoptimized: the GPU
 spot check showed **37%** utilization, and peak memory was 7.4 of 46 GB.
 Batch size 1 leaves most of the L40S idle on short examples.
+
+## What's next
+
+- **Throughput**: larger per-device batches (grouped by length or packed)
+  and 2-GPU data parallel, measured against this run as the 1-GPU,
+  batch-1 baseline (4h52m, ~1,200 tokens/s, 37% utilization).
+- **Evaluation v2**: serve the adapter through vLLM (`--enable-lora`) and
+  compare both models with promptfoo; an MLflow LLM judge for the sentence
+  answers; the datasets' official test sets via FinBen, which were never used
+  here; a general-ability check such as an MMLU subset, for forgetting.
+- **Scorer fixes**: treat a matching number with a scale word
+  (`782 thousand` vs `782`) as correct, and add the lenient any-number
+  score to `verify_finetune.py` itself (for this README it was computed
+  separately, from `verify_results.jsonl`).
+- **Arithmetic**: a calculator or tool step, so the model emits the
+  formula and the result is computed exactly.
+- **Serving on lightserve**: merge the adapter into bf16 weights
+  (`merge_and_unload()`), then load it with lightserve's own loader.
+  lightserve has no LoRA or 4-bit support today.
+
+## Files
+
+- `prepare_dataset.py`: loads the four sources, formats, deduplicates, links
+  documents, splits by group, runs the length audit, writes `data/*.jsonl`.
+- `train.py`: QLoRA training (`--smoke`, `--resume`), MLflow tracking,
+  saves the adapter and prints peak memory.
+- `verify_finetune.py`: original vs fine-tuned on `test.jsonl`, readable
+  side-by-side plus number-scored, writes `verify_results.jsonl`.
+- `requirements.txt`: dependency floors; on a CUDA 12.8 driver, install
+  torch from the cu128 index (see *Setup*).
+
+Not committed (`.gitignore`): `data/` (regenerated identically by
+`prepare_dataset.py`, fixed seed) and `outputs/` (the adapter, checkpoints,
+`mlflow.db`, `verify_results.jsonl`, logs). To reproduce, run the four
+commands in *Setup* in order. View the runs with
+`mlflow ui --backend-store-uri sqlite:///training/qlora_financial/outputs/mlflow.db`.
