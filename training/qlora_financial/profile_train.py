@@ -4,7 +4,11 @@ v1 (train.py, batch 1 x 16 accumulation) ran at ~1,200 tokens/s overall but
 ~2,100 on the smoke run's longest examples, with peak memory 7.4 of 46 GB --
 pointing at short sequences at batch 1 leaving the GPU idle. Three experiments:
   A (--mode profile): torch.profiler over a few v1-setting steps -> GPU time
-    by kernel category, GPU busy % (kernel time / wall time), top kernels.
+    by kernel category, GPU busy % (kernel time / wall time), top kernels, and
+    GPU idle % per loop phase (between_steps = data loading + logging, fwd_bwd,
+    optimizer_step, post_step) from NVTX/record_function ranges. --nsys: the
+    same phases under Nsight Systems as a cross-check. No gradient sync to
+    measure on 1 GPU (no DDP) -- that's for the 2-GPU follow-up.
   B (--mode sweep):   tokens/s vs sequence length at batch 1.
   C (--mode sweep):   batch 1/2/4/8 (effective batch kept at 16), random vs
     length-grouped order -> tokens/s, peak memory, loss (should match).
@@ -26,13 +30,15 @@ def parse_args():
     ap.add_argument("--out-dir", default="training/qlora_financial/profiling")
     ap.add_argument("--data-dir", default="training/qlora_financial/data")
     ap.add_argument("--model", default="meta-llama/Meta-Llama-3-8B-Instruct")
+    ap.add_argument("--nsys", action="store_true", help="profile mode under `nsys --capture-range=cudaProfilerApi`: "
+                    "no torch.profiler (they can't share CUPTI); NVTX phases + capture of steps 3-5 only")
     return ap.parse_args()
 
 
 # Token-length buckets for experiment B (upper bound 3200 = train.py's max_length).
 BUCKETS = [(0, 256), (256, 512), (512, 1024), (1024, 2048), (2048, 3200)]
-# train_sampling_strategy value for length-grouped batches -- NOT yet confirmed
-# against the installed transformers; check its accepted values on the node first.
+# train_sampling_strategy value for length-grouped batches -- confirmed in transformers
+# 5.17's training_args.py choices: random, sequential, group_by_length, batch_rebalance.
 GROUPED = "group_by_length"
 
 
@@ -126,6 +132,63 @@ def make_profiler_callback(trace_path: str, wait: int = 1, warmup: int = 1, acti
     return ProfilerCallback()
 
 
+def make_phase_callback(nsys_capture: bool = False):
+    """Marks training-loop phases as NVTX ranges (nsys) + record_function ranges
+    (torch.profiler). Boundaries follow transformers 5.17's loop: all 16 micro-batches
+    are fetched *before* on_step_begin, so data loading lands in between_steps."""
+    import torch
+    from transformers import TrainerCallback
+
+    class PhaseCallback(TrainerCallback):
+        current = None  # the open record_function range, if any
+
+        def _switch(self, name):
+            if self.current is not None:
+                self.current.__exit__(None, None, None)
+                torch.cuda.nvtx.range_pop()
+            self.current = None
+            if name:
+                torch.cuda.nvtx.range_push(name)
+                self.current = torch.profiler.record_function(name)
+                self.current.__enter__()
+
+        def on_train_begin(self, *a, **kw): self._switch("between_steps")  # data fetch + logging
+        def on_step_begin(self, args, state, control, **kw):
+            if nsys_capture and state.global_step == 2:  # same steps 3-5 torch.profiler records
+                torch.cuda.profiler.start()
+            self._switch("fwd_bwd")  # 16 micro-batches + grad clip
+        def on_pre_optimizer_step(self, *a, **kw): self._switch("optimizer_step")
+        def on_optimizer_step(self, *a, **kw): self._switch("post_step")  # lr scheduler + zero_grad
+        def on_step_end(self, args, state, control, **kw):
+            self._switch("between_steps")
+            if nsys_capture and state.global_step == 5:
+                torch.cuda.profiler.stop()
+        def on_train_end(self, *a, **kw): self._switch(None)
+    return PhaseCallback()
+
+
+PHASES = ("between_steps", "fwd_bwd", "optimizer_step", "post_step")
+
+
+def phase_breakdown(prof) -> dict:
+    """Per phase: wall time (the CPU-side range), GPU kernel time *executing inside
+    that wall window* (intervals clipped to it), and GPU idle % -- the starvation
+    number. Attribution is by when kernels ran, not by which phase launched them."""
+    import torch
+    events = prof.events()
+    kernels = [(e.time_range.start, e.time_range.end) for e in events
+               if e.device_type == torch.autograd.DeviceType.CUDA]
+    out = {}
+    for name in PHASES:
+        wins = [(e.time_range.start, e.time_range.end) for e in events
+                if e.name == name and e.device_type == torch.autograd.DeviceType.CPU]
+        wall = sum(b - a for a, b in wins)
+        gpu = sum(max(0, min(b, kb) - max(a, ka)) for a, b in wins for ka, kb in kernels)
+        out[name] = {"count": len(wins), "wall_ms": round(wall / 1000, 1), "gpu_ms": round(gpu / 1000, 1),
+                     "gpu_idle_pct": round(100 * (1 - gpu / wall), 1) if wall else None}
+    return out
+
+
 def summarize_profile(prof) -> dict:
     """GPU busy % (sum of kernel time / first-to-last kernel span of the recorded
     steps -- the rest is the GPU idle, waiting on the CPU), time by category, top kernels."""
@@ -152,10 +215,15 @@ def main():
     ds = load_split(args.data_dir, "train")
     if args.mode == "profile":  # experiment A: v1's exact settings on the real length mix
         mix = ds.select(sorted(random.Random(0).sample(range(len(ds)), args.steps * 16)))
-        cb = make_profiler_callback(str(out / "traces" / "profile_v1_trace.json"))
-        result = run_config(args, mix, batch_size=1, grad_accum=16, callbacks=[cb])
-        result["profile"] = summarize_profile(cb.prof)
-        (out / "profile_v1.json").write_text(json.dumps(result, indent=1))
+        phases = make_phase_callback(nsys_capture=args.nsys)
+        if args.nsys:  # nsys records the timeline; this run only reports tokens/s
+            result = run_config(args, mix, batch_size=1, grad_accum=16, callbacks=[phases])
+        else:  # profiler callback listed first, so it steps before a new phase range opens
+            cb = make_profiler_callback(str(out / "traces" / "profile_v1_trace.json"))
+            result = run_config(args, mix, batch_size=1, grad_accum=16, callbacks=[cb, phases])
+            result["profile"] = summarize_profile(cb.prof)
+            result["phases"] = phase_breakdown(cb.prof)
+        (out / ("profile_v1_nsys_run.json" if args.nsys else "profile_v1.json")).write_text(json.dumps(result, indent=1))
         print(json.dumps(result, indent=1))
     else:  # experiments B and C
         rows = []
