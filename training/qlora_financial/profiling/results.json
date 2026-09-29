@@ -1,0 +1,134 @@
+[
+ {
+  "experiment": "B",
+  "data": "0-256",
+  "batch_size": 1,
+  "grad_accum": 16,
+  "sampling": "random",
+  "seconds": 53.3,
+  "tokens_per_s": 392,
+  "final_loss": 2.072643995285034,
+  "peak_gib": 6.2
+ },
+ {
+  "experiment": "B",
+  "data": "256-512",
+  "batch_size": 1,
+  "grad_accum": 16,
+  "sampling": "random",
+  "seconds": 53.3,
+  "tokens_per_s": 802,
+  "final_loss": 2.7165091037750244,
+  "peak_gib": 10.8
+ },
+ {
+  "experiment": "B",
+  "data": "512-1024",
+  "batch_size": 1,
+  "grad_accum": 16,
+  "sampling": "random",
+  "seconds": 55.9,
+  "tokens_per_s": 1895,
+  "final_loss": 2.746424913406372,
+  "peak_gib": 10.8
+ },
+ {
+  "experiment": "B",
+  "data": "1024-2048",
+  "batch_size": 1,
+  "grad_accum": 16,
+  "sampling": "random",
+  "seconds": 75.4,
+  "tokens_per_s": 2163,
+  "final_loss": 3.7114787101745605,
+  "peak_gib": 10.8
+ },
+ {
+  "experiment": "B",
+  "data": "2048-3200",
+  "batch_size": 1,
+  "grad_accum": 16,
+  "sampling": "random",
+  "seconds": 137.1,
+  "tokens_per_s": 2256,
+  "final_loss": 4.56843900680542,
+  "peak_gib": 10.8
+ },
+ {
+  "experiment": "C",
+  "data": "mix",
+  "batch_size": 1,
+  "grad_accum": 16,
+  "sampling": "random",
+  "seconds": 61.9,
+  "tokens_per_s": 1343,
+  "final_loss": 2.5276997089385986,
+  "peak_gib": 10.8
+ },
+ {
+  "experiment": "C",
+  "data": "mix",
+  "batch_size": 2,
+  "grad_accum": 8,
+  "sampling": "random",
+  "seconds": 60.3,
+  "tokens_per_s": 1379,
+  "final_loss": 2.5288121700286865,
+  "peak_gib": 10.8
+ },
+ {
+  "experiment": "C",
+  "data": "mix",
+  "batch_size": 2,
+  "grad_accum": 8,
+  "sampling": "group_by_length",
+  "seconds": 49.3,
+  "tokens_per_s": 1686,
+  "final_loss": 2.8873822689056396,
+  "peak_gib": 10.8
+ },
+ {
+  "experiment": "C",
+  "data": "mix",
+  "batch_size": 4,
+  "grad_accum": 4,
+  "sampling": "random",
+  "seconds": 77.7,
+  "tokens_per_s": 1071,
+  "final_loss": 2.548564910888672,
+  "peak_gib": 9.4
+ },
+ {
+  "experiment": "C",
+  "data": "mix",
+  "batch_size": 4,
+  "grad_accum": 4,
+  "sampling": "group_by_length",
+  "seconds": 48.1,
+  "tokens_per_s": 1728,
+  "final_loss": 2.8906965255737305,
+  "peak_gib": 10.8
+ },
+ {
+  "experiment": "C",
+  "data": "mix",
+  "batch_size": 8,
+  "grad_accum": 2,
+  "sampling": "random",
+  "seconds": 93.1,
+  "tokens_per_s": 893,
+  "final_loss": 2.548551321029663,
+  "peak_gib": 13.1
+ },
+ {
+  "experiment": "C",
+  "data": "mix",
+  "batch_size": 8,
+  "grad_accum": 2,
+  "sampling": "group_by_length",
+  "seconds": 54.8,
+  "tokens_per_s": 1519,
+  "final_loss": 2.894940137863159,
+  "peak_gib": 12.9
+ }
+]

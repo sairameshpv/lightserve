@@ -1,0 +1,110 @@
+{
+ "batch_size": 1,
+ "grad_accum": 16,
+ "sampling": "random",
+ "seconds": 102.8,
+ "tokens_per_s": 809,
+ "final_loss": 2.5468180179595947,
+ "peak_gib": 6.6,
+ "profile": {
+  "gpu_busy_pct": 51.3,
+  "span_ms": 29674,
+  "n_kernels": 588887,
+  "by_category_pct": {
+   "matmul": 56.5,
+   "4-bit dequantize": 19.7,
+   "elementwise/norm": 18.1,
+   "memory copy": 2.9,
+   "attention": 2.4,
+   "loss": 0.5,
+   "optimizer": 0.0,
+   "other": 0.0
+  },
+  "top10_ms": [
+   [
+    "void kDequantizeBlockwise<__nv_bfloat16, 512, 64, 8, 2>(float*, unsigned char*, float*, __nv_bfloat1",
+    2872.3
+   ],
+   [
+    "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8>(cutlass_",
+    2560.6
+   ],
+   [
+    "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_tn",
+    1488.5
+   ],
+   [
+    "void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<c10::BFloat16>, std::a",
+    622.0
+   ],
+   [
+    "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x128_32x4_nn_align8>(cutlass_",
+    619.1
+   ],
+   [
+    "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_nn_align8>(cutlass_",
+    603.3
+   ],
+   [
+    "ampere_bf16_s1688gemm_bf16_128x128_ldg8_f2f_stages_32x1_nn",
+    492.6
+   ],
+   [
+    "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_nn",
+    467.1
+   ],
+   [
+    "ampere_bf16_s16816gemm_bf16_128x128_ldg8_f2f_stages_64x3_tn",
+    407.5
+   ],
+   [
+    "void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<c10::BFloat16, c10::BFlo",
+    331.1
+   ]
+  ],
+  "other_top5_ms": [
+   [
+    "void at_cuda_detail::cub::DeviceRadixSortSingleTileKernel<at_cuda_detail::cub::DeviceRadixSortPolicy",
+    0.2
+   ],
+   [
+    "void at::native::radixSortKVInPlace<-2, -1, 32, 32, signed char, long, unsigned int>(at::cuda::detai",
+    0.2
+   ],
+   [
+    "void at::native::radixSortKVInPlace<-2, -1, 64, 32, signed char, long, unsigned int>(at::cuda::detai",
+    0.1
+   ],
+   [
+    "void at::native::radixSortKVInPlace<-2, -1, 32, 4, signed char, long, unsigned int>(at::cuda::detail",
+    0.0
+   ]
+  ]
+ },
+ "phases": {
+  "between_steps": {
+   "count": 3,
+   "wall_ms": 44.0,
+   "gpu_ms": 0.4,
+   "gpu_idle_pct": 99.0
+  },
+  "fwd_bwd": {
+   "count": 3,
+   "wall_ms": 29615.1,
+   "gpu_ms": 15215.4,
+   "gpu_idle_pct": 48.6
+  },
+  "optimizer_step": {
+   "count": 3,
+   "wall_ms": 6.7,
+   "gpu_ms": 2.6,
+   "gpu_idle_pct": 61.0
+  },
+  "post_step": {
+   "count": 3,
+   "wall_ms": 14.6,
+   "gpu_ms": 3.9,
+   "gpu_idle_pct": 73.4
+  }
+ }
+}

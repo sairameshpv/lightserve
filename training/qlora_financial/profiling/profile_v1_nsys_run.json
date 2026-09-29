@@ -1,0 +1,9 @@
+{
+ "batch_size": 1,
+ "grad_accum": 16,
+ "sampling": "random",
+ "seconds": 86.1,
+ "tokens_per_s": 966,
+ "final_loss": 2.538034200668335,
+ "peak_gib": 6.6
+}
