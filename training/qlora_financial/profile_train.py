@@ -101,7 +101,7 @@ KERNEL_CATEGORIES = [
     ("matmul", ["gemm", "gemv", "cutlass", "cublas", "xmma", "nvjet", "ampere_", "sm80_", "sm89_"]),
     ("optimizer", ["adam", "multi_tensor", "foreach"]),
     ("memory copy", ["memcpy", "memset", "copy"]),
-    ("elementwise/norm", ["elementwise", "vectorized", "reduce", "norm", "silu", "softmax", "index", "cat"]),
+    ("elementwise/norm", ["elementwise", "vectorized", "reduce", "norm", "silu", "softmax", "index", "cat", "dropout"]),
 ]
 
 
@@ -120,7 +120,7 @@ def make_profiler_callback(trace_path: str, wait: int = 1, warmup: int = 1, acti
     class ProfilerCallback(TrainerCallback):
         def on_train_begin(self, args, state, control, **kw):
             self.prof = torch.profiler.profile(activities=acts, schedule=torch.profiler.schedule(
-                wait=wait, warmup=warmup, active=active))
+                wait=wait, warmup=warmup, active=active, repeat=1))  # default repeats: export = last cycle only
             self.prof.__enter__()
 
         def on_step_end(self, args, state, control, **kw):
@@ -176,8 +176,8 @@ def phase_breakdown(prof) -> dict:
     number. Attribution is by when kernels ran, not by which phase launched them."""
     import torch
     events = prof.events()
-    kernels = [(e.time_range.start, e.time_range.end) for e in events
-               if e.device_type == torch.autograd.DeviceType.CUDA]
+    kernels = [(e.time_range.start, e.time_range.end) for e in events  # phase names also appear as GPU annotations
+               if e.device_type == torch.autograd.DeviceType.CUDA and e.name not in PHASES]
     out = {}
     for name in PHASES:
         wins = [(e.time_range.start, e.time_range.end) for e in events
@@ -193,7 +193,8 @@ def summarize_profile(prof) -> dict:
     """GPU busy % (sum of kernel time / first-to-last kernel span of the recorded
     steps -- the rest is the GPU idle, waiting on the CPU), time by category, top kernels."""
     import torch
-    kernels = [e for e in prof.events() if e.device_type == torch.autograd.DeviceType.CUDA]
+    kernels = [e for e in prof.events()  # excluding the phase ranges' GPU-side annotations
+               if e.device_type == torch.autograd.DeviceType.CUDA and e.name not in PHASES]
     busy = sum(e.time_range.elapsed_us() for e in kernels)
     span = max(e.time_range.end for e in kernels) - min(e.time_range.start for e in kernels)
     by_cat, by_name = defaultdict(float), defaultdict(float)
