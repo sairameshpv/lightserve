@@ -32,6 +32,13 @@ def parse_args():
     ap.add_argument("--model", default="meta-llama/Meta-Llama-3-8B-Instruct")
     ap.add_argument("--nsys", action="store_true", help="profile mode under `nsys --capture-range=cudaProfilerApi`: "
                     "no torch.profiler (they can't share CUPTI); NVTX phases + capture of steps 3-5 only")
+    # Profile mode's training settings: same names and v1 defaults as train.py, so a
+    # v2 profile (report.md's recommendations) is just these flags.
+    ap.add_argument("--batch-size", type=int, default=1)
+    ap.add_argument("--grad-accum", type=int, default=16)
+    ap.add_argument("--group-by-length", action="store_true")
+    ap.add_argument("--bf16-base", action="store_true", help="plain LoRA, no 4-bit")
+    ap.add_argument("--name", default="v1", help="profile mode output name: profile_<name>.json")
     return ap.parse_args()
 
 
@@ -62,7 +69,8 @@ def bucket_by_length(ds, lengths: list, per_bucket: int, seed: int = 0) -> dict:
     return out
 
 
-def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str = "random", callbacks=()):
+def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str = "random", callbacks=(),
+               bf16_base: bool = False):
     """Train `args.steps` optimizer steps with train.py's exact settings, changing
     only batch size / accumulation / example order; eval, saving, MLflow off."""
     import dataclasses
@@ -78,6 +86,8 @@ def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str =
     from trl import SFTTrainer
     from training.qlora_financial.train import qlora_configs
     quant, lora = qlora_configs()
+    if bf16_base:
+        quant = None  # plain LoRA on a bf16 base: no 4-bit weights, so no dequantize kernels
     trainer = SFTTrainer(model=args.model, args=config, train_dataset=train_ds,
                          quantization_config=quant, peft_config=lora, callbacks=list(callbacks))
     torch.cuda.reset_peak_memory_stats()
@@ -214,17 +224,21 @@ def main():
     out = Path(args.out_dir)
     (out / "traces").mkdir(parents=True, exist_ok=True)
     ds = load_split(args.data_dir, "train")
-    if args.mode == "profile":  # experiment A: v1's exact settings on the real length mix
+    if args.mode == "profile":  # experiment A (defaults = v1's settings) on the real length mix
         mix = ds.select(sorted(random.Random(0).sample(range(len(ds)), args.steps * 16)))
         phases = make_phase_callback(nsys_capture=args.nsys)
+        setting = dict(batch_size=args.batch_size, grad_accum=args.grad_accum, bf16_base=args.bf16_base,
+                       sampling=GROUPED if args.group_by_length else "random")
         if args.nsys:  # nsys records the timeline; this run only reports tokens/s
-            result = run_config(args, mix, batch_size=1, grad_accum=16, callbacks=[phases])
+            result = run_config(args, mix, callbacks=[phases], **setting)
         else:  # profiler callback listed first, so it steps before a new phase range opens
-            cb = make_profiler_callback(str(out / "traces" / "profile_v1_trace.json"))
-            result = run_config(args, mix, batch_size=1, grad_accum=16, callbacks=[cb, phases])
+            cb = make_profiler_callback(str(out / "traces" / f"profile_{args.name}_trace.json"))
+            result = run_config(args, mix, callbacks=[cb, phases], **setting)
             result["profile"] = summarize_profile(cb.prof)
             result["phases"] = phase_breakdown(cb.prof)
-        (out / ("profile_v1_nsys_run.json" if args.nsys else "profile_v1.json")).write_text(json.dumps(result, indent=1))
+        result["bf16_base"] = args.bf16_base
+        name = f"profile_{args.name}_nsys_run.json" if args.nsys else f"profile_{args.name}.json"
+        (out / name).write_text(json.dumps(result, indent=1))
         print(json.dumps(result, indent=1))
     else:  # experiments B and C
         rows = []

@@ -32,6 +32,12 @@ def parse_args():
     ap.add_argument("--resume", action="store_true",
                     help="continue from the newest checkpoint in the output folder "
                          "(the node is preemptible -- a reclaim loses at most ~250 steps)")
+    # Opt-in changes from profiling/report.md's recommendations; defaults = v1 exactly.
+    ap.add_argument("--batch-size", type=int, default=1)
+    ap.add_argument("--grad-accum", type=int, default=16, help="keep batch-size x grad-accum = 16")
+    ap.add_argument("--group-by-length", action="store_true", help="batch similar lengths (less padding)")
+    ap.add_argument("--bf16-base", action="store_true", help="plain LoRA: base in bf16, no 4-bit (no dequantize)")
+    ap.add_argument("--run-name", default="full", help="output subfolder + MLflow run name (v1 = full)")
     return ap.parse_args()
 
 
@@ -80,18 +86,23 @@ def sft_config(args):
     import torch
     from trl import SFTConfig
     every = 1 if args.smoke else 250
+    # getattr defaults = v1, so callers built before these options (profile_train.py) still work.
+    run_name = "smoke" if args.smoke else getattr(args, "run_name", "full")
+    grouped = getattr(args, "group_by_length", False)
     return SFTConfig(
-        output_dir=str(Path(args.output_dir) / ("smoke" if args.smoke else "full")),
+        output_dir=str(Path(args.output_dir) / run_name),
         model_init_kwargs={"dtype": torch.bfloat16},  # TRL's default is float32
         max_length=args.max_length,  # TRL's default 1024 would cut answers off
         num_train_epochs=1, max_steps=2 if args.smoke else -1,
-        per_device_train_batch_size=1, gradient_accumulation_steps=16,
+        per_device_train_batch_size=getattr(args, "batch_size", 1),
+        gradient_accumulation_steps=getattr(args, "grad_accum", 16),
+        train_sampling_strategy="group_by_length" if grouped else "random",
         per_device_eval_batch_size=4,
         learning_rate=2e-4, lr_scheduler_type="cosine", warmup_steps=50,
         logging_steps=1 if args.smoke else 10,
         eval_strategy="steps", eval_steps=every,
         save_strategy="steps", save_steps=every, save_total_limit=2,
-        report_to="mlflow", run_name="smoke" if args.smoke else "full",
+        report_to="mlflow", run_name=run_name,
     )
 
 
@@ -114,7 +125,12 @@ def main():
     print(f"train={len(train_ds)} val={len(val_ds)}")
 
     quant, lora = qlora_configs()
+    if args.bf16_base:
+        quant = None  # plain LoRA: base loads in bf16 via sft_config's model_init_kwargs
     config = sft_config(args)
+    print(f"base={'bf16 (LoRA)' if args.bf16_base else '4-bit NF4 (QLoRA)'} "
+          f"batch={config.per_device_train_batch_size}x{config.gradient_accumulation_steps} "
+          f"order={config.train_sampling_strategy} out={config.output_dir}")
     trainer = SFTTrainer(model=args.model, args=config, train_dataset=train_ds,
                          eval_dataset=val_ds, quantization_config=quant, peft_config=lora)
     trainer.train(resume_from_checkpoint=True if args.resume else None)
