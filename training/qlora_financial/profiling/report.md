@@ -14,8 +14,9 @@ training-only) with `../profile_train.py` on the same single L40S. Key findings:
 - **GPU utilization % is misleading here.** The slowest config (batch 8, random)
   shows 99% SM utilization: the GPU is busy computing padding.
 - **4-bit dequantization is 20% of GPU kernel time**, the next target.
-- **Measured follow-up (v2_lora):** bf16 base + batch 4 + grouping ran at **1,816 tokens/s
-  (+35%)**, GPU busy 51% → 99%, dequantization gone. Next bottleneck: fp32 adapter casts (see the end).
+- **Measured follow-ups:** bf16 base + batch 4 + grouping ran at 1,816 tokens/s (+35%; GPU busy
+  51% → 99%, dequantization gone), and keeping LoRA adapters in bf16 (PEFT upcasts them to fp32)
+  reached **2,121 tokens/s (+58% over v1)**. Details at the end.
 
 ## Method
 
@@ -192,13 +193,47 @@ The +5% over QLoRA batch 4 is approximate: different sample (2,400 vs. 128 examp
 39.2%, **elementwise/norm 34.0%, memory copy 14.1%**, attention 12.5%. Nearly half is not matmul.
 Top kernels include `bfloat16_copy_kernel` (2,388 ms) and `fused_dropout_kernel_vec<float, ...>`
 (2,407 ms, fp32), which suggests PEFT keeps the LoRA adapters in fp32 and converts activations
-around them. A **hypothesis**, untested: keeping the adapters in bf16 is the next experiment.
+around them. **Confirmed** by the next experiment: see *bf16 adapters (measured)*.
 
 **Caveats**: steps 3-5 are among the longest batches (`group_by_length` puts the longest batch
 first), which inflates attention's share; busy % and dequantize-gone don't depend on this.
 Accuracy is unmeasured (loss fell normally, 0.596 at step 150). Projected full run at 1,816 tok/s:
 3h14m of training + ~30 min eval ≈ **3h44m vs. 4h52m (−23%)**, a projection (eval time in bf16
 not measured).
+
+## bf16 adapters (measured)
+
+**Cause, from the sources and then measured.** PEFT 0.21's `get_peft_model` defaults to
+`autocast_adapter_dtype=True`, which upcasts bf16 adapter weights to fp32. TRL 1.14's
+`SFTTrainer` casts trainable params back to bf16 **only for quantized models**. So v1 (4-bit)
+trained bf16 adapters, while v2_lora (bf16 base) trained fp32 ones: the run recorded
+`adapter_dtype_before = torch.float32`. **Fix**: `--bf16-adapters` applies TRL's own QLoRA-path
+cast before `train()` (now `torch.bfloat16`). One change versus v2_lora, same command otherwise.
+
+| | v2_lora (fp32 adapters) | **+ `--bf16-adapters`** |
+|---|---|---|
+| Tokens/s (whole run, 150 steps) | 1,816 | **2,121 (+17%)** |
+| Kernels, steps 3-5 (per micro-batch) | 148,015 (~12,335) | **115,759 (~9,647), −22%** |
+| Memory copy / elementwise / matmul | 14.1% / 34.0% / 39.2% | **4.5%** / 33.1% / 46.9% |
+| Dropout kernel | `<float>`, 2,407 ms | `<BFloat16>`, 846 ms |
+| `bfloat16_copy` + `direct_copy` kernels | 2,388 + 2,138 ms | not in the top 10 |
+| GPU busy / peak memory / loss at step 150 | 98.8% / 23.0 GiB / 0.596 | 98.7% / 21.5 GiB / 0.568 |
+
+**Reading.** The GPU was already ~99% busy, so the +17% is not more utilization but **less
+unnecessary work**: no fp32 casts around each adapter, so fewer kernels and more of the time in
+matmuls. Adapter grads and optimizer state in bf16 also lower peak memory.
+
+| The whole chain (rows 1-2: 128-example C sweep; rows 3-4: 2,400-example runs) | Tokens/s | vs. v1 |
+|---|---|---|
+| v1: QLoRA 4-bit, batch 1, random | 1,343 | n/a |
+| + batch 4 × 4, `group_by_length` (4-bit) | 1,728 | +29% |
+| + bf16 base (v2_lora) | 1,816 | +35% |
+| **+ bf16 adapters** | **2,121** | **+58%** |
+
+Projected full run at 2,121 tok/s: 2h46m of training + ~30 min eval ≈ **3h16m vs. 4h52m
+(−33%)**, a projection. Accuracy is unmeasured; v1 trained bf16 adapters to 74.5%, and loss stayed
+stable here. Next candidate: elementwise/norm, still 33% (fused kernels: `use_liger_kernel`,
+`torch.compile`).
 
 ## Files
 
@@ -208,6 +243,7 @@ Committed (small, in this folder):
 - `nsys_nvtx_sum.csv`, `nsys_cuda_gpu_kern_sum.csv`: `nsys stats` summaries of that run.
 - `results.json` / `results.csv`: experiments B and C, one row per config.
 - `profile_v2_lora.json`: the v2_lora follow-up run (whole-run tokens/s + steps 3-5 profile).
+- `profile_v2_lora_bf16ad.json`: the same plus `--bf16-adapters`, incl. adapter dtype before/after.
 
 Local only (not committed, see `.gitignore`): `logs/` (run logs + `nvidia-smi dmon`
 samples used for SM util), `traces/profile_v1_nsys.nsys-rep` (32 MB, open in
