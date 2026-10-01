@@ -34,6 +34,7 @@ def parse_args():
     ap.add_argument("--data-dir", default="training/qlora_financial/data")
     ap.add_argument("--n-scored", type=int, default=200)
     ap.add_argument("--batch-size", type=int, default=8)
+    ap.add_argument("--bf16-base", action="store_true", help="load the base in bf16, not 4-bit (for --bf16-base adapters)")
     return ap.parse_args()
 
 
@@ -93,7 +94,7 @@ def numbers_match(pred, gold) -> bool:
                for p in (pred, pred * 100, pred / 100))
 
 
-def load_model(model_name: str, adapter_dir: str):
+def load_model(model_name: str, adapter_dir: str, bf16_base: bool = False):
     """4-bit base with train.py's own quantization config (reused, so the
     setup matches training exactly), plus the LoRA adapter on top.
     Tokenizer pads on the left: batched generation continues each prompt
@@ -103,6 +104,8 @@ def load_model(model_name: str, adapter_dir: str):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from training.qlora_financial.train import qlora_configs
     quant, _ = qlora_configs()
+    if bf16_base:  # adapter trained on a bf16 base (train.py --bf16-base): evaluate on that same base
+        quant = None
     base = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=quant,
                                                 dtype=torch.bfloat16, device_map={"": 0})
     model = PeftModel.from_pretrained(base, adapter_dir).eval()
@@ -132,7 +135,7 @@ def main():
     args = parse_args()
     readable, scored = pick_examples(args.data_dir, args.n_scored)
     print(f"readable={len(readable)} scored={len(scored)}")
-    model, tok = load_model(args.model, args.adapter)
+    model, tok = load_model(args.model, args.adapter, bf16_base=args.bf16_base)
 
     examples = readable + scored
     tuned = generate(model, tok, examples, args.batch_size)

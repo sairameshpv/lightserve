@@ -134,7 +134,10 @@ def main():
     config = sft_config(args)
     print(f"base={'bf16 (LoRA)' if args.bf16_base else '4-bit NF4 (QLoRA)'} "
           f"batch={config.per_device_train_batch_size}x{config.gradient_accumulation_steps} "
-          f"order={config.train_sampling_strategy} out={config.output_dir}")
+          f"order={config.train_sampling_strategy} out={config.output_dir} "
+          # 4-bit base: TRL itself casts adapters to bf16; bf16 base: PEFT keeps fp32 unless --bf16-adapters
+          f"adapters={'bf16' if args.bf16_adapters or not args.bf16_base else 'fp32'} "
+          f"liger={'on' if config.use_liger_kernel else 'off'}")
     trainer = SFTTrainer(model=args.model, args=config, train_dataset=train_ds,
                          eval_dataset=val_ds, quantization_config=quant, peft_config=lora)
     if args.bf16_adapters:  # TRL's own QLoRA-path cast, before train() builds the optimizer
