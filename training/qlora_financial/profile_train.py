@@ -38,6 +38,8 @@ def parse_args():
     ap.add_argument("--grad-accum", type=int, default=16)
     ap.add_argument("--group-by-length", action="store_true")
     ap.add_argument("--bf16-base", action="store_true", help="plain LoRA, no 4-bit")
+    ap.add_argument("--bf16-adapters", action="store_true",
+                    help="cast LoRA adapters to bf16 (PEFT upcasts them to fp32 unless the base is 4-bit)")
     ap.add_argument("--name", default="v1", help="profile mode output name: profile_<name>.json")
     return ap.parse_args()
 
@@ -70,7 +72,7 @@ def bucket_by_length(ds, lengths: list, per_bucket: int, seed: int = 0) -> dict:
 
 
 def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str = "random", callbacks=(),
-               bf16_base: bool = False):
+               bf16_base: bool = False, bf16_adapters: bool = False):
     """Train `args.steps` optimizer steps with train.py's exact settings, changing
     only batch size / accumulation / example order; eval, saving, MLflow off."""
     import dataclasses
@@ -90,6 +92,12 @@ def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str =
         quant = None  # plain LoRA on a bf16 base: no 4-bit weights, so no dequantize kernels
     trainer = SFTTrainer(model=args.model, args=config, train_dataset=train_ds,
                          quantization_config=quant, peft_config=lora, callbacks=list(callbacks))
+    trainable = [p for p in trainer.model.parameters() if p.requires_grad]
+    dtype_before = str(trainable[0].dtype)  # PEFT's default upcasts bf16 adapters to fp32
+    if bf16_adapters:  # TRL's own QLoRA-path cast, applied before train() builds the optimizer
+        for p in trainable:
+            p.data = p.data.to(torch.bfloat16)
+    dtype_after = str(trainable[0].dtype)
     torch.cuda.reset_peak_memory_stats()
     t0 = time.perf_counter()
     trainer.train()  # timed without model loading; includes the first step's warm-up
@@ -97,7 +105,8 @@ def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str =
     last = [h for h in trainer.state.log_history if "num_tokens" in h][-1]  # real (non-pad) tokens, cumulative
     return {"batch_size": batch_size, "grad_accum": grad_accum, "sampling": sampling, "seconds": round(secs, 1),
             "tokens_per_s": round(last["num_tokens"] / secs), "final_loss": last["loss"],
-            "peak_gib": round(torch.cuda.max_memory_allocated() / 2**30, 1)}
+            "peak_gib": round(torch.cuda.max_memory_allocated() / 2**30, 1),
+            "adapter_dtype_before": dtype_before, "adapter_dtype_after": dtype_after}
 
 
 # GPU kernel name -> category, first match wins. Order matters: attention/loss come
@@ -228,7 +237,7 @@ def main():
         mix = ds.select(sorted(random.Random(0).sample(range(len(ds)), args.steps * 16)))
         phases = make_phase_callback(nsys_capture=args.nsys)
         setting = dict(batch_size=args.batch_size, grad_accum=args.grad_accum, bf16_base=args.bf16_base,
-                       sampling=GROUPED if args.group_by_length else "random")
+                       bf16_adapters=args.bf16_adapters, sampling=GROUPED if args.group_by_length else "random")
         if args.nsys:  # nsys records the timeline; this run only reports tokens/s
             result = run_config(args, mix, callbacks=[phases], **setting)
         else:  # profiler callback listed first, so it steps before a new phase range opens

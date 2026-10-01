@@ -37,6 +37,8 @@ def parse_args():
     ap.add_argument("--grad-accum", type=int, default=16, help="keep batch-size x grad-accum = 16")
     ap.add_argument("--group-by-length", action="store_true", help="batch similar lengths (less padding)")
     ap.add_argument("--bf16-base", action="store_true", help="plain LoRA: base in bf16, no 4-bit (no dequantize)")
+    ap.add_argument("--bf16-adapters", action="store_true",
+                    help="cast LoRA adapters to bf16 (PEFT upcasts them to fp32 unless the base is 4-bit)")
     ap.add_argument("--run-name", default="full", help="output subfolder + MLflow run name (v1 = full)")
     return ap.parse_args()
 
@@ -133,6 +135,10 @@ def main():
           f"order={config.train_sampling_strategy} out={config.output_dir}")
     trainer = SFTTrainer(model=args.model, args=config, train_dataset=train_ds,
                          eval_dataset=val_ds, quantization_config=quant, peft_config=lora)
+    if args.bf16_adapters:  # TRL's own QLoRA-path cast, before train() builds the optimizer
+        for p in trainer.model.parameters():
+            if p.requires_grad:
+                p.data = p.data.to(torch.bfloat16)
     trainer.train(resume_from_checkpoint=True if args.resume else None)
     adapter_dir = Path(config.output_dir) / "adapter"
     trainer.save_model(str(adapter_dir))  # LoRA adapter only, not a merged model
