@@ -18,3 +18,4 @@ accelerate>=1.0
 trl>=1.13
 datasets>=3.0
 mlflow>=3.15
+# liger-kernel  (optional, only for --liger in train.py / profile_train.py)

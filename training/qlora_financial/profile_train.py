@@ -40,6 +40,7 @@ def parse_args():
     ap.add_argument("--bf16-base", action="store_true", help="plain LoRA, no 4-bit")
     ap.add_argument("--bf16-adapters", action="store_true",
                     help="cast LoRA adapters to bf16 (PEFT upcasts them to fp32 unless the base is 4-bit)")
+    ap.add_argument("--liger", action="store_true", help="Liger fused kernels (pip install liger-kernel)")
     ap.add_argument("--name", default="v1", help="profile mode output name: profile_<name>.json")
     return ap.parse_args()
 
@@ -72,7 +73,7 @@ def bucket_by_length(ds, lengths: list, per_bucket: int, seed: int = 0) -> dict:
 
 
 def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str = "random", callbacks=(),
-               bf16_base: bool = False, bf16_adapters: bool = False):
+               bf16_base: bool = False, bf16_adapters: bool = False, liger: bool = False):
     """Train `args.steps` optimizer steps with train.py's exact settings, changing
     only batch size / accumulation / example order; eval, saving, MLflow off."""
     import dataclasses
@@ -82,6 +83,7 @@ def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str =
     config = dataclasses.replace(
         base, per_device_train_batch_size=batch_size, gradient_accumulation_steps=grad_accum,
         train_sampling_strategy=sampling, max_steps=args.steps, logging_steps=1,
+        use_liger_kernel=liger,  # fused RMSNorm/RoPE/SwiGLU/cross-entropy (needs `pip install liger-kernel`)
         eval_strategy="no", save_strategy="no", report_to="none")
     import time
     import torch
@@ -98,6 +100,10 @@ def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str =
         for p in trainable:
             p.data = p.data.to(torch.bfloat16)
     dtype_after = str(trainable[0].dtype)
+    # Liger may swap the class, or only bind its own forward onto existing modules -- check both.
+    liger_applied = any(type(m).__name__.startswith("Liger")
+                        or getattr(getattr(m, "forward", None), "__qualname__", "").startswith("Liger")
+                        for m in trainer.model.modules())
     torch.cuda.reset_peak_memory_stats()
     t0 = time.perf_counter()
     trainer.train()  # timed without model loading; includes the first step's warm-up
@@ -106,7 +112,8 @@ def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str =
     return {"batch_size": batch_size, "grad_accum": grad_accum, "sampling": sampling, "seconds": round(secs, 1),
             "tokens_per_s": round(last["num_tokens"] / secs), "final_loss": last["loss"],
             "peak_gib": round(torch.cuda.max_memory_allocated() / 2**30, 1),
-            "adapter_dtype_before": dtype_before, "adapter_dtype_after": dtype_after}
+            "adapter_dtype_before": dtype_before, "adapter_dtype_after": dtype_after,
+            "liger_applied": liger_applied}
 
 
 # GPU kernel name -> category, first match wins. Order matters: attention/loss come
@@ -120,7 +127,8 @@ KERNEL_CATEGORIES = [
     ("matmul", ["gemm", "gemv", "cutlass", "cublas", "xmma", "nvjet", "ampere_", "sm80_", "sm89_"]),
     ("optimizer", ["adam", "multi_tensor", "foreach"]),
     ("memory copy", ["memcpy", "memset", "copy"]),
-    ("elementwise/norm", ["elementwise", "vectorized", "reduce", "norm", "silu", "softmax", "index", "cat", "dropout"]),
+    ("elementwise/norm", ["elementwise", "vectorized", "reduce", "norm", "silu", "softmax", "index", "cat", "dropout",
+                          "swiglu", "rope", "element_mul"]),  # last three: Liger's Triton kernels
 ]
 
 
@@ -237,7 +245,8 @@ def main():
         mix = ds.select(sorted(random.Random(0).sample(range(len(ds)), args.steps * 16)))
         phases = make_phase_callback(nsys_capture=args.nsys)
         setting = dict(batch_size=args.batch_size, grad_accum=args.grad_accum, bf16_base=args.bf16_base,
-                       bf16_adapters=args.bf16_adapters, sampling=GROUPED if args.group_by_length else "random")
+                       bf16_adapters=args.bf16_adapters, liger=args.liger,
+                       sampling=GROUPED if args.group_by_length else "random")
         if args.nsys:  # nsys records the timeline; this run only reports tokens/s
             result = run_config(args, mix, callbacks=[phases], **setting)
         else:  # profiler callback listed first, so it steps before a new phase range opens

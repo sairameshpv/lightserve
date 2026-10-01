@@ -39,6 +39,7 @@ def parse_args():
     ap.add_argument("--bf16-base", action="store_true", help="plain LoRA: base in bf16, no 4-bit (no dequantize)")
     ap.add_argument("--bf16-adapters", action="store_true",
                     help="cast LoRA adapters to bf16 (PEFT upcasts them to fp32 unless the base is 4-bit)")
+    ap.add_argument("--liger", action="store_true", help="Liger fused kernels (pip install liger-kernel)")
     ap.add_argument("--run-name", default="full", help="output subfolder + MLflow run name (v1 = full)")
     return ap.parse_args()
 
@@ -99,6 +100,7 @@ def sft_config(args):
         per_device_train_batch_size=getattr(args, "batch_size", 1),
         gradient_accumulation_steps=getattr(args, "grad_accum", 16),
         train_sampling_strategy="group_by_length" if grouped else "random",
+        use_liger_kernel=getattr(args, "liger", False),
         per_device_eval_batch_size=4,
         learning_rate=2e-4, lr_scheduler_type="cosine", warmup_steps=50,
         logging_steps=1 if args.smoke else 10,
