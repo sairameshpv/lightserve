@@ -15,8 +15,9 @@ training-only) with `../profile_train.py` on the same single L40S. Key findings:
   shows 99% SM utilization: the GPU is busy computing padding.
 - **4-bit dequantization is 20% of GPU kernel time**, the next target.
 - **Measured follow-ups:** bf16 base + batch 4 + grouping ran at 1,816 tokens/s (+35%; GPU busy
-  51% → 99%, dequantization gone), and keeping LoRA adapters in bf16 (PEFT upcasts them to fp32)
-  reached **2,121 tokens/s (+58% over v1)**. Details at the end.
+  51% → 99%, dequantization gone), keeping LoRA adapters in bf16 (PEFT upcasts them to fp32)
+  reached 2,121 tokens/s (+58%), and Liger fused kernels **2,239 tokens/s (+67% over v1)**.
+  Details at the end.
 
 ## Method
 
@@ -235,6 +236,43 @@ Projected full run at 2,121 tok/s: 2h46m of training + ~30 min eval ≈ **3h16m 
 stable here. Next candidate: elementwise/norm, still 33% (fused kernels: `use_liger_kernel`,
 `torch.compile`).
 
+## Liger fused kernels (measured)
+
+One change versus the bf16-adapter run: `--liger` (TRL's `use_liger_kernel=True`, with
+`pip install liger-kernel` 0.8.4; torch stayed 2.11.0+cu128). Liger replaces Llama's RMSNorm,
+RoPE, SwiGLU and cross-entropy with fused Triton kernels. Same 150 steps and examples.
+
+| | bf16 adapters | **+ `--liger`** |
+|---|---|---|
+| Tokens/s (whole run) | 2,121 | **2,239 (+6%)** |
+| Time for 150 steps | 701.8 s | 664.8 s |
+| Kernels, steps 3-5 | 115,759 | **81,139 (−30%)** |
+| Elementwise/norm / matmul / attention | 33.1% / 46.9% / 15.4% | **24.2%** / 57.1% / 18.0% |
+| Memory copy | 4.5% | 0.6% |
+| GPU busy / peak memory / loss at step 150 | 98.7% / 21.5 GiB / 0.568 | 98.5% / 20.9 GiB / 0.560 |
+
+**Reading: diminishing returns.** Fusion cut kernels by 30% but run time only ~5%. The removed
+kernels were small elementwise passes, while the big costs (matmul 57%, attention 18%) are
+untouched by Liger and now dominate. Loss stayed consistent (0.560 vs. 0.568), so the fused kernels
+compute the same thing. The chain from the bf16-adapter section extends to **+ Liger: 2,239
+tokens/s, +67% over v1**. Projected full run: 2h37m of training + ~30 min eval ≈ **3h07m vs.
+4h52m (−36%)**, a projection with accuracy unmeasured.
+
+Next candidates, both unmeasured: **turning off gradient checkpointing** (it recomputes the forward
+pass during backward, and ~21 of 46 GB is used, so memory may now allow it), and **attention**
+(18%, the memory-efficient SDPA kernel; FlashAttention-2 isn't installed).
+
+**Two bugs in `profile_train.py`, found in this run (fixed in 5ad417b):**
+- **The first attempt crashed before training**: `run_config()` copied `loss_type="chunked_nll"`
+  (resolved by TRL while Liger was off), which TRL rejects with Liger. The rerun used
+  `loss_type="nll"`, TRL's own choice with Liger.
+- **`liger_applied: false` in `profile_v2_lora_bf16ad_liger.json` is wrong.** transformers 5.17
+  applies Liger *inside* `Trainer.train()`, and the check ran before it. Liger did run: the
+  run's trace contains `_rms_norm_forward_kernel` ×1,548, `_triton_rope` ×1,152,
+  `_swiglu_forward_kernel` ×768 and `liger_cross_entropy_kernel` ×261, versus **0** of each in
+  the bf16-adapter trace (counted with `grep` on the node). The check now runs after `train()`,
+  and the profile also records `liger_kernel_launches` as direct evidence.
+
 ## Files
 
 Committed (small, in this folder):
@@ -244,6 +282,8 @@ Committed (small, in this folder):
 - `results.json` / `results.csv`: experiments B and C, one row per config.
 - `profile_v2_lora.json`: the v2_lora follow-up run (whole-run tokens/s + steps 3-5 profile).
 - `profile_v2_lora_bf16ad.json`: the same plus `--bf16-adapters`, incl. adapter dtype before/after.
+- `profile_v2_lora_bf16ad_liger.json`: the same plus `--liger` (its `liger_applied: false` is a
+  bug; see *Liger fused kernels*).
 
 Local only (not committed, see `.gitignore`): `logs/` (run logs + `nvidia-smi dmon`
 samples used for SM util), `traces/profile_v1_nsys.nsys-rep` (32 MB, open in
