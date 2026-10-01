@@ -14,6 +14,8 @@ training-only) with `../profile_train.py` on the same single L40S. Key findings:
 - **GPU utilization % is misleading here.** The slowest config (batch 8, random)
   shows 99% SM utilization: the GPU is busy computing padding.
 - **4-bit dequantization is 20% of GPU kernel time**, the next target.
+- **Measured follow-up (v2_lora):** bf16 base + batch 4 + grouping ran at **1,816 tokens/s
+  (+35%)**, GPU busy 51% → 99%, dequantization gone. Next bottleneck: fp32 adapter casts (see the end).
 
 ## Method
 
@@ -147,6 +149,57 @@ Next targets, from what A measured (each still needs its own measurement):
 - **Session interruptions**: the preemptible node was reclaimed mid-rerun (A rerun from
   scratch) and hung once (SSH dead while `RUNNING`; stop/start fixed it). No result mixes runs.
 
+## Applying the recommendations: v2_lora (measured)
+
+Instead of a full retrain, one ~20-min **profiled** run applied both recommendations:
+bf16 base (plain LoRA, no 4-bit) + batch 4 × 4 + `group_by_length`, 150 steps on 2,400
+random training examples (vs. 128 before), 13m40s. The profiler recorded steps 3-5; the other
+147 ran unprofiled.
+```
+profile_train --mode profile --name v2_lora --bf16-base --batch-size 4 --grad-accum 4 --group-by-length --steps 150
+```
+
+| Config | Tokens/s | vs. v1 |
+|---|---|---|
+| v1: QLoRA 4-bit, batch 1, random (C sweep) | 1,343 | n/a |
+| QLoRA 4-bit, batch 4, grouped (C sweep) | 1,728 | +29% |
+| **v2_lora: bf16, batch 4, grouped** | **1,816** | **+35%** |
+
+v2_lora's figure is the whole run including the 3 profiled steps, so slightly understated.
+The +5% over QLoRA batch 4 is approximate: different sample (2,400 vs. 128 examples) and session.
+
+| Profile, steps 3-5 | v1 | v2_lora |
+|---|---|---|
+| GPU busy | 51.3% | **98.8%** |
+| GPU idle inside `fwd_bwd` | 48.6% | **1.1%** |
+| Kernels launched (3 steps) | 588,887 | 148,015 |
+| Kernels per micro-batch | ~12,268 | ~12,335 |
+| **Kernels per example** | ~12,268 | **~3,084 (~4× fewer)** |
+| 4-bit dequantize share of GPU time | 19.7% | **0% (gone)** |
+| Data loading (`between_steps`) / optimizer, per step | 14.7 / 2.2 ms | 13.1 / 2.3 ms |
+| Peak GPU memory | 6.6 GiB | 23.0 GiB (of 46) |
+
+**Why it's faster:**
+1. **Batching amortizes the launches.** The model still issues the same ~12,300 kernels per
+   micro-batch, but each now carries 4 examples, so ~4× fewer launches per example. The CPU
+   keeps up, and idle inside `fwd_bwd` falls from 48.6% to 1.1%. This directly confirms the
+   launch-bound explanation in *Reading this*, which was inferred before.
+2. **Removing dequantization helps less than its 19.7% suggested** (~+5% over QLoRA at batch 4).
+   Dequantizing a layer's weights costs the same whether the micro-batch holds 1 example or 4,
+   so at batch 4 that cost was already spread over 4 examples. It matters most at batch 1.
+
+**The new bottleneck.** With the GPU 99% busy, the question becomes what it's busy with: matmul
+39.2%, **elementwise/norm 34.0%, memory copy 14.1%**, attention 12.5%. Nearly half is not matmul.
+Top kernels include `bfloat16_copy_kernel` (2,388 ms) and `fused_dropout_kernel_vec<float, ...>`
+(2,407 ms, fp32), which suggests PEFT keeps the LoRA adapters in fp32 and converts activations
+around them. A **hypothesis**, untested: keeping the adapters in bf16 is the next experiment.
+
+**Caveats**: steps 3-5 are among the longest batches (`group_by_length` puts the longest batch
+first), which inflates attention's share; busy % and dequantize-gone don't depend on this.
+Accuracy is unmeasured (loss fell normally, 0.596 at step 150). Projected full run at 1,816 tok/s:
+3h14m of training + ~30 min eval ≈ **3h44m vs. 4h52m (−23%)**, a projection (eval time in bf16
+not measured).
+
 ## Files
 
 Committed (small, in this folder):
@@ -154,6 +207,7 @@ Committed (small, in this folder):
 - `profile_v1_nsys_run.json`: tokens/s of the nsys run of A.
 - `nsys_nvtx_sum.csv`, `nsys_cuda_gpu_kern_sum.csv`: `nsys stats` summaries of that run.
 - `results.json` / `results.csv`: experiments B and C, one row per config.
+- `profile_v2_lora.json`: the v2_lora follow-up run (whole-run tokens/s + steps 3-5 profile).
 
 Local only (not committed, see `.gitignore`): `logs/` (run logs + `nvidia-smi dmon`
 samples used for SM util), `traces/profile_v1_nsys.nsys-rep` (32 MB, open in
