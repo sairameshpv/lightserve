@@ -84,6 +84,8 @@ def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str =
         base, per_device_train_batch_size=batch_size, gradient_accumulation_steps=grad_accum,
         train_sampling_strategy=sampling, max_steps=args.steps, logging_steps=1,
         use_liger_kernel=liger,  # fused RMSNorm/RoPE/SwiGLU/cross-entropy (needs `pip install liger-kernel`)
+        # base already resolved loss_type to chunked_nll (liger off); TRL rejects that with liger -> nll, its own pick
+        loss_type="nll" if liger else base.loss_type,
         eval_strategy="no", save_strategy="no", report_to="none")
     import time
     import torch
@@ -100,14 +102,15 @@ def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str =
         for p in trainable:
             p.data = p.data.to(torch.bfloat16)
     dtype_after = str(trainable[0].dtype)
-    # Liger may swap the class, or only bind its own forward onto existing modules -- check both.
-    liger_applied = any(type(m).__name__.startswith("Liger")
-                        or getattr(getattr(m, "forward", None), "__qualname__", "").startswith("Liger")
-                        for m in trainer.model.modules())
     torch.cuda.reset_peak_memory_stats()
     t0 = time.perf_counter()
     trainer.train()  # timed without model loading; includes the first step's warm-up
     secs = time.perf_counter() - t0
+    # After train(): transformers 5.17 applies Liger *inside* Trainer.train() (trainer.py ~1452), so a
+    # check before train() always reads False. Liger may swap the class or bind its forward -- check both.
+    liger_applied = any(type(m).__name__.startswith("Liger")
+                        or getattr(getattr(m, "forward", None), "__qualname__", "").startswith("Liger")
+                        for m in trainer.model.modules())
     last = [h for h in trainer.state.log_history if "num_tokens" in h][-1]  # real (non-pad) tokens, cumulative
     return {"batch_size": batch_size, "grad_accum": grad_accum, "sampling": sampling, "seconds": round(secs, 1),
             "tokens_per_s": round(last["num_tokens"] / secs), "final_loss": last["loss"],
@@ -229,7 +232,11 @@ def summarize_profile(prof) -> dict:
         by_cat[categorize(e.name)] += e.time_range.elapsed_us()
         by_name[e.name] += e.time_range.elapsed_us()
     top = sorted(by_name.items(), key=lambda kv: -kv[1])
+    # Direct evidence Liger ran: its Triton kernel names (as seen in the real trace).
+    liger_launches = sum(any(s in e.name for s in ("_rms_norm_", "_swiglu_", "_triton_rope", "liger_", "element_mul"))
+                         for e in kernels)
     return {"gpu_busy_pct": round(100 * busy / span, 1), "span_ms": round(span / 1000), "n_kernels": len(kernels),
+            "liger_kernel_launches": liger_launches,
             "by_category_pct": {c: round(100 * t / busy, 1) for c, t in sorted(by_cat.items(), key=lambda kv: -kv[1])},
             "top10_ms": [(n[:100], round(t / 1000, 1)) for n, t in top[:10]],
             "other_top5_ms": [(n[:100], round(t / 1000, 1)) for n, t in top if categorize(n) == "other"][:5]}
