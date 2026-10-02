@@ -104,6 +104,8 @@ def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str =
             p.data = p.data.to(torch.bfloat16)
     dtype_after = str(trainable[0].dtype)
     torch.cuda.reset_peak_memory_stats()
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()  # DDP: start every rank's clock together (model loads finish at different times)
     t0 = time.perf_counter()
     trainer.train()  # timed without model loading; includes the first step's warm-up
     secs = time.perf_counter() - t0
@@ -202,20 +204,37 @@ def make_phase_callback(nsys_capture: bool = False):
 PHASES = ("between_steps", "fwd_bwd", "optimizer_step", "post_step")
 
 
+def _is_kernel(e, torch) -> bool:
+    """A real GPU kernel: GPU-side labels (our phases, DDP's 'DistributedDataParallel.forward',
+    'nccl:...') are user annotations, not kernels -- counting them double-counts time."""
+    return (e.device_type == torch.autograd.DeviceType.CUDA and e.name not in PHASES
+            and not getattr(e, "is_user_annotation", False))
+
+
+def _union_us(intervals) -> float:
+    """Total time covered by possibly-overlapping intervals (DDP runs NCCL on its own stream,
+    concurrently with compute, so a plain sum can exceed the elapsed time)."""
+    total, end = 0.0, float("-inf")
+    for a, b in sorted(intervals):
+        if b > end:
+            total += b - max(a, end)
+            end = b
+    return total
+
+
 def phase_breakdown(prof) -> dict:
     """Per phase: wall time (the CPU-side range), GPU kernel time *executing inside
     that wall window* (intervals clipped to it), and GPU idle % -- the starvation
     number. Attribution is by when kernels ran, not by which phase launched them."""
     import torch
     events = prof.events()
-    kernels = [(e.time_range.start, e.time_range.end) for e in events  # phase names also appear as GPU annotations
-               if e.device_type == torch.autograd.DeviceType.CUDA and e.name not in PHASES]
+    kernels = [(e.time_range.start, e.time_range.end) for e in events if _is_kernel(e, torch)]
     out = {}
     for name in PHASES:
         wins = [(e.time_range.start, e.time_range.end) for e in events
                 if e.name == name and e.device_type == torch.autograd.DeviceType.CPU]
         wall = sum(b - a for a, b in wins)
-        gpu = sum(max(0, min(b, kb) - max(a, ka)) for a, b in wins for ka, kb in kernels)
+        gpu = _union_us([(max(a, ka), min(b, kb)) for a, b in wins for ka, kb in kernels if min(b, kb) > max(a, ka)])
         out[name] = {"count": len(wins), "wall_ms": round(wall / 1000, 1), "gpu_ms": round(gpu / 1000, 1),
                      "gpu_idle_pct": round(100 * (1 - gpu / wall), 1) if wall else None}
     return out
@@ -225,9 +244,8 @@ def summarize_profile(prof) -> dict:
     """GPU busy % (sum of kernel time / first-to-last kernel span of the recorded
     steps -- the rest is the GPU idle, waiting on the CPU), time by category, top kernels."""
     import torch
-    kernels = [e for e in prof.events()  # excluding the phase ranges' GPU-side annotations
-               if e.device_type == torch.autograd.DeviceType.CUDA and e.name not in PHASES]
-    busy = sum(e.time_range.elapsed_us() for e in kernels)
+    kernels = [e for e in prof.events() if _is_kernel(e, torch)]
+    busy = _union_us([(e.time_range.start, e.time_range.end) for e in kernels])  # union: streams overlap in DDP
     span = max(e.time_range.end for e in kernels) - min(e.time_range.start for e in kernels)
     by_cat, by_name = defaultdict(float), defaultdict(float)
     for e in kernels:
@@ -239,7 +257,9 @@ def summarize_profile(prof) -> dict:
                          for e in kernels)
     return {"gpu_busy_pct": round(100 * busy / span, 1), "span_ms": round(span / 1000), "n_kernels": len(kernels),
             "liger_kernel_launches": liger_launches,
-            "by_category_pct": {c: round(100 * t / busy, 1) for c, t in sorted(by_cat.items(), key=lambda kv: -kv[1])},
+            # shares of summed kernel time (overlapping kernels each count), so categories sum to 100%
+            "by_category_pct": {c: round(100 * t / sum(by_cat.values()), 1)
+                                for c, t in sorted(by_cat.items(), key=lambda kv: -kv[1])},
             "top10_ms": [(n[:100], round(t / 1000, 1)) for n, t in top[:10]],
             "other_top5_ms": [(n[:100], round(t / 1000, 1)) for n, t in top if categorize(n) == "other"][:5]}
 
