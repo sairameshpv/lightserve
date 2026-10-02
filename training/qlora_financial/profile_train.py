@@ -42,6 +42,8 @@ def parse_args():
     ap.add_argument("--bf16-adapters", action="store_true",
                     help="cast LoRA adapters to bf16 (PEFT upcasts them to fp32 unless the base is 4-bit)")
     ap.add_argument("--liger", action="store_true", help="Liger fused kernels (pip install liger-kernel)")
+    ap.add_argument("--no-grad-ckpt", action="store_true", help="gradient checkpointing off entirely")
+    ap.add_argument("--ckpt-skip-layers", type=int, default=0, help="partial checkpointing: skip the first K layers")
     ap.add_argument("--name", default="v1", help="profile mode output name: profile_<name>.json")
     return ap.parse_args()
 
@@ -74,7 +76,8 @@ def bucket_by_length(ds, lengths: list, per_bucket: int, seed: int = 0) -> dict:
 
 
 def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str = "random", callbacks=(),
-               bf16_base: bool = False, bf16_adapters: bool = False, liger: bool = False):
+               bf16_base: bool = False, bf16_adapters: bool = False, liger: bool = False,
+               grad_ckpt: bool = True, ckpt_skip: int = 0):
     """Train `args.steps` optimizer steps with train.py's exact settings, changing
     only batch size / accumulation / example order; eval, saving, MLflow off."""
     import dataclasses
@@ -87,11 +90,14 @@ def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str =
         use_liger_kernel=liger,  # fused RMSNorm/RoPE/SwiGLU/cross-entropy (needs `pip install liger-kernel`)
         # base already resolved loss_type to chunked_nll (liger off); TRL rejects that with liger -> nll, its own pick
         loss_type="nll" if liger else base.loss_type,
+        gradient_checkpointing=grad_ckpt,
         eval_strategy="no", save_strategy="no", report_to="none")
     import time
     import torch
     from trl import SFTTrainer
-    from training.qlora_financial.train import qlora_configs
+    from training.qlora_financial.train import qlora_configs, make_ckpt_skip_callback
+    skip_cb = make_ckpt_skip_callback(ckpt_skip) if ckpt_skip else None
+    callbacks = list(callbacks) + ([skip_cb] if skip_cb else [])
     quant, lora = qlora_configs()
     if bf16_base:
         quant = None  # plain LoRA on a bf16 base: no 4-bit weights, so no dequantize kernels
@@ -119,7 +125,8 @@ def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str =
             "tokens_per_s": round(last["num_tokens"] / secs), "final_loss": last["loss"],
             "peak_gib": round(torch.cuda.max_memory_allocated() / 2**30, 1),
             "adapter_dtype_before": dtype_before, "adapter_dtype_after": dtype_after,
-            "liger_applied": liger_applied}
+            "liger_applied": liger_applied, "gradient_checkpointing": grad_ckpt,
+            "ckpt_layers_skipped": skip_cb.skipped if skip_cb else 0}  # counted from the layer flags
 
 
 # GPU kernel name -> category, first match wins. Order matters: attention/loss come
@@ -278,6 +285,7 @@ def main():
         tag = f"{args.name}_rank{rank}" if world > 1 else args.name
         setting = dict(batch_size=args.batch_size, grad_accum=args.grad_accum, bf16_base=args.bf16_base,
                        bf16_adapters=args.bf16_adapters, liger=args.liger,
+                       grad_ckpt=not args.no_grad_ckpt, ckpt_skip=args.ckpt_skip_layers,
                        sampling=GROUPED if args.group_by_length else "random")
         if args.nsys:  # nsys records the timeline; this run only reports tokens/s
             result = run_config(args, mix, callbacks=[phases], **setting)

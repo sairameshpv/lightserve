@@ -40,6 +40,8 @@ def parse_args():
     ap.add_argument("--bf16-adapters", action="store_true",
                     help="cast LoRA adapters to bf16 (PEFT upcasts them to fp32 unless the base is 4-bit)")
     ap.add_argument("--liger", action="store_true", help="Liger fused kernels (pip install liger-kernel)")
+    ap.add_argument("--no-grad-ckpt", action="store_true", help="turn gradient checkpointing off entirely")
+    ap.add_argument("--ckpt-skip-layers", type=int, default=0, help="partial checkpointing: skip it on the first K layers")
     ap.add_argument("--run-name", default="full", help="output subfolder + MLflow run name (v1 = full)")
     return ap.parse_args()
 
@@ -80,6 +82,25 @@ def qlora_configs():
     return quant, lora
 
 
+def make_ckpt_skip_callback(k: int):
+    """Partial gradient checkpointing: turn it off on the first k decoder layers. In transformers
+    5.17 each LlamaDecoderLayer recomputes only if its own `gradient_checkpointing` flag is set, and
+    Trainer.train() enables all layers (trainer.py ~1468) before on_train_begin (~1595), so a
+    switch made here sticks. `skipped` = layers actually left without checkpointing."""
+    from transformers import TrainerCallback
+
+    class CkptSkip(TrainerCallback):
+        skipped = 0
+
+        def on_train_begin(self, args, state, control, model=None, **kw):
+            layers = [m for m in model.modules()
+                      if type(m).__name__.endswith("DecoderLayer") and hasattr(m, "gradient_checkpointing")]
+            for m in layers[:k]:
+                m.gradient_checkpointing = False
+            self.skipped = sum(not m.gradient_checkpointing for m in layers)
+    return CkptSkip()
+
+
 def sft_config(args):
     """Batch size 1 x 16 accumulation = effective batch 16 (~2,134
     optimizer steps for one epoch); batch size 1 means the 3,200-token
@@ -105,6 +126,7 @@ def sft_config(args):
         # ours is a PeftModel, so it would default to True, which clashes with gradient checkpointing.
         ddp_find_unused_parameters=False,
         per_device_eval_batch_size=4,
+        gradient_checkpointing=not getattr(args, "no_grad_ckpt", False),  # on by default (TRL's default too)
         learning_rate=2e-4, lr_scheduler_type="cosine", warmup_steps=50,
         logging_steps=1 if args.smoke else 10,
         eval_strategy="steps", eval_steps=every,
@@ -141,8 +163,9 @@ def main():
           # 4-bit base: TRL itself casts adapters to bf16; bf16 base: PEFT keeps fp32 unless --bf16-adapters
           f"adapters={'bf16' if args.bf16_adapters or not args.bf16_base else 'fp32'} "
           f"liger={'on' if config.use_liger_kernel else 'off'}")
-    trainer = SFTTrainer(model=args.model, args=config, train_dataset=train_ds,
-                         eval_dataset=val_ds, quantization_config=quant, peft_config=lora)
+    callbacks = [make_ckpt_skip_callback(args.ckpt_skip_layers)] if args.ckpt_skip_layers else []
+    trainer = SFTTrainer(model=args.model, args=config, train_dataset=train_ds, eval_dataset=val_ds,
+                         quantization_config=quant, peft_config=lora, callbacks=callbacks)
     if args.bf16_adapters:  # TRL's own QLoRA-path cast, before train() builds the optimizer
         for p in trainer.model.parameters():
             if p.requires_grad:
