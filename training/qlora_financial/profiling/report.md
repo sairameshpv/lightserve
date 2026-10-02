@@ -20,6 +20,8 @@ training-only) with `../profile_train.py` on the same single L40S. Key findings:
   Details at the end.
 - **Confirmed end to end:** a full v2 retrain with all four changes took **3h00m vs. 4h52m
   (−38%) at the same accuracy** (75.0% vs. 74.5%), as projected.
+- **DDP on 2 GPUs: 1.86× (92.9% scaling efficiency).** Gradient sync costs ~57 ms of network per
+  update; most of the remaining gap is one GPU waiting for the other (load imbalance), not the network.
 
 ## Method
 
@@ -291,6 +293,48 @@ Accuracy on the same 200 test questions: **75.0% vs. v1's 74.5%**, a tie (11 vs.
 right only in one run). The open caveat throughout this report, "accuracy unmeasured", is now
 answered: the speedups cost no accuracy. Numbers: `v2_full_run.json`.
 
+## DDP on 2 GPUs (measured)
+
+The same profiled run (v2 settings: bf16 base + adapters, Liger, `group_by_length`) on **2
+L40S**, one per node (the Nebius preset has 1 GPU per node), with PyTorch DDP: `torchrun --nnodes 2
+--nproc_per_node 1`, NCCL 2.28.9 over the nodes' internal network (TCP, no InfiniBand).
+Batch 4 × 2 accumulation × 2 GPUs = **16 per update**, the same 2,400 examples and 150 updates as the
+1-GPU run, so the two are directly comparable.
+
+| | 1 GPU | DDP rank 0 | DDP rank 1 |
+|---|---|---|---|
+| Time for 150 updates | 664.8 s | **357.7 s** | 357.7 s |
+| Tokens/s (global) | 2,239 | **4,162** | 4,162 |
+| **Speedup / scaling efficiency** | n/a | **1.86× / 92.9%** | |
+| GPU busy / idle inside `fwd_bwd` | 98.5% / 1.3% | 98.2% / 1.5% | 98.2% / 1.6% |
+| Gradient sync (NCCL) share of GPU time | n/a | 1.5% | **6.1%** |
+| Peak memory | 20.9 GiB | 21.0 GiB | 19.4 GiB |
+
+**Where the missing 7% goes: waiting, not the network.** A one-off script timed a raw cross-node
+all-reduce of 84 MB (≈ the LoRA gradients synced per update): median **57.5 ms** over 20 runs (min
+57.1, max 75.7; ~1.46 GB/s). In training, rank 1's `ncclDevKernel_AllReduce` took 533 ms over the 3
+profiled steps, **~178 ms per update**. NCCL's kernel runs until both GPUs arrive, so the extra
+**~120 ms is rank 1 waiting for rank 0**, which had more work that step. Rank 0 rarely waits (1.5%).
+The imbalance is largest on the longest batches: in a 5-step smoke run, all from the start of
+`group_by_length`'s longest-first order, rank 1 spent 36.2% of its GPU time in NCCL. Grouping evens
+out lengths within a batch, not the work given to each GPU. Unmeasured next idea:
+`train_sampling_strategy="batch_rebalance"`, which balances padded-token cost across devices.
+
+**Training is equivalent.** Mean loss over the 150 per-step logs: DDP 0.966 vs. 1 GPU 0.988 (per
+50-step segment 1.554/1.588, 0.752/0.714, 0.591/0.661). The single step-150 loss differs (0.472 vs.
+0.560) because grouping runs per process (4 × 2 = 8 examples) rather than per update (16), which
+changes which examples share a batch. Same-loss check: both ranks report identical losses (synced).
+DDP config: `ddp_find_unused_parameters=False`. transformers 5.17 auto-disables it only for a plain
+`PreTrainedModel`, and ours is a `PeftModel`, where the default `True` clashes with gradient checkpointing.
+
+**Three profiling bugs from the first DDP smoke run (fixed in b66d800):**
+- *Clock skew*: rank 1 finished loading first and timed its wait for rank 0 (157.6 s vs. 30.6 s for
+  the same 5 steps). Fix: barrier before starting the clock (both 28.1 s after).
+- *Labels counted as kernels*: DDP and NCCL add GPU-side labels (`DistributedDataParallel.forward`,
+  `nccl:...`), giving busy 129.7% / 144.2%. Fix: exclude `is_user_annotation` events.
+- *Overlapping streams*: NCCL runs alongside compute, so summed kernel time exceeds the span. Fix:
+  busy time = union of kernel intervals.
+
 ## Files
 
 Committed (small, in this folder):
@@ -302,6 +346,7 @@ Committed (small, in this folder):
 - `profile_v2_lora_bf16ad.json`: the same plus `--bf16-adapters`, incl. adapter dtype before/after.
 - `profile_v2_lora_bf16ad_liger.json`: the same plus `--liger` (its `liger_applied: false` is a
   bug; see *Liger fused kernels*).
+- `profile_ddp2_rank0.json` / `profile_ddp2_rank1.json`: the 2-GPU DDP run, one file per GPU.
 - `v2_full_run.json`: the full v2 vs. v1 retrain (runtimes, eval curves, accuracy, per-question
   overlap), built from the gitignored `outputs/mlflow.db` and both `verify_results.jsonl`.
 
