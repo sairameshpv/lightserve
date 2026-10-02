@@ -101,6 +101,9 @@ def sft_config(args):
         gradient_accumulation_steps=getattr(args, "grad_accum", 16),
         train_sampling_strategy="group_by_length" if grouped else "random",
         use_liger_kernel=getattr(args, "liger", False),
+        # DDP only (ignored on 1 GPU): transformers auto-disables this just for a plain PreTrainedModel;
+        # ours is a PeftModel, so it would default to True, which clashes with gradient checkpointing.
+        ddp_find_unused_parameters=False,
         per_device_eval_batch_size=4,
         learning_rate=2e-4, lr_scheduler_type="cosine", warmup_steps=50,
         logging_steps=1 if args.smoke else 10,

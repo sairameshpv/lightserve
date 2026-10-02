@@ -18,6 +18,7 @@ Reuses train.py's load_split / qlora_configs / sft_config unchanged. GPU only.
 import argparse
 import csv
 import json
+import os
 import random
 from collections import defaultdict
 from pathlib import Path
@@ -124,6 +125,7 @@ def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str =
 # are a first guess from typical CUDA/bitsandbytes names; summarize_profile() reports
 # whatever lands in "other" so the list can be corrected against the real names.
 KERNEL_CATEGORIES = [
+    ("gradient sync (NCCL)", ["nccl"]),  # DDP all-reduce; first, so e.g. "...ReduceScatter..." isn't misread
     ("4-bit dequantize", ["dequantize", "kdequant"]),
     ("attention", ["flash", "fmha", "attention", "attn"]),
     ("loss", ["cross_entropy", "nll_loss", "log_softmax", "logsoftmax"]),
@@ -251,18 +253,21 @@ def main():
     if args.mode == "profile":  # experiment A (defaults = v1's settings) on the real length mix
         mix = ds.select(sorted(random.Random(0).sample(range(len(ds)), args.steps * 16)))
         phases = make_phase_callback(nsys_capture=args.nsys)
+        # Under torchrun (DDP) every GPU runs this; give each its own files. 1 GPU: names unchanged.
+        world, rank = int(os.environ.get("WORLD_SIZE", 1)), int(os.environ.get("RANK", 0))
+        tag = f"{args.name}_rank{rank}" if world > 1 else args.name
         setting = dict(batch_size=args.batch_size, grad_accum=args.grad_accum, bf16_base=args.bf16_base,
                        bf16_adapters=args.bf16_adapters, liger=args.liger,
                        sampling=GROUPED if args.group_by_length else "random")
         if args.nsys:  # nsys records the timeline; this run only reports tokens/s
             result = run_config(args, mix, callbacks=[phases], **setting)
         else:  # profiler callback listed first, so it steps before a new phase range opens
-            cb = make_profiler_callback(str(out / "traces" / f"profile_{args.name}_trace.json"))
+            cb = make_profiler_callback(str(out / "traces" / f"profile_{tag}_trace.json"))
             result = run_config(args, mix, callbacks=[cb, phases], **setting)
             result["profile"] = summarize_profile(cb.prof)
             result["phases"] = phase_breakdown(cb.prof)
-        result["bf16_base"] = args.bf16_base
-        name = f"profile_{args.name}_nsys_run.json" if args.nsys else f"profile_{args.name}.json"
+        result.update(bf16_base=args.bf16_base, world_size=world, rank=rank)
+        name = f"profile_{tag}_nsys_run.json" if args.nsys else f"profile_{tag}.json"
         (out / name).write_text(json.dumps(result, indent=1))
         print(json.dumps(result, indent=1))
     else:  # experiments B and C
