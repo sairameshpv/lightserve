@@ -17,7 +17,8 @@ model is **at least +27 points** ahead. Validation loss fell at every one
 of 9 checks (0.596 → 0.441) and flattened near the end of the single
 epoch, with no sign of memorizing. It isn't a solved problem: the
 fine-tuned model still makes arithmetic slips and can give a short,
-confident, invented answer (see *Reading this*).
+confident, invented answer (see *Reading this*). A profiling-driven **v2**
+retrain trained **38% faster (3h00m vs. 4h52m) at the same accuracy** (see *v2*).
 
 ## Data
 
@@ -166,11 +167,35 @@ can rarely accept a wrong answer. Efficiency is also unoptimized: the GPU
 spot check showed **37%** utilization, and peak memory was 7.4 of 46 GB.
 Batch size 1 leaves most of the L40S idle on short examples.
 
+## v2: 38% faster, same accuracy
+
+Profiling (`profiling/report.md`) found four speedups. v2 retrains with all of them, on the
+same data, seed and number of steps (2,134), evaluated on the same 200 test questions:
+```
+train --run-name v2 --bf16-base --bf16-adapters --batch-size 4 --grad-accum 4 --group-by-length --liger
+```
+
+| | v1 | v2 |
+|---|---|---|
+| Training time (incl. 9 eval passes) | 4h52m (17,535.9 s) | **3h00m (10,825.1 s), −38%** |
+| Training-only throughput | 1,341 tok/s | **2,258 tok/s (+68%)** |
+| Final eval loss / eval token accuracy | 0.441 / 89.2% | 0.425 / 89.6% |
+| **Numeric test accuracy, strict / lenient** | 74.5% / 75.5% | **75.0% / 76.0%** |
+| ConvFinQA / FinQA / TAT-QA / 10-K | 84.3 / 63.0 / 65.5 / 100% | 84.3 / 67.4 / 63.8 / 100% |
+| Peak GPU memory | 7.4 GiB | 21.7 GiB |
+
+**Reading it:** the speedups cost no accuracy, but v2 is **not "better"**. Per question, 11
+were right only in v1 and 12 only in v2, which is run-to-run noise on 200 questions. v2's
+eval loss started worse (0.842 vs. 0.596 at step 250), because `group_by_length` trains the
+longest batches first, then finished lower. Its "original" column uses the bf16 base (32.0%) vs.
+v1's 4-bit base (31.5%), nearly identical. Numbers: `profiling/v2_full_run.json`.
+
 ## What's next
 
-- **Throughput**: larger per-device batches (grouped by length or packed)
-  and 2-GPU data parallel, measured against this run as the 1-GPU,
-  batch-1 baseline (4h52m, ~1,200 tokens/s, 37% utilization).
+- **Throughput**: *done for 1 GPU*. Batching + length grouping, bf16 base and
+  adapters, and Liger brought training to 3h00m (−38%, see *v2*). Still open:
+  turning off gradient checkpointing (~22 of 46 GB used) and 2-GPU data
+  parallel, measured against v2 as the new 1-GPU baseline.
 - **Evaluation v2**: serve the adapter through vLLM (`--enable-lora`) and
   compare both models with promptfoo; an MLflow LLM judge for the sentence
   answers; the datasets' official test sets via FinBen, which were never used

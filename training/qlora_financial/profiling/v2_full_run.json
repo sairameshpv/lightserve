@@ -1,0 +1,133 @@
+{
+ "sources": [
+  "outputs/mlflow.db (runs 'full' = v1, 'v2')",
+  "outputs/full/verify_results.jsonl",
+  "outputs/v2/verify_results.jsonl"
+ ],
+ "v2_command": "train --run-name v2 --bf16-base --bf16-adapters --batch-size 4 --grad-accum 4 --group-by-length --liger",
+ "train_tokens": 21087616,
+ "v1": {
+  "train_runtime_s": 17535.9,
+  "eval_passes_s": 1816.4,
+  "eval_passes": 9,
+  "training_only_s": 15719.5,
+  "training_only_tok_per_s": 1341,
+  "eval_loss": {
+   "250": 0.596,
+   "500": 0.5725,
+   "750": 0.5234,
+   "1000": 0.4953,
+   "1250": 0.4691,
+   "1500": 0.4502,
+   "1750": 0.442,
+   "2000": 0.4408,
+   "2134": 0.441
+  },
+  "eval_token_accuracy": {
+   "250": 0.8608,
+   "500": 0.8672,
+   "750": 0.8748,
+   "1000": 0.8816,
+   "1250": 0.8875,
+   "1500": 0.889,
+   "1750": 0.8915,
+   "2000": 0.8922,
+   "2134": 0.892
+  }
+ },
+ "v2": {
+  "train_runtime_s": 10825.1,
+  "eval_passes_s": 1485.1,
+  "eval_passes": 9,
+  "training_only_s": 9340.1,
+  "training_only_tok_per_s": 2258,
+  "eval_loss": {
+   "250": 0.8418,
+   "500": 0.6281,
+   "750": 0.5191,
+   "1000": 0.4894,
+   "1250": 0.4561,
+   "1500": 0.4332,
+   "1750": 0.4254,
+   "2000": 0.4243,
+   "2134": 0.4246
+  },
+  "eval_token_accuracy": {
+   "250": 0.8046,
+   "500": 0.8569,
+   "750": 0.8772,
+   "1000": 0.8826,
+   "1250": 0.8886,
+   "1500": 0.8943,
+   "1750": 0.8956,
+   "2000": 0.8958,
+   "2134": 0.8957
+  }
+ },
+ "v2_peak_gib": 21.7,
+ "accuracy": {
+  "v1": {
+   "TAT-QA": {
+    "n": 58,
+    "original": 0.3448,
+    "tuned": 0.6552
+   },
+   "ALL": {
+    "n": 200,
+    "original": 0.315,
+    "tuned": 0.745,
+    "lenient_original": 0.475,
+    "lenient_tuned": 0.755
+   },
+   "FinQA": {
+    "n": 46,
+    "original": 0.2826,
+    "tuned": 0.6304
+   },
+   "ConvFinQA": {
+    "n": 89,
+    "original": 0.2809,
+    "tuned": 0.8427
+   },
+   "financial-qa-10K": {
+    "n": 7,
+    "original": 0.7143,
+    "tuned": 1.0
+   }
+  },
+  "v2": {
+   "TAT-QA": {
+    "n": 58,
+    "original": 0.3621,
+    "tuned": 0.6379
+   },
+   "ALL": {
+    "n": 200,
+    "original": 0.32,
+    "tuned": 0.75,
+    "lenient_original": 0.46,
+    "lenient_tuned": 0.76
+   },
+   "FinQA": {
+    "n": 46,
+    "original": 0.3261,
+    "tuned": 0.6739
+   },
+   "ConvFinQA": {
+    "n": 89,
+    "original": 0.236,
+    "tuned": 0.8427
+   },
+   "financial-qa-10K": {
+    "n": 7,
+    "original": 1.0,
+    "tuned": 1.0
+   }
+  }
+ },
+ "per_question": {
+  "n_common": 200,
+  "right_only_v1": 11,
+  "right_only_v2": 12
+ }
+}

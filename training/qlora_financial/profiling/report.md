@@ -18,6 +18,8 @@ training-only) with `../profile_train.py` on the same single L40S. Key findings:
   51% → 99%, dequantization gone), keeping LoRA adapters in bf16 (PEFT upcasts them to fp32)
   reached 2,121 tokens/s (+58%), and Liger fused kernels **2,239 tokens/s (+67% over v1)**.
   Details at the end.
+- **Confirmed end to end:** a full v2 retrain with all four changes took **3h00m vs. 4h52m
+  (−38%) at the same accuracy** (75.0% vs. 74.5%), as projected.
 
 ## Method
 
@@ -273,6 +275,22 @@ pass during backward, and ~21 of 46 GB is used, so memory may now allow it), and
   the bf16-adapter trace (counted with `grep` on the node). The check now runs after `train()`,
   and the profile also records `liger_kernel_launches` as direct evidence.
 
+## Full v2 run: projection confirmed
+
+A full retrain with all four changes (`../README.md`, *v2*) measured what the 150-step runs
+projected:
+
+| | Projected (from 150-step runs) | Measured (full run) |
+|---|---|---|
+| Training-only throughput | 2,239 tok/s | **2,258 tok/s** |
+| Training-only time | 2h37m | 2h36m (9,340.1 s) |
+| Total incl. 9 eval passes | ~3h07m (v1's eval time assumed) | **3h00m** (eval passes faster: 1,485 vs. 1,816 s) |
+| vs. v1 (4h52m) | −36% | **−38%** |
+
+Accuracy on the same 200 test questions: **75.0% vs. v1's 74.5%**, a tie (11 vs. 12 questions
+right only in one run). The open caveat throughout this report, "accuracy unmeasured", is now
+answered: the speedups cost no accuracy. Numbers: `v2_full_run.json`.
+
 ## Files
 
 Committed (small, in this folder):
@@ -284,6 +302,8 @@ Committed (small, in this folder):
 - `profile_v2_lora_bf16ad.json`: the same plus `--bf16-adapters`, incl. adapter dtype before/after.
 - `profile_v2_lora_bf16ad_liger.json`: the same plus `--liger` (its `liger_applied: false` is a
   bug; see *Liger fused kernels*).
+- `v2_full_run.json`: the full v2 vs. v1 retrain (runtimes, eval curves, accuracy, per-question
+  overlap), built from the gitignored `outputs/mlflow.db` and both `verify_results.jsonl`.
 
 Local only (not committed, see `.gitignore`): `logs/` (run logs + `nvidia-smi dmon`
 samples used for SM util), `traces/profile_v1_nsys.nsys-rep` (32 MB, open in
