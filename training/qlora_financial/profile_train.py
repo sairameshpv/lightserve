@@ -44,6 +44,7 @@ def parse_args():
     ap.add_argument("--liger", action="store_true", help="Liger fused kernels (pip install liger-kernel)")
     ap.add_argument("--no-grad-ckpt", action="store_true", help="gradient checkpointing off entirely")
     ap.add_argument("--ckpt-skip-layers", type=int, default=0, help="partial checkpointing: skip the first K layers")
+    ap.add_argument("--flash-attn", action="store_true", help="FlashAttention-2 + padding-free (pip install kernels)")
     ap.add_argument("--name", default="v1", help="profile mode output name: profile_<name>.json")
     return ap.parse_args()
 
@@ -77,13 +78,14 @@ def bucket_by_length(ds, lengths: list, per_bucket: int, seed: int = 0) -> dict:
 
 def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str = "random", callbacks=(),
                bf16_base: bool = False, bf16_adapters: bool = False, liger: bool = False,
-               grad_ckpt: bool = True, ckpt_skip: int = 0):
+               grad_ckpt: bool = True, ckpt_skip: int = 0, flash_attn: bool = False):
     """Train `args.steps` optimizer steps with train.py's exact settings, changing
     only batch size / accumulation / example order; eval, saving, MLflow off."""
     import dataclasses
     from types import SimpleNamespace
     from training.qlora_financial.train import sft_config
-    base = sft_config(SimpleNamespace(output_dir=str(Path(args.out_dir) / "tmp"), smoke=False, max_length=3200))
+    base = sft_config(SimpleNamespace(output_dir=str(Path(args.out_dir) / "tmp"), smoke=False, max_length=3200,
+                                      flash_attn=flash_attn))  # sets attn_implementation + padding_free
     config = dataclasses.replace(
         base, per_device_train_batch_size=batch_size, gradient_accumulation_steps=grad_accum,
         train_sampling_strategy=sampling, max_steps=args.steps, logging_steps=1,
@@ -126,7 +128,8 @@ def run_config(args, train_ds, batch_size: int, grad_accum: int, sampling: str =
             "peak_gib": round(torch.cuda.max_memory_allocated() / 2**30, 1),
             "adapter_dtype_before": dtype_before, "adapter_dtype_after": dtype_after,
             "liger_applied": liger_applied, "gradient_checkpointing": grad_ckpt,
-            "ckpt_layers_skipped": skip_cb.skipped if skip_cb else 0}  # counted from the layer flags
+            "ckpt_layers_skipped": skip_cb.skipped if skip_cb else 0,  # counted from the layer flags
+            "attn_implementation": getattr(trainer.model.config, "_attn_implementation", None)}  # what actually ran
 
 
 # GPU kernel name -> category, first match wins. Order matters: attention/loss come
@@ -285,7 +288,7 @@ def main():
         tag = f"{args.name}_rank{rank}" if world > 1 else args.name
         setting = dict(batch_size=args.batch_size, grad_accum=args.grad_accum, bf16_base=args.bf16_base,
                        bf16_adapters=args.bf16_adapters, liger=args.liger,
-                       grad_ckpt=not args.no_grad_ckpt, ckpt_skip=args.ckpt_skip_layers,
+                       grad_ckpt=not args.no_grad_ckpt, ckpt_skip=args.ckpt_skip_layers, flash_attn=args.flash_attn,
                        sampling=GROUPED if args.group_by_length else "random")
         if args.nsys:  # nsys records the timeline; this run only reports tokens/s
             result = run_config(args, mix, callbacks=[phases], **setting)

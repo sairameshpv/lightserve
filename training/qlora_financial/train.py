@@ -42,6 +42,8 @@ def parse_args():
     ap.add_argument("--liger", action="store_true", help="Liger fused kernels (pip install liger-kernel)")
     ap.add_argument("--no-grad-ckpt", action="store_true", help="turn gradient checkpointing off entirely")
     ap.add_argument("--ckpt-skip-layers", type=int, default=0, help="partial checkpointing: skip it on the first K layers")
+    ap.add_argument("--flash-attn", action="store_true",
+                    help="FlashAttention-2 (hub kernel, pip install kernels) + padding-free batches")
     ap.add_argument("--run-name", default="full", help="output subfolder + MLflow run name (v1 = full)")
     return ap.parse_args()
 
@@ -113,9 +115,14 @@ def sft_config(args):
     # getattr defaults = v1, so callers built before these options (profile_train.py) still work.
     run_name = "smoke" if args.smoke else getattr(args, "run_name", "full")
     grouped = getattr(args, "group_by_length", False)
+    flash = getattr(args, "flash_attn", False)
+    # SDPA falls back to its memory-efficient kernel whenever a batch has padding (a mask is needed);
+    # padding-free batches + FlashAttention-2's varlen kernel need no mask at all.
+    attn = {"attn_implementation": "kernels-community/flash-attn2"} if flash else {}
     return SFTConfig(
         output_dir=str(Path(args.output_dir) / run_name),
-        model_init_kwargs={"dtype": torch.bfloat16},  # TRL's default is float32
+        model_init_kwargs={"dtype": torch.bfloat16, **attn},  # TRL's default is float32
+        padding_free=flash,
         max_length=args.max_length,  # TRL's default 1024 would cut answers off
         num_train_epochs=1, max_steps=2 if args.smoke else -1,
         per_device_train_batch_size=getattr(args, "batch_size", 1),
@@ -162,7 +169,8 @@ def main():
           f"order={config.train_sampling_strategy} out={config.output_dir} "
           # 4-bit base: TRL itself casts adapters to bf16; bf16 base: PEFT keeps fp32 unless --bf16-adapters
           f"adapters={'bf16' if args.bf16_adapters or not args.bf16_base else 'fp32'} "
-          f"liger={'on' if config.use_liger_kernel else 'off'}")
+          f"liger={'on' if config.use_liger_kernel else 'off'} "
+          f"attn={config.model_init_kwargs.get('attn_implementation', 'sdpa')}")
     callbacks = [make_ckpt_skip_callback(args.ckpt_skip_layers)] if args.ckpt_skip_layers else []
     trainer = SFTTrainer(model=args.model, args=config, train_dataset=train_ds, eval_dataset=val_ds,
                          quantization_config=quant, peft_config=lora, callbacks=callbacks)
