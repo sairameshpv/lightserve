@@ -1,0 +1,100 @@
+{
+ "batch_size": 4,
+ "grad_accum": 4,
+ "sampling": "group_by_length",
+ "seconds": 27.9,
+ "tokens_per_s": 1808,
+ "final_loss": 3.228698253631592,
+ "peak_gib": 39.8,
+ "adapter_dtype_before": "torch.float32",
+ "adapter_dtype_after": "torch.bfloat16",
+ "liger_applied": true,
+ "gradient_checkpointing": true,
+ "ckpt_layers_skipped": 16,
+ "profile": {
+  "gpu_busy_pct": 91.1,
+  "span_ms": 12480,
+  "n_kernels": 72272,
+  "liger_kernel_launches": 4157,
+  "by_category_pct": {
+   "matmul": 61.2,
+   "elementwise/norm": 22.3,
+   "attention": 15.9,
+   "memory copy": 0.5,
+   "loss": 0.0,
+   "optimizer": 0.0
+  },
+  "top10_ms": [
+   [
+    "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8>(cutlass_",
+    2906.0
+   ],
+   [
+    "fmha_cutlassB_bf16_aligned_64x64_k128_sm80(PyTorchMemEffAttention::AttentionBackwardKernel<cutlass::",
+    1461.9
+   ],
+   [
+    "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x128_32x4_nn_align8>(cutlass_",
+    1040.0
+   ],
+   [
+    "void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<c10::BFloat16>, std::a",
+    930.8
+   ],
+   [
+    "ampere_bf16_s1688gemm_bf16_128x128_ldg8_f2f_stages_32x1_nn",
+    816.2
+   ],
+   [
+    "void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<c10::BFloat16, c10::BFlo",
+    522.1
+   ],
+   [
+    "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_tn",
+    496.5
+   ],
+   [
+    "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_nn_align8>(cutlass_",
+    375.5
+   ],
+   [
+    "fmha_cutlassF_bf16_aligned_64x128_rf_sm80(PyTorchMemEffAttention::AttentionKernel<cutlass::bfloat16_",
+    345.3
+   ],
+   [
+    "void at::native::(anonymous namespace)::fused_dropout_kernel_vec<c10::BFloat16, float, unsigned int,",
+    294.6
+   ]
+  ],
+  "other_top5_ms": []
+ },
+ "phases": {
+  "between_steps": {
+   "count": 3,
+   "wall_ms": 19.3,
+   "gpu_ms": 0.2,
+   "gpu_idle_pct": 99.1
+  },
+  "fwd_bwd": {
+   "count": 3,
+   "wall_ms": 12444.2,
+   "gpu_ms": 11368.4,
+   "gpu_idle_pct": 8.6
+  },
+  "optimizer_step": {
+   "count": 3,
+   "wall_ms": 6.7,
+   "gpu_ms": 0.8,
+   "gpu_idle_pct": 87.5
+  },
+  "post_step": {
+   "count": 3,
+   "wall_ms": 13.4,
+   "gpu_ms": 2.0,
+   "gpu_idle_pct": 85.3
+  }
+ },
+ "bf16_base": true,
+ "world_size": 1,
+ "rank": 0
+}

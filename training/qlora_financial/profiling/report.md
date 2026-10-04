@@ -22,6 +22,8 @@ training-only) with `../profile_train.py` on the same single L40S. Key findings:
   (−38%) at the same accuracy** (75.0% vs. 74.5%), as projected.
 - **DDP on 2 GPUs: 1.86× (92.9% scaling efficiency).** Gradient sync costs ~57 ms of network per
   update; most of the remaining gap is one GPU waiting for the other (load imbalance), not the network.
+- **Partial gradient checkpointing: 2,460 tokens/s (+9.9%, +83% over v1)** by skipping it on 8 of 32
+  layers, at 39.7 GiB peak memory. A flaw in my short memory probes (too-short batches) is written up.
 
 ## Method
 
@@ -335,6 +337,54 @@ DDP config: `ddp_find_unused_parameters=False`. transformers 5.17 auto-disables 
 - *Overlapping streams*: NCCL runs alongside compute, so summed kernel time exceeds the span. Fix:
   busy time = union of kernel intervals.
 
+## Partial gradient checkpointing (measured)
+
+One change versus the Liger run (1 GPU): `--ckpt-skip-layers 8`. Gradient checkpointing saves
+memory by discarding each layer's intermediate results in the forward pass and recomputing them in
+backward. transformers 5.17 gives every decoder layer its own on/off flag, so a callback switches it
+off on the first 8 of 32 layers at the start of training; those 8 keep their activations instead of
+recomputing them. Same 150 steps and 2,400 examples.
+
+| | All 32 layers checkpointed | **First 8 not checkpointed** |
+|---|---|---|
+| Tokens/s (whole run) | 2,239 | **2,460 (+9.9%)** |
+| Time for 150 steps | 664.8 s | **605.2 s (−9.0%)** |
+| Kernels, steps 3-5 | 81,139 | 75,992 (−6.3%) |
+| GPU busy | 98.5% | 98.5% |
+| Peak memory | 20.9 GiB | **39.7 GiB** (of 44.4 GiB total) |
+| Loss at step 150 | 0.560 | 0.545 |
+
+**Why +9.9%, more than the ~6% I first estimated.** My estimate assumed the usual rule that backward
+costs ~2× forward, which makes recomputation ~1/4 of the work. Here the base weights are frozen, so
+backward computes only the gradients flowing back through each layer (not weight gradients for the
+base), and backward costs only about 1× forward. Recomputation is then ~1/3 of the work: 8 of 32
+layers × 1/3 ≈ 8.3% less time, ≈ +9% tokens/s, close to the measured −9.0% / +9.9%. By the same
+rule, turning checkpointing off on all 32 layers would be worth ~+50%, but at ~2.34 GiB per layer
+(next paragraph) it would need ~96 GiB, over twice the GPU. GPU busy is unchanged (98.5%): the GPU
+was already fully used, and the gain comes from doing less work, not from less waiting. The loss
+difference (0.545 vs. 0.560) is the same size as the Liger run's (0.560 vs. 0.568): small numeric
+differences in bf16, not a change in what is learned.
+
+**How 8 was chosen, and a flaw in my short test runs.** Checkpointing fully off ran out of memory
+(OOM) at 44.35 GiB, as expected. I then ran 5-step probes to measure memory per layer: K=28 layers
+off ran OOM (44.38 GiB), K=4 peaked at 23.7 GiB and K=16 at 39.8 GiB, so (39.8 − 23.7) / 12 = 1.34
+GiB per layer. But the real 150-step run with K=16 then ran OOM at step 1 (44.32 GiB). The cause:
+profile mode draws steps × 16 examples, so a 5-step probe sees only 80 examples, and with
+longest-first grouping its first batch is 4 × 1,635 = 6,540 tokens. The 150-step run's 2,400 examples
+start with 4 × 2,854 = 11,416 tokens, 1.75× longer, and activation memory grows with tokens. Rescaled:
+1.34 × 1.75 ≈ 2.34 GiB per layer, so K=8 predicts 20.9 + 8 × 2.34 = 39.6 GiB; measured: **39.7**.
+Lesson: a memory probe must run the real worst-case batch, not just fewer steps. A fix (not
+implemented): let the probe's step count differ from its sample size. The probe JSONs are committed
+as evidence; the three OOMs are in the gitignored run logs.
+
+**The 1-GPU chain extends to 2,460 tokens/s, +83% over v1** (1,343 → 1,728 → 1,816 → 2,121 → 2,239
+→ 2,460). Projected full run: the v2 run's training tokens at 2,460 tokens/s take 8,573 s (2h23m),
+plus v2's measured eval time (1,485 s) ≈ **2h48m vs. v2's 3h00m (−7%) and v1's 4h52m (−43%)**, a
+projection, not measured. **Caution before a full run with K=8:** the full dataset's longest batch is
+4 × 3,196 = 12,784 tokens, 1.12× the longest profiled one. Scaling memory per layer the same way
+gives ~41.9 GiB, under 3 GiB from the 44.4 GiB limit, which is tight given the estimate is rough.
+**K=7 (~39.2 GiB) is the safer setting for a full run**, giving up about 1/8 of the gain.
+
 ## Files
 
 Committed (small, in this folder):
@@ -347,6 +397,9 @@ Committed (small, in this folder):
 - `profile_v2_lora_bf16ad_liger.json`: the same plus `--liger` (its `liger_applied: false` is a
   bug; see *Liger fused kernels*).
 - `profile_ddp2_rank0.json` / `profile_ddp2_rank1.json`: the 2-GPU DDP run, one file per GPU.
+- `profile_ckpt_skip8.json`: partial gradient checkpointing (first 8 layers not checkpointed).
+- `profile_ckpt_skip4_probe.json` / `profile_ckpt_skip16_probe.json`: the 5-step memory probes,
+  kept as evidence of the probe flaw (their batches were shorter than the real run's).
 - `v2_full_run.json`: the full v2 vs. v1 retrain (runtimes, eval curves, accuracy, per-question
   overlap), built from the gitignored `outputs/mlflow.db` and both `verify_results.jsonl`.
 
