@@ -118,12 +118,15 @@ def sft_config(args):
     flash = getattr(args, "flash_attn", False)
     # SDPA falls back to its memory-efficient kernel whenever a batch has padding (a mask is needed);
     # padding-free batches + FlashAttention-2's varlen kernel need no mask at all.
-    attn = {"attn_implementation": "kernels-community/flash-attn2"} if flash else {}
+    # @v2: the default (v3, one "stable ABI" build) crashed in backward on torch 2.11; v2 has a torch211 build.
+    attn = {"attn_implementation": "kernels-community/flash-attn2@v2"} if flash else {}
     return SFTConfig(
         output_dir=str(Path(args.output_dir) / run_name),
         model_init_kwargs={"dtype": torch.bfloat16, **attn},  # TRL's default is float32
         padding_free=flash,
-        max_length=args.max_length,  # TRL's default 1024 would cut answers off
+        # TRL's default 1024 would cut answers off. Padding-free: TRL requires None (it can't truncate there);
+        # nothing changes, since the longest example (3,197 tokens) is under 3,200 anyway.
+        max_length=None if flash else args.max_length,
         num_train_epochs=1, max_steps=2 if args.smoke else -1,
         per_device_train_batch_size=getattr(args, "batch_size", 1),
         gradient_accumulation_steps=getattr(args, "grad_accum", 16),

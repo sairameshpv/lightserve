@@ -1,0 +1,119 @@
+{
+ "batch_size": 4,
+ "grad_accum": 4,
+ "sampling": "group_by_length",
+ "seconds": 25.6,
+ "tokens_per_s": 1970,
+ "final_loss": 3.2315447330474854,
+ "peak_gib": 26.5,
+ "adapter_dtype_before": "torch.float32",
+ "adapter_dtype_after": "torch.bfloat16",
+ "liger_applied": true,
+ "gradient_checkpointing": true,
+ "ckpt_layers_skipped": 8,
+ "attn_implementation": "kernels-community/flash-attn2@v2",
+ "profile": {
+  "gpu_busy_pct": 81.3,
+  "span_ms": 10844,
+  "n_kernels": 89000,
+  "liger_kernel_launches": 4518,
+  "by_category_pct": {
+   "matmul": 72.8,
+   "elementwise/norm": 23.9,
+   "attention": 3.0,
+   "memory copy": 0.1,
+   "loss": 0.0,
+   "optimizer": 0.0,
+   "other": 0.0
+  },
+  "top10_ms": [
+   [
+    "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8>(cutlass_",
+    2669.8
+   ],
+   [
+    "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x128_32x4_nn_align8>(cutlass_",
+    769.0
+   ],
+   [
+    "void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<c10::BFloat16>, std::a",
+    762.2
+   ],
+   [
+    "ampere_bf16_s1688gemm_bf16_128x128_ldg8_f2f_stages_32x1_nn",
+    716.9
+   ],
+   [
+    "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_tn",
+    443.6
+   ],
+   [
+    "void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<c10::BFloat16, c10::BFlo",
+    438.3
+   ],
+   [
+    "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_nn_align8>(cutlass_",
+    387.0
+   ],
+   [
+    "void at::native::(anonymous namespace)::fused_dropout_kernel_vec<c10::BFloat16, float, unsigned int,",
+    250.3
+   ],
+   [
+    "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x256_32x3_tn_align8>(cutlass_",
+    209.6
+   ],
+   [
+    "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_nn",
+    188.1
+   ]
+  ],
+  "other_top5_ms": [
+   [
+    "void at_cuda_detail::cub::DeviceSelectSweepKernel<at_cuda_detail::cub::detail::device_select_policy_",
+    1.4
+   ],
+   [
+    "void at_cuda_detail::cub::DeviceCompactInitKernel<at_cuda_detail::cub::ScanTileState<int, true>, int",
+    0.7
+   ],
+   [
+    "void at_cuda_detail::cub::DeviceScanKernel<at_cuda_detail::cub::DeviceScanPolicy<long, std::plus<lon",
+    0.0
+   ],
+   [
+    "void at_cuda_detail::cub::DeviceScanInitKernel<at_cuda_detail::cub::ScanTileState<long, true> >(at_c",
+    0.0
+   ]
+  ]
+ },
+ "phases": {
+  "between_steps": {
+   "count": 3,
+   "wall_ms": 24.9,
+   "gpu_ms": 0.2,
+   "gpu_idle_pct": 99.4
+  },
+  "fwd_bwd": {
+   "count": 3,
+   "wall_ms": 10803.8,
+   "gpu_ms": 8809.3,
+   "gpu_idle_pct": 18.5
+  },
+  "optimizer_step": {
+   "count": 3,
+   "wall_ms": 7.9,
+   "gpu_ms": 0.9,
+   "gpu_idle_pct": 89.1
+  },
+  "post_step": {
+   "count": 3,
+   "wall_ms": 13.2,
+   "gpu_ms": 2.0,
+   "gpu_idle_pct": 85.0
+  }
+ },
+ "bf16_base": true,
+ "world_size": 1,
+ "rank": 0
+}
