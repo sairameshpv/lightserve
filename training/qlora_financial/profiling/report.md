@@ -24,6 +24,8 @@ training-only) with `../profile_train.py` on the same single L40S. Key findings:
   update; most of the remaining gap is one GPU waiting for the other (load imbalance), not the network.
 - **Partial gradient checkpointing: 2,460 tokens/s (+9.9%, +83% over v1)** by skipping it on 8 of 32
   layers, at 39.7 GiB peak memory. A flaw in my short memory probes (too-short batches) is written up.
+- **FlashAttention-2 + padding-free batches: 2,579 tokens/s (+4.8%, +92% over v1).** Padding forced
+  PyTorch's slower attention kernel; attention fell from 18.3% to 4.0% of GPU time, memory to 33.1 GiB.
 
 ## Method
 
@@ -385,6 +387,62 @@ projection, not measured. **Caution before a full run with K=8:** the full datas
 gives ~41.9 GiB, under 3 GiB from the 44.4 GiB limit, which is tight given the estimate is rough.
 **K=7 (~39.2 GiB) is the safer setting for a full run**, giving up about 1/8 of the gain.
 
+## FlashAttention-2 + padding-free batches (measured)
+
+**Why attention used the slower kernel.** After partial checkpointing, attention was 18.3% of GPU
+time, all in PyTorch's *memory-efficient* kernels (`PyTorchMemEffAttention`), not its faster
+*flash* ones. The cause is padding: a batch of 4 almost always pads its shorter examples, so
+transformers 5.17 builds a mask marking the padding (`masking_utils.py`, which skips the mask only
+when nothing is padded). PyTorch's flash kernel can't take a mask, so SDPA falls back to
+memory-efficient (`integrations/sdpa_attention.py`).
+
+**The change:** `--flash-attn` (commits 5eb2b4e, 977ef1f) turns on two things together.
+**Padding-free batches** (TRL `padding_free=True`): the batch's examples are placed end to end in one
+row with no padding, and position numbers restart at each example. **FlashAttention-2's "varlen"
+kernel** uses those boundaries to keep examples separate, so no mask is needed. The kernel comes
+prebuilt from the Hugging Face Hub (`kernels-community/flash-attn2@v2`, via `pip install
+"kernels>=0.16,<0.17"`), so nothing is compiled. Everything else matches the K=8 run.
+
+| | SDPA (memory-efficient) | **FlashAttention-2 + padding-free** |
+|---|---|---|
+| Tokens/s (whole run) | 2,460 | **2,579 (+4.8%)** |
+| Time for 150 steps | 605.2 s | **577.2 s (−4.6%)** |
+| Time per profiled step (steps 3-5) | 8,237 ms | 7,325 ms (−11.1%) |
+| Attention / matmul / elementwise+norm | 18.3% / 56.9% / 24.2% | **4.0%** / 67.8% / 28.0% |
+| Peak memory | 39.7 GiB | **33.1 GiB (−6.6)** |
+| GPU busy | 98.5% | 95.6% |
+| Kernels, steps 3-5 | 75,992 | 87,204 (+14.8%) |
+| Mean loss over the 150 steps | 0.982 | 0.980 |
+
+**Reading: attention is mostly solved; the whole-run gain is smaller than the per-step one.**
+Attention fell from 18.3% to 4.0% of GPU time, and matmul (68%) dominates again. The profiled steps
+gained 11%, but the whole run only 4.6%. A likely reason, not checked: with longest-first ordering,
+steps 3-5 are among the longest batches, and attention's cost grows faster than length, so it saves
+the most there and less on the shorter batches later. Memory fell 6.6 GiB, room for more layers
+without checkpointing (unmeasured). **Two open questions:** kernels went *up* 15% and GPU busy
+*down* (98.5% → 95.6%); possibly the padding-free path adds small kernels and some launch waiting
+returns, not investigated. The 1-GPU chain extends to **2,579 tokens/s, +92% over v1**. Projected full
+run: 8,178 s of training + 1,485 s eval ≈ **2h41m vs. v2's 3h00m (−11%) and v1's 4h52m (−45%)**, a
+projection, not measured.
+
+**Training is unchanged.** A 5-step check on the same 80 examples as the two SDPA memory probes gave
+step-5 loss 3.2315 vs. 3.2289 / 3.2287 (`profile_flash_smoke.json`). Over 150 steps, mean loss per
+50-step block: 1.581 / 0.704 / 0.654 vs. SDPA 1.573 / 0.719 / 0.652; median per-step difference
+0.014 (from the gitignored run logs). The step-150 loss alone differs more (0.618 vs. 0.545), but
+single steps swing between 0.18 and 0.68 at that point.
+
+**Three problems found on the node, all fixed:**
+- *Wrong `kernels` version:* pip installed 0.17.2, and transformers 5.17 requires 0.16.x.
+- *TRL refuses `padding_free` with a `max_length`* (it can't cut examples in that mode). Fix:
+  `max_length=None` with `--flash-attn`. Nothing changes: the longest example is 3,197 tokens.
+- *The default kernel build crashed in the backward pass.* transformers asks for "version 3", a single
+  "stable ABI" build meant to work across PyTorch versions; on torch 2.11 its backward called
+  `aten::sum` with a garbage dimension. Fix: pin `@v2`, which has a build for torch 2.11 + CUDA 12.8,
+  after checking its forward output and gradients against PyTorch's own attention (bf16-rounding level).
+
+The Hub kernel's version lookup needs network access, so these runs used the HF token instead of
+`HF_HUB_OFFLINE=1` (the model itself still loaded from the local cache).
+
 ## Files
 
 Committed (small, in this folder):
@@ -400,6 +458,8 @@ Committed (small, in this folder):
 - `profile_ckpt_skip8.json`: partial gradient checkpointing (first 8 layers not checkpointed).
 - `profile_ckpt_skip4_probe.json` / `profile_ckpt_skip16_probe.json`: the 5-step memory probes,
   kept as evidence of the probe flaw (their batches were shorter than the real run's).
+- `profile_ckpt_skip8_flash.json`: the same plus `--flash-attn` (records `attn_implementation`).
+- `profile_flash_smoke.json`: its 5-step check (same examples as the probes; loss matches).
 - `v2_full_run.json`: the full v2 vs. v1 retrain (runtimes, eval curves, accuracy, per-question
   overlap), built from the gitignored `outputs/mlflow.db` and both `verify_results.jsonl`.
 
