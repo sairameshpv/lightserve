@@ -31,6 +31,45 @@ REPO = "eloukas/edgar-corpus"
 SECTIONS = ["1", "1A", "1B", "2", "3", "4", "5", "6", "7", "7A", "8", "9", "9A", "9B", "10", "11", "12", "13", "14", "15"]
 
 
+MIN_WORDS = 200                 # shorter than about a page: an empty shell of headings
+MEAN_WORD_LEN = (3, 10)         # outside this: mostly symbols, codes or run-together text
+MIN_ALPHA_WORD_FRAC = 0.6       # share of words with a letter in them; numbers-only text is a table dump
+# Share of the text (by characters) inside lines that repeat an earlier line. By characters, not
+# line count: 10-Ks repeat short page headers ("Notes to Consolidated Financial Statements",
+# the company name) and "•" bullets on every page, which made genuine reports fail a per-line rule.
+MAX_REPEATED_CHAR_FRAC = 0.2
+
+
+def quality_problem(text: str):
+    """Why a (cleaned) filing is junk, or None if it passes. Gopher-style rules (Rae et al. 2021)."""
+    words = text.split()
+    if len(words) < MIN_WORDS:
+        return "too_few_words"
+    if not MEAN_WORD_LEN[0] <= sum(map(len, words)) / len(words) <= MEAN_WORD_LEN[1]:
+        return "odd_word_length"
+    if sum(any(c.isalpha() for c in w) for w in words) / len(words) < MIN_ALPHA_WORD_FRAC:
+        return "few_alpha_words"
+    seen, repeated_chars = set(), 0
+    for ln in text.split("\n"):
+        if ln in seen:
+            repeated_chars += len(ln)
+        seen.add(ln)
+    if repeated_chars / len(text) > MAX_REPEATED_CHAR_FRAC:
+        return "repeated_lines"
+    return None
+
+
+def is_exact_copy(text: str, seen: set) -> bool:
+    """True if this exact (cleaned) text was seen before; otherwise remembers it. Stores a 16-byte
+    fingerprint (BLAKE2b hash) per filing, not the text: ~60k filings cost a few MB of memory."""
+    import hashlib
+    h = hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
+    if h in seen:
+        return True
+    seen.add(h)
+    return False
+
+
 def iter_filings(year: int, split: str, max_docs: int = None):
     """Yield one filing at a time from {year}/{split}.jsonl as {"id", "cik", "year", "text"}: the
     non-empty sections joined in order. The file is downloaded once (Hugging Face cache) and read
