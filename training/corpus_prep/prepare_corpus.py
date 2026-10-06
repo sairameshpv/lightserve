@@ -169,6 +169,37 @@ class EvalOverlap:
         return {f for f, shared in self.by_filing.items() if shared & rare}
 
 
+SHARD_TOKENS = 100_000_000  # tokens per output file: 400 MB at 4 bytes each
+
+
+class ShardWriter:
+    """Tokenizes filings and appends them to flat uint32 files {split}_000.bin, {split}_001.bin, ...
+    (vocab 128,256 doesn't fit uint16), with <|end_of_text|> after each filing. That marker, not the
+    Instruct tokenizer's eos (<|eot_id|> = end of a chat turn), is Llama-3's end-of-document token."""
+
+    def __init__(self, out_dir, split: str, tokenizer):
+        import numpy as np
+        self.np, self.dir, self.split, self.tok = np, out_dir, split, tokenizer
+        self.eod = tokenizer.convert_tokens_to_ids("<|end_of_text|>")
+        self.shards, self.file, self.in_shard = [], None, 0
+
+    def write(self, text: str):
+        ids = self.tok(text, add_special_tokens=False)["input_ids"] + [self.eod]
+        if self.file is None or self.in_shard >= SHARD_TOKENS:  # start a new file between filings
+            self.close()
+            path = self.dir / f"{self.split}_{len(self.shards):03d}.bin"
+            self.file, self.in_shard = open(path, "wb"), 0
+            self.shards.append({"file": path.name, "tokens": 0})
+        self.np.asarray(ids, dtype="uint32").tofile(self.file)
+        self.in_shard += len(ids)
+        self.shards[-1]["tokens"] += len(ids)
+
+    def close(self):
+        if self.file:
+            self.file.close()
+            self.file = None
+
+
 def iter_filings(year: int, split: str, max_docs: int = None):
     """Yield one filing at a time from {year}/{split}.jsonl as {"id", "cik", "year", "text"}: the
     non-empty sections joined in order. The file is downloaded once (Hugging Face cache) and read
@@ -190,12 +221,73 @@ def parse_args():
     ap.add_argument("--years", type=int, nargs="+", default=list(range(2015, 2021)))
     ap.add_argument("--out-dir", default="training/corpus_prep/data")
     ap.add_argument("--max-docs", type=int, default=None, help="stop after N filings per year/split (for trying it out)")
+    ap.add_argument("--inspect", action="store_true", help="don't build: decode a random window of the shards to read")
     return ap.parse_args()
+
+
+SPLITS = {"train": "train", "validate": "val"}  # EDGAR split -> our shard name; train first, see pass1
+
+
+def pass1(args, overlap):
+    """Take notes on every filing; return the ids to keep per split and the counts per outcome.
+    Train is read before validate with one shared copy/near-copy memory, so a held-out filing that
+    copies a training one is dropped (the held-out set must not overlap the training set)."""
+    from collections import Counter
+    seen, index = set(), NearCopyIndex()
+    keep, counts = {s: set() for s in SPLITS}, {s: Counter() for s in SPLITS}
+    for split in SPLITS:
+        for year in args.years:
+            for d in iter_filings(year, split, args.max_docs):
+                text = clean(d["text"])
+                why = (quality_problem(text) or ("exact_copy" if is_exact_copy(text, seen) else None)
+                       or ("near_copy" if index.check_and_add(minhash(text)) else None))
+                counts[split][why or "kept"] += 1
+                if why is None:
+                    keep[split].add(d["id"])
+                    overlap.note(d["id"], d["cik"], text)
+    for split in SPLITS:  # decontamination needs every filing seen first: decided between the passes
+        bad = keep[split] & overlap.contaminated()
+        keep[split] -= bad
+        counts[split]["kept"] -= len(bad)
+        counts[split]["contaminated"] = len(bad)
+    return keep, counts
 
 
 def main():
     args = parse_args()
-    print(f"years={args.years} max_docs={args.max_docs} out={args.out_dir}")
+    import time
+    from pathlib import Path
+    from transformers import AutoTokenizer
+    out = Path(args.out_dir)
+    tok = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct")
+    if args.inspect:  # read-back check: 300 tokens from a random spot in a random shard
+        import numpy as np
+        arr = np.fromfile(np.random.choice(sorted(out.glob("*.bin"))), dtype="uint32")
+        start = np.random.randint(0, max(len(arr) - 300, 1))
+        print(tok.decode(arr[start:start + 300]))
+        return
+    out.mkdir(parents=True, exist_ok=True)
+    evals = Path("training/qlora_financial/data")
+    t0 = time.perf_counter()
+    keep, counts = pass1(args, EvalOverlap(load_eval_sentences([evals / "val.jsonl", evals / "test.jsonl"])))
+    t1 = time.perf_counter()
+    print("pass 1:", {s: dict(c) for s, c in counts.items()}, f"{t1 - t0:.0f} s")
+    shards = []
+    for split, name in SPLITS.items():  # pass 2: re-read, keep only the survivors, tokenize and write
+        writer = ShardWriter(out, name, tok)
+        for year in args.years:
+            for d in iter_filings(year, split, args.max_docs):
+                if d["id"] in keep[split]:
+                    writer.write(clean(d["text"]))
+        writer.close()
+        shards += writer.shards
+    t2 = time.perf_counter()
+    print("pass 2:", shards, f"{t2 - t1:.0f} s")
+    (out / "meta.json").write_text(json.dumps({"tokenizer": tok.name_or_path, "dtype": "uint32",
+                                               "end_of_document_id": writer.eod, "shards": shards}, indent=1))
+    (out / "stats.json").write_text(json.dumps({"years": args.years, "max_docs": args.max_docs,
+                                                "filings": counts, "pass1_seconds": round(t1 - t0, 1),
+                                                "pass2_seconds": round(t2 - t1, 1)}, indent=1))
 
 
 if __name__ == "__main__":

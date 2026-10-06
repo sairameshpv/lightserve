@@ -4,8 +4,31 @@ import huggingface_hub
 
 import random
 
-from training.corpus_prep.prepare_corpus import (EvalOverlap, NearCopyIndex, clean, is_exact_copy, iter_filings,
-                                                 minhash, quality_problem, sentence_keys)
+import numpy as np
+
+from training.corpus_prep import prepare_corpus
+from training.corpus_prep.prepare_corpus import (EvalOverlap, NearCopyIndex, ShardWriter, clean, is_exact_copy,
+                                                 iter_filings, minhash, quality_problem, sentence_keys)
+
+
+class CharTokenizer:  # stand-in for Llama-3's: one token per character, no download needed
+    def __call__(self, text, add_special_tokens=False):
+        return {"input_ids": [ord(c) for c in text]}
+
+    def convert_tokens_to_ids(self, token):
+        return 200_000  # above 65,535: only survives if the files really are 32-bit
+
+
+def test_shard_writer_round_trip_and_new_file_between_filings(tmp_path, monkeypatch):
+    monkeypatch.setattr(prepare_corpus, "SHARD_TOKENS", 5)  # tiny files, to see the split
+    w = ShardWriter(tmp_path, "train", CharTokenizer())
+    for text in ("abc", "defgh", "ij"):
+        w.write(text)
+    w.close()
+    files = [np.fromfile(tmp_path / s["file"], dtype="uint32").tolist() for s in w.shards]
+    eod = 200_000
+    assert files == [[97, 98, 99, eod, 100, 101, 102, 103, 104, eod], [105, 106, eod]]  # never split mid-filing
+    assert [s["tokens"] for s in w.shards] == [(tmp_path / s["file"]).stat().st_size // 4 for s in w.shards]
 
 LEAK = "In 2018 we received commitments for $30.0 billion in debt financing to fund the merger."
 BOILER = "Property, plant and equipment are stated at cost less accumulated depreciation and amortization."
