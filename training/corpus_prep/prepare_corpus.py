@@ -121,6 +121,54 @@ class NearCopyIndex:
         return None
 
 
+MIN_SENTENCE_CHARS = 60  # shorter sentences ("in millions", "see note 5") are shared by everyone
+SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+|\n")  # also splits FinQA's spaced-out " . " sentences
+
+
+def sentence_keys(text: str) -> set:
+    """Long sentences reduced to lowercase letters and digits, so the same sentence compares equal
+    however it was spaced or punctuated (FinQA writes "( in millions )", 10-Ks "(in millions)").
+    Same idea as qlora_financial/prepare_dataset.py's _long_sentences."""
+    keys = (re.sub(r"[^a-z0-9]+", "", s.lower()) for s in SENTENCE_END.split(text))
+    return {k for k in keys if len(k) >= MIN_SENTENCE_CHARS}
+
+
+def load_eval_sentences(paths) -> set:
+    """Sentence keys of the fine-tuning eval data (the user message holds the report text)."""
+    out = set()
+    for p in paths:
+        with open(p, encoding="utf-8") as f:
+            for line in f:
+                out |= sentence_keys(json.loads(line)["messages"][1]["content"])
+    return out
+
+
+MAX_LEAK_COMPANIES = 2  # an eval sentence found in more companies' filings than this is boilerplate
+
+
+class EvalOverlap:
+    """Decontamination in two steps. Pass 1: note() records which eval sentences each filing
+    contains, and which companies (CIKs) contain each sentence. Between passes: contaminated() =
+    filings sharing at least one *rare* eval sentence (found in <= MAX_LEAK_COMPANIES companies).
+    Counting companies, not filings: one company's yearly reports repeat its own sentences, and
+    those are all the same leak. Boilerplate (e.g. the Item 5 title, in 971 of 1,359 sample filings)
+    is common to many companies and ignored."""
+
+    def __init__(self, eval_sentences: set):
+        self.eval, self.by_filing, self.companies = eval_sentences, {}, {}
+
+    def note(self, filing_id: str, cik: str, text: str):
+        shared = sentence_keys(text) & self.eval
+        if shared:
+            self.by_filing[filing_id] = shared
+            for s in shared:
+                self.companies.setdefault(s, set()).add(cik)
+
+    def contaminated(self) -> set:
+        rare = {s for s, c in self.companies.items() if len(c) <= MAX_LEAK_COMPANIES}
+        return {f for f, shared in self.by_filing.items() if shared & rare}
+
+
 def iter_filings(year: int, split: str, max_docs: int = None):
     """Yield one filing at a time from {year}/{split}.jsonl as {"id", "cik", "year", "text"}: the
     non-empty sections joined in order. The file is downloaded once (Hugging Face cache) and read

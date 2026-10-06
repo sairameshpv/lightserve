@@ -4,8 +4,27 @@ import huggingface_hub
 
 import random
 
-from training.corpus_prep.prepare_corpus import (NearCopyIndex, clean, is_exact_copy, iter_filings, minhash,
-                                                 quality_problem)
+from training.corpus_prep.prepare_corpus import (EvalOverlap, NearCopyIndex, clean, is_exact_copy, iter_filings,
+                                                 minhash, quality_problem, sentence_keys)
+
+LEAK = "In 2018 we received commitments for $30.0 billion in debt financing to fund the merger."
+BOILER = "Property, plant and equipment are stated at cost less accumulated depreciation and amortization."
+
+
+def test_sentence_keys_match_across_spacing_and_skip_short_ones():
+    finqa_style = "in 2018 we received commitments for $ 30.0 billion in debt financing to fund the merger . see note 5 ."
+    assert sentence_keys(finqa_style) == sentence_keys(LEAK)  # "see note 5" is too short to count
+    assert len(sentence_keys(finqa_style)) == 1
+
+
+def test_eval_overlap_flags_rare_sentences_not_boilerplate():
+    overlap = EvalOverlap(sentence_keys(LEAK) | sentence_keys(BOILER))
+    overlap.note("a_2018", "A", f"Overview.\n{LEAK}\n{BOILER}")   # the leak's source company...
+    overlap.note("a_2019", "A", f"{LEAK}")                        # ...repeating it in later years: 3 filings,
+    overlap.note("a_2020", "A", f"{LEAK}")                        # but 1 company, so still rare (still a leak)
+    for cik in "BCD":                                             # boilerplate in 3 more companies
+        overlap.note(f"{cik.lower()}_2018", cik, f"Revenue grew.\n{BOILER}")
+    assert overlap.contaminated() == {"a_2018", "a_2019", "a_2020"}
 
 
 def _words(n, seed):
