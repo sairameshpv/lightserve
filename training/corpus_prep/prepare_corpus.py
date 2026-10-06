@@ -70,6 +70,57 @@ def is_exact_copy(text: str, seen: set) -> bool:
     return False
 
 
+NUM_PERM, SHINGLE = 128, 5  # 128 MinHash values per filing; 5-word overlapping pieces ("shingles")
+_rng = __import__("numpy").random.default_rng(0)
+_A = _rng.integers(1, 2**63, NUM_PERM, dtype="uint64") | 1  # odd multipliers: 128 independent hash functions
+_B = _rng.integers(0, 2**63, NUM_PERM, dtype="uint64")
+
+
+def minhash(text: str):
+    """MinHash signature: for each of 128 hash functions, the smallest hash over the filing's
+    5-word shingles. Two filings agree on a given value with probability = their Jaccard similarity
+    (shared shingles / all shingles). Vectorized with numpy; uint64 arithmetic wraps around on purpose."""
+    import zlib
+    import numpy as np
+    w = np.array([zlib.crc32(t.encode()) for t in text.lower().split()], dtype="uint64")
+    n = max(len(w) - SHINGLE + 1, 1)
+    sh = np.zeros(n, dtype="uint64")
+    for k in range(min(SHINGLE, len(w))):  # shingle hash = word hashes combined by position
+        sh = sh * np.uint64(1_000_003) + w[k:k + n]
+    sig = np.full(NUM_PERM, np.iinfo("uint64").max, dtype="uint64")
+    for i in range(0, n, 8192):  # blocks bound memory: 8192 shingles x 128 = 8 MB
+        sig = np.minimum(sig, (sh[i:i + 8192, None] * _A + _B).min(axis=0))
+    return (sig >> np.uint64(32)).astype("uint32")  # top 32 bits: the well-mixed part
+
+
+BANDS, ROWS = 16, 8      # 16 x 8 = 128: two filings become candidates if any band of 8 values matches
+NEAR_COPY = 0.8          # estimated Jaccard similarity at or above which a filing counts as a near-copy
+
+
+class NearCopyIndex:
+    """LSH ("locality-sensitive hashing") over MinHash signatures. Each kept filing is filed under 16
+    band keys; a new filing is compared only with filings sharing a band key (likely similar ones),
+    not with every filing. Streaming, keep-first: a near-copy of a kept filing is dropped and not
+    indexed. Memory: 128 x 4 bytes per kept filing (~20 MB for 40k)."""
+
+    def __init__(self):
+        self.buckets = [dict() for _ in range(BANDS)]
+        self.sigs = []
+
+    def check_and_add(self, sig):
+        """Index of the kept filing this one nearly copies (and its similarity), or None and keep it."""
+        keys = [sig[b * ROWS:(b + 1) * ROWS].tobytes() for b in range(BANDS)]
+        candidates = {i for b, k in enumerate(keys) for i in self.buckets[b].get(k, ())}
+        for i in candidates:
+            sim = float((self.sigs[i] == sig).mean())
+            if sim >= NEAR_COPY:
+                return i, sim
+        for b, k in enumerate(keys):
+            self.buckets[b].setdefault(k, []).append(len(self.sigs))
+        self.sigs.append(sig)
+        return None
+
+
 def iter_filings(year: int, split: str, max_docs: int = None):
     """Yield one filing at a time from {year}/{split}.jsonl as {"id", "cik", "year", "text"}: the
     non-empty sections joined in order. The file is downloaded once (Hugging Face cache) and read

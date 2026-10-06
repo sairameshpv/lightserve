@@ -2,7 +2,41 @@ import json
 
 import huggingface_hub
 
-from training.corpus_prep.prepare_corpus import clean, is_exact_copy, iter_filings, quality_problem
+import random
+
+from training.corpus_prep.prepare_corpus import (NearCopyIndex, clean, is_exact_copy, iter_filings, minhash,
+                                                 quality_problem)
+
+
+def _words(n, seed):
+    rng = random.Random(seed)
+    return [f"w{rng.randrange(5000)}" for _ in range(n)]
+
+
+def _edit(words, share, seed):  # replace a share of the words, like changed numbers and names
+    rng = random.Random(seed)
+    return [f"new{rng.randrange(10**6)}" if rng.random() < share else w for w in words]
+
+
+def _jaccard(a, b):  # true similarity of the 5-word shingle sets
+    sa, sb = ({tuple(x[i:i + 5]) for i in range(len(x) - 4)} for x in (a, b))
+    return len(sa & sb) / len(sa | sb)
+
+
+def test_minhash_estimates_true_similarity():
+    base = _words(3000, seed=1)
+    for share in (0.01, 0.03, 0.1):
+        other = _edit(base, share, seed=2)
+        estimate = float((minhash(" ".join(base)) == minhash(" ".join(other))).mean())
+        assert abs(estimate - _jaccard(base, other)) < 0.1  # 128 values: typical error ~0.03-0.04
+
+
+def test_near_copy_index_catches_light_edits_only():
+    base = _words(3000, seed=1)
+    index = NearCopyIndex()
+    assert index.check_and_add(minhash(" ".join(base))) is None                    # first: kept
+    assert index.check_and_add(minhash(" ".join(_edit(base, 0.01, 3))))[0] == 0    # 1% of words changed (~93% similar): near-copy of #0
+    assert index.check_and_add(minhash(" ".join(_words(3000, seed=4)))) is None    # unrelated: kept
 
 REPORT = "\n".join(f"In {2000 + i} revenue in segment {i} grew because demand was strong." for i in range(60))
 
