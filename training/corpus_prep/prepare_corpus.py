@@ -59,11 +59,16 @@ def quality_problem(text: str):
     return None
 
 
-def is_exact_copy(text: str, seen: set) -> bool:
-    """True if this exact (cleaned) text was seen before; otherwise remembers it. Stores a 16-byte
-    fingerprint (BLAKE2b hash) per filing, not the text: ~60k filings cost a few MB of memory."""
+def text_hash(text: str) -> bytes:
     import hashlib
-    h = hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
+    return hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
+
+
+def is_exact_copy(text_or_hash, seen: set) -> bool:
+    """True if this exact (cleaned) text was seen before; otherwise remembers it. Stores a 16-byte
+    fingerprint (BLAKE2b hash) per filing, not the text: ~60k filings cost a few MB of memory.
+    Takes the text, or its text_hash() already computed by a worker process."""
+    h = text_or_hash if isinstance(text_or_hash, bytes) else text_hash(text_or_hash)
     if h in seen:
         return True
     seen.add(h)
@@ -158,7 +163,9 @@ class EvalOverlap:
         self.eval, self.by_filing, self.companies = eval_sentences, {}, {}
 
     def note(self, filing_id: str, cik: str, text: str):
-        shared = sentence_keys(text) & self.eval
+        self.add(filing_id, cik, sentence_keys(text) & self.eval)
+
+    def add(self, filing_id: str, cik: str, shared: set):  # shared eval sentences, found by a worker
         if shared:
             self.by_filing[filing_id] = shared
             for s in shared:
@@ -183,14 +190,20 @@ class ShardWriter:
         self.eod = tokenizer.convert_tokens_to_ids("<|end_of_text|>")
         self.shards, self.file, self.in_shard = [], None, 0
 
+    def encode(self, text: str):
+        """Token ids of one filing + the end-of-document id (the part a worker process can do)."""
+        return self.np.asarray(self.tok(text, add_special_tokens=False)["input_ids"] + [self.eod], dtype="uint32")
+
     def write(self, text: str):
-        ids = self.tok(text, add_special_tokens=False)["input_ids"] + [self.eod]
+        self.write_ids(self.encode(text))
+
+    def write_ids(self, ids):
         if self.file is None or self.in_shard >= SHARD_TOKENS:  # start a new file between filings
             self.close()
             path = self.dir / f"{self.split}_{len(self.shards):03d}.bin"
             self.file, self.in_shard = open(path, "wb"), 0
             self.shards.append({"file": path.name, "tokens": 0})
-        self.np.asarray(ids, dtype="uint32").tofile(self.file)
+        ids.tofile(self.file)
         self.in_shard += len(ids)
         self.shards[-1]["tokens"] += len(ids)
 
@@ -221,30 +234,84 @@ def parse_args():
     ap.add_argument("--years", type=int, nargs="+", default=list(range(2015, 2021)))
     ap.add_argument("--out-dir", default="training/corpus_prep/data")
     ap.add_argument("--max-docs", type=int, default=None, help="stop after N filings per year/split (for trying it out)")
+    ap.add_argument("--workers", type=int, default=__import__("os").cpu_count(),
+                    help="processes doing the per-filing work (1 = all in this process)")
     ap.add_argument("--inspect", action="store_true", help="don't build: decode a random window of the shards to read")
     return ap.parse_args()
+
+
+_EVAL = set()  # each worker process's copy of the eval sentences, set once by _init_worker
+
+
+def _init_worker(eval_sentences):
+    import os
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"  # the pool is the parallelism; no extra threads
+    global _EVAL
+    _EVAL = eval_sentences
+
+
+TOKENIZER = "meta-llama/Meta-Llama-3-8B-Instruct"
+_ENCODER = None  # each worker process's own ShardWriter, used only for its encode()
+
+
+def _init_encoder():
+    import os
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    from transformers import AutoTokenizer
+    global _ENCODER
+    _ENCODER = ShardWriter(None, None, AutoTokenizer.from_pretrained(TOKENIZER))
+
+
+def encode(d: dict):
+    """Pass 2's independent work for one kept filing (runs in a worker): clean + tokenize."""
+    return _ENCODER.encode(clean(d["text"]))
+
+
+def analyze(d: dict) -> dict:
+    """Pass 1's independent work for one filing (runs in a worker): clean it, then return small
+    notes for the main process, which makes the order-dependent decisions (copies, near-copies)."""
+    text = clean(d["text"])
+    problem = quality_problem(text)
+    if problem:
+        return {"id": d["id"], "problem": problem}
+    return {"id": d["id"], "cik": d["cik"], "problem": None, "hash": text_hash(text),
+            "sig": minhash(text), "shared": sentence_keys(text) & _EVAL}
 
 
 SPLITS = {"train": "train", "validate": "val"}  # EDGAR split -> our shard name; train first, see pass1
 
 
+def download(years):
+    """Fetch all the year/split files up front, 8 at a time (the passes then read the local cache)."""
+    from huggingface_hub import snapshot_download
+    snapshot_download(REPO, repo_type="dataset", max_workers=8,
+                      allow_patterns=[f"{y}/{s}.jsonl" for y in years for s in SPLITS])
+
+
 def pass1(args, overlap):
     """Take notes on every filing; return the ids to keep per split and the counts per outcome.
     Train is read before validate with one shared copy/near-copy memory, so a held-out filing that
-    copies a training one is dropped (the held-out set must not overlap the training set)."""
+    copies a training one is dropped (the held-out set must not overlap the training set).
+    Workers run analyze() on many filings at once; imap hands back their notes in input order, and
+    the copy/near-copy decisions are made here, in that order: same result for any --workers."""
     from collections import Counter
+    from multiprocessing import Pool
     seen, index = set(), NearCopyIndex()
     keep, counts = {s: set() for s in SPLITS}, {s: Counter() for s in SPLITS}
+    _init_worker(overlap.eval)  # --workers 1: analyze() runs in this process
+    pool = Pool(args.workers, _init_worker, (overlap.eval,)) if args.workers > 1 else None
     for split in SPLITS:
         for year in args.years:
-            for d in iter_filings(year, split, args.max_docs):
-                text = clean(d["text"])
-                why = (quality_problem(text) or ("exact_copy" if is_exact_copy(text, seen) else None)
-                       or ("near_copy" if index.check_and_add(minhash(text)) else None))
+            filings = iter_filings(year, split, args.max_docs)
+            for n in (pool.imap(analyze, filings, chunksize=4) if pool else map(analyze, filings)):
+                why = (n["problem"] or ("exact_copy" if is_exact_copy(n["hash"], seen) else None)
+                       or ("near_copy" if index.check_and_add(n["sig"]) else None))
                 counts[split][why or "kept"] += 1
                 if why is None:
-                    keep[split].add(d["id"])
-                    overlap.note(d["id"], d["cik"], text)
+                    keep[split].add(n["id"])
+                    overlap.add(n["id"], n["cik"], n["shared"])
+    if pool:
+        pool.close()
     for split in SPLITS:  # decontamination needs every filing seen first: decided between the passes
         bad = keep[split] & overlap.contaminated()
         keep[split] -= bad
@@ -259,7 +326,7 @@ def main():
     from pathlib import Path
     from transformers import AutoTokenizer
     out = Path(args.out_dir)
-    tok = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct")
+    tok = AutoTokenizer.from_pretrained(TOKENIZER)
     if args.inspect:  # read-back check: 300 tokens from a random spot in a random shard
         import numpy as np
         arr = np.fromfile(np.random.choice(sorted(out.glob("*.bin"))), dtype="uint32")
@@ -268,25 +335,34 @@ def main():
         return
     out.mkdir(parents=True, exist_ok=True)
     evals = Path("training/qlora_financial/data")
+    td = time.perf_counter()
+    download(args.years)
     t0 = time.perf_counter()
+    print(f"download: {t0 - td:.0f} s")
     keep, counts = pass1(args, EvalOverlap(load_eval_sentences([evals / "val.jsonl", evals / "test.jsonl"])))
     t1 = time.perf_counter()
     print("pass 1:", {s: dict(c) for s, c in counts.items()}, f"{t1 - t0:.0f} s")
     shards = []
+    from multiprocessing import Pool
+    _init_encoder()  # --workers 1: encode() runs in this process
+    pool = Pool(args.workers, _init_encoder) if args.workers > 1 else None
     for split, name in SPLITS.items():  # pass 2: re-read, keep only the survivors, tokenize and write
         writer = ShardWriter(out, name, tok)
-        for year in args.years:
-            for d in iter_filings(year, split, args.max_docs):
-                if d["id"] in keep[split]:
-                    writer.write(clean(d["text"]))
+        for year in args.years:  # workers tokenize; imap returns in input order, so files are identical
+            kept = (d for d in iter_filings(year, split, args.max_docs) if d["id"] in keep[split])
+            for ids in (pool.imap(encode, kept, chunksize=2) if pool else map(encode, kept)):
+                writer.write_ids(ids)
         writer.close()
         shards += writer.shards
+    if pool:
+        pool.close()
     t2 = time.perf_counter()
     print("pass 2:", shards, f"{t2 - t1:.0f} s")
     (out / "meta.json").write_text(json.dumps({"tokenizer": tok.name_or_path, "dtype": "uint32",
                                                "end_of_document_id": writer.eod, "shards": shards}, indent=1))
     (out / "stats.json").write_text(json.dumps({"years": args.years, "max_docs": args.max_docs,
-                                                "filings": counts, "pass1_seconds": round(t1 - t0, 1),
+                                                "filings": counts, "workers": args.workers,
+                                                "download_seconds": round(t0 - td, 1), "pass1_seconds": round(t1 - t0, 1),
                                                 "pass2_seconds": round(t2 - t1, 1)}, indent=1))
 
 

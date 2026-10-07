@@ -19,6 +19,24 @@ class CharTokenizer:  # stand-in for Llama-3's: one token per character, no down
         return 200_000  # above 65,535: only survives if the files really are 32-bit
 
 
+def test_pass1_same_decisions_with_one_or_two_workers(monkeypatch):
+    from types import SimpleNamespace
+    base = " ".join(_words(3000, seed=1))
+    docs = {"train": [{"id": "a", "cik": "A", "year": 2018, "text": base},
+                      {"id": "b", "cik": "B", "year": 2018, "text": base},                           # exact copy
+                      {"id": "c", "cik": "C", "year": 2018, "text": " ".join(_edit(base.split(), 0.01, 3))},
+                      {"id": "d", "cik": "D", "year": 2018, "text": "Item 1. Business"},             # junk
+                      {"id": "e", "cik": "E", "year": 2018, "text": " ".join(_words(3000, 5)) + "\n" + LEAK}],
+            "validate": [{"id": "f", "cik": "F", "year": 2018, "text": " ".join(_words(3000, 6))}]}
+    monkeypatch.setattr(prepare_corpus, "iter_filings", lambda year, split, max_docs=None: iter(docs[split]))
+    results = [prepare_corpus.pass1(SimpleNamespace(years=[2018], max_docs=None, workers=w),
+                                    EvalOverlap(sentence_keys(LEAK))) for w in (1, 2)]
+    assert results[0] == results[1]
+    keep, counts = results[0]
+    assert keep == {"train": {"a"}, "validate": {"f"}}
+    assert dict(counts["train"]) == {"kept": 1, "exact_copy": 1, "near_copy": 1, "too_few_words": 1, "contaminated": 1}
+
+
 def test_shard_writer_round_trip_and_new_file_between_filings(tmp_path, monkeypatch):
     monkeypatch.setattr(prepare_corpus, "SHARD_TOKENS", 5)  # tiny files, to see the split
     w = ShardWriter(tmp_path, "train", CharTokenizer())
