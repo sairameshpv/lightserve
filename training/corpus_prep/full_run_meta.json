@@ -1,0 +1,79 @@
+{
+ "tokenizer": "meta-llama/Meta-Llama-3-8B-Instruct",
+ "dtype": "uint32",
+ "end_of_document_id": 128001,
+ "shards": [
+  {
+   "file": "train_000.bin",
+   "tokens": 100053209
+  },
+  {
+   "file": "train_001.bin",
+   "tokens": 100010721
+  },
+  {
+   "file": "train_002.bin",
+   "tokens": 100090310
+  },
+  {
+   "file": "train_003.bin",
+   "tokens": 100002124
+  },
+  {
+   "file": "train_004.bin",
+   "tokens": 100043142
+  },
+  {
+   "file": "train_005.bin",
+   "tokens": 100050581
+  },
+  {
+   "file": "train_006.bin",
+   "tokens": 100030119
+  },
+  {
+   "file": "train_007.bin",
+   "tokens": 100050340
+  },
+  {
+   "file": "train_008.bin",
+   "tokens": 100004143
+  },
+  {
+   "file": "train_009.bin",
+   "tokens": 100022823
+  },
+  {
+   "file": "train_010.bin",
+   "tokens": 100014203
+  },
+  {
+   "file": "train_011.bin",
+   "tokens": 100019828
+  },
+  {
+   "file": "train_012.bin",
+   "tokens": 100021515
+  },
+  {
+   "file": "train_013.bin",
+   "tokens": 100001032
+  },
+  {
+   "file": "train_014.bin",
+   "tokens": 100058817
+  },
+  {
+   "file": "train_015.bin",
+   "tokens": 65721314
+  },
+  {
+   "file": "val_000.bin",
+   "tokens": 100034177
+  },
+  {
+   "file": "val_001.bin",
+   "tokens": 80001128
+  }
+ ]
+}

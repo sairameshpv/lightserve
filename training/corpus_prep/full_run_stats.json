@@ -1,0 +1,33 @@
+{
+ "years": [
+  2015,
+  2016,
+  2017,
+  2018,
+  2019,
+  2020
+ ],
+ "max_docs": null,
+ "filings": {
+  "train": {
+   "kept": 29580,
+   "repeated_lines": 698,
+   "near_copy": 2043,
+   "too_few_words": 110,
+   "exact_copy": 842,
+   "contaminated": 544
+  },
+  "validate": {
+   "kept": 3420,
+   "too_few_words": 15,
+   "near_copy": 419,
+   "exact_copy": 205,
+   "repeated_lines": 87,
+   "contaminated": 85
+  }
+ },
+ "workers": 24,
+ "download_seconds": 93.0,
+ "pass1_seconds": 254.4,
+ "pass2_seconds": 487.8
+}
