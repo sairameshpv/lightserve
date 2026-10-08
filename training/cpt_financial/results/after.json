@@ -1,0 +1,37 @@
+{
+ "adapter": "/home/ubuntu/lightserve_run/training/cpt_financial/outputs/run/adapter",
+ "reading": [
+  {
+   "set": "check pile (10-K)",
+   "loss": 1.317,
+   "perplexity": 3.732
+  },
+  {
+   "set": "WikiText-2 test",
+   "loss": 1.9138,
+   "perplexity": 6.779
+  }
+ ],
+ "answers": [
+  {
+   "question": "What is the difference between operating income and net income?",
+   "answer": "Operating income and net income are two important financial metrics used to evaluate a company's performance. While both are measures of profitability, they differ in what they include and exclude.\n\n**Operating Income:**\nOperating income, also known as earnings before interest and taxes (EBIT), is a company's profit from its core operations, excluding non-operating items. It is calculated by subtracting operating expenses from operating revenues. Operating income is a measure of a company's profitability from its core operations, excluding the impact of financing and investing activities.\n\nOperating Income Formula:\n\nOperating Income = Operating Revenues - Operating Expenses\n\n"
+  },
+  {
+   "question": "A company's revenue grew from $120 million to $150 million. What was the growth rate?",
+   "answer": "A simple one!\n\nTo find the growth rate, you can use the formula:\n\nGrowth Rate = (New Value - Old Value) / Old Value\n\nIn this case, the new value is $150 million and the old value is $120 million.\n\nGrowth Rate = ($150 million - $120 million) / $120 million\n= $30 million / $120 million\n= 0.25 or 25%\n\nSo, the company's revenue grew by 25%."
+  },
+  {
+   "question": "What is the capital of Australia?",
+   "answer": "The capital of Australia is Canberra."
+  },
+  {
+   "question": "Write a haiku about autumn.",
+   "answer": "Golden leaves fall slow\nCrisp air whispers winter's near\nAutumn's fleeting sigh"
+  },
+  {
+   "question": "Give me three tips for a job interview.",
+   "answer": "Here are three tips for a job interview:\n\n1. **Prepare, prepare, prepare**:\n\t* Research the company: Learn about the company's products, services, mission, values, and culture. This will help you understand the company's needs and show your interest in the role.\n\t* Review the job description: Study the job description and requirements. Be ready to give specific examples of how your skills and experience align with the job requirements.\n\t* Prepare your questions: Prepare a list of thoughtful questions to ask the interviewer. This shows your interest in the company and the role, and can"
+  }
+ ]
+}

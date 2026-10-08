@@ -1,0 +1,37 @@
+{
+ "adapter": null,
+ "reading": [
+  {
+   "set": "check pile (10-K)",
+   "loss": 1.5748,
+   "perplexity": 4.83
+  },
+  {
+   "set": "WikiText-2 test",
+   "loss": 2.0473,
+   "perplexity": 7.747
+  }
+ ],
+ "answers": [
+  {
+   "question": "What is the difference between operating income and net income?",
+   "answer": "Operating income and net income are two important financial metrics that help investors, analysts, and business owners understand a company's profitability. While they are related, they are not the same thing.\n\n**Operating Income:**\n\nOperating income, also known as earnings before interest and taxes (EBIT), is the profit a company earns from its core operations, excluding non-operating items such as interest income, interest expenses, taxes, and extraordinary items. It represents the company's ability to generate profits from its day-to-day business activities.\n\nTo calculate operating income, you subtract operating expenses (such as salaries, rent,"
+  },
+  {
+   "question": "A company's revenue grew from $120 million to $150 million. What was the growth rate?",
+   "answer": "To find the growth rate, you can use the formula:\n\nGrowth Rate = (New Value - Old Value) / Old Value\n\nIn this case, the new value is $150 million and the old value is $120 million.\n\nGrowth Rate = ($150 million - $120 million) / $120 million\n= $30 million / $120 million\n= 0.25 or 25%\n\nSo, the company's revenue grew by 25% from $120 million to $150 million."
+  },
+  {
+   "question": "What is the capital of Australia?",
+   "answer": "The capital of Australia is Canberra."
+  },
+  {
+   "question": "Write a haiku about autumn.",
+   "answer": "Leaves fall, golden bright\nCrisp air whispers winter's near\nAutumn's fleeting sigh"
+  },
+  {
+   "question": "Give me three tips for a job interview.",
+   "answer": "Here are three tips for a job interview:\n\n1. **Research the company and the position**: Before the interview, make sure you've done your homework on the company and the role you're applying for. Review the company's website, social media, and recent news articles to get a sense of their products, services, mission, values, and culture. Also, study the job description and requirements to understand the skills and qualifications the interviewer will be looking for. This will help you to ask informed questions and show your enthusiasm for the position.\n2. **Prepare your stories and examples**: Many job interviews"
+  }
+ ]
+}

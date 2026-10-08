@@ -31,6 +31,11 @@ class PageDataset:
         return {"input_ids": ids, "labels": ids.copy()}  # the model shifts labels by one itself
 
 
+def pages_read(updates: int, pages_per_update: int, total_pages: int) -> int:
+    """Pages a run actually read: full updates, except the last may be partial (6,103 = 381 x 16 + 7)."""
+    return min(updates * pages_per_update, total_pages)
+
+
 MODEL = "meta-llama/Meta-Llama-3-8B-Instruct"
 
 
@@ -69,7 +74,7 @@ def train(model, pages, out_dir: str, max_steps: int = -1, ckpt_skip: int = 8):
 
 
 def main():
-    import argparse, json, os, time
+    import argparse, json, os
     from pathlib import Path
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--corpus-dir", default="/home/ubuntu/corpus", help="Corpus-Prep output (train_*.bin)")
@@ -86,11 +91,11 @@ def main():
     study = sorted(Path(args.corpus_dir).glob("train_*.bin"))
     pages = PageDataset(study, args.page_len, args.tokens // args.page_len, seed=0)
     print(f"{len(study)} study files, {len(pages)} pages of {args.page_len} tokens")
-    model = build_model()
-    t0 = time.perf_counter()  # timed: training only, not model loading
-    trainer = train(model, pages, str(out), max_steps=20 if args.smoke else -1)
-    secs = time.perf_counter() - t0
-    tokens = trainer.state.global_step * 16 * args.page_len
+    trainer = train(build_model(), pages, str(out), max_steps=20 if args.smoke else -1)
+    # The trainer's own clock (training only): an outside timer once included 145 s of unexplained
+    # set-up. Tokens = pages actually read: the last update can hold fewer than 16 pages.
+    secs = next(h["train_runtime"] for h in reversed(trainer.state.log_history) if "train_runtime" in h)
+    tokens = pages_read(trainer.state.global_step, 16, len(pages)) * args.page_len
     summary = {"updates": trainer.state.global_step, "tokens": tokens, "seconds": round(secs, 1),
                "tokens_per_s": round(tokens / secs), "peak_gib": round(torch.cuda.max_memory_allocated() / 2**30, 1),
                "losses": [h["loss"] for h in trainer.state.log_history if "loss" in h]}

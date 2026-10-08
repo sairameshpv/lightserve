@@ -39,3 +39,9 @@ def test_pages_only_come_from_the_files_given(tmp_path):
     assert max(ds[i]["input_ids"].max() for i in range(len(ds))) < 500_000
     edge = PageDataset(_files(tmp_path, [16], base=900_000), page_len=16, num_pages=3, seed=0)
     assert all(edge[i]["input_ids"].tolist() == list(range(900_000, 900_016)) for i in range(3))
+
+
+def test_pages_read_counts_a_partial_last_update():
+    from training.cpt_financial.pretrain import pages_read
+    assert pages_read(382, 16, 6103) == 6103   # the real run: 381 full updates + one of 7 pages
+    assert pages_read(20, 16, 6103) == 320     # the smoke run: 20 full updates
