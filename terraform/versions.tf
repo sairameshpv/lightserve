@@ -4,7 +4,9 @@ terraform {
   required_providers {
     nebius = {
       source  = "nebius/nebius"
-      version = ">= 0.6.8"
+      # >= 0.6.67: first version checked to have follows_spot_price (see main.tf), which Nebius
+      # now requires on preemptible instances.
+      version = ">= 0.6.67"
     }
   }
 

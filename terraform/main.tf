@@ -53,6 +53,12 @@ resource "nebius_compute_v1_instance" "vllm" {
   # stops rather than deletes/restarts the VM when it reclaims capacity).
   preemptible = var.preemptible ? { on_preemption = "STOP" } : null
 
+  # Since ~2026-10-08 Nebius also requires a pricing model on preemptible VMs ("pricing model must
+  # be specified for a preemptible instance"). follows_spot_price = pay the current spot price,
+  # what preemptible meant before; node 0 got the same via `nebius compute instance update
+  # --follows-spot-price` (CLI >= 0.12.287). Regular VMs are left as before.
+  follows_spot_price = var.preemptible ? {} : null
+
   boot_disk = {
     attach_mode   = "READ_WRITE"
     existing_disk = nebius_compute_v1_disk.boot_disk[count.index]

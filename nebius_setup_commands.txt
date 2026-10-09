@@ -304,3 +304,13 @@ nebius compute instance delete --id <builder-instance-id>
 ---------------------------------------------------------------------------
 (further commands/steps will be appended below as generated)
 ---------------------------------------------------------------------------
+# ---- 2026-10-09: preemptible VMs now need a pricing model ----
+# `nebius compute instance start` began failing with "spec.pricing_model: pricing model must be
+# specified for a preemptible instance". Fix for an existing preemptible VM (CLI >= 0.12.287;
+# 0.12.250 doesn't know the flag -- update with `nebius update`):
+nebius update
+nebius compute instance update --id <instance-id> --follows-spot-price   # pay the current spot price
+nebius compute instance start --id <instance-id>
+# New VMs from terraform/ get the same via `follows_spot_price` in main.tf (provider >= 0.6.67).
+# Note: `terraform plan` against a VM stopped by hand shows `stopped = true -> null`; applying would
+# START it (billed), so don't apply just for this.
