@@ -60,18 +60,19 @@ def main():
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from training.cpt_financial.pretrain import MODEL, PageDataset
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--model", default=MODEL, help="model name or local folder (e.g. a merged model)")
     ap.add_argument("--adapter", help="trained LoRA add-on folder ('after'); leave out for 'before'")
     ap.add_argument("--corpus-dir", default="/home/ubuntu/corpus")
     ap.add_argument("--check-pages", type=int, default=200)
     ap.add_argument("--out", required=True, help="results JSON file")
     args = ap.parse_args()
-    tok = AutoTokenizer.from_pretrained(MODEL)
-    model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.bfloat16, device_map="cuda")
+    tok = AutoTokenizer.from_pretrained(args.model)
+    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16, device_map="cuda")
     if args.adapter:
         from peft import PeftModel
         model = PeftModel.from_pretrained(model, args.adapter)
     check = PageDataset(sorted(Path(args.corpus_dir).glob("val_*.bin")), 4096, args.check_pages, seed=1)
-    results = {"adapter": args.adapter,
+    results = {"model": args.model, "adapter": args.adapter,
                "reading": [report("check pile (10-K)", mean_loss(model, check)),
                            report("WikiText-2 test", mean_loss(model, wikitext_pages(tok)))],
                "answers": answers(model, tok)}
