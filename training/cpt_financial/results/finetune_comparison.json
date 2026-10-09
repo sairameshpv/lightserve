@@ -1,0 +1,1726 @@
+{
+ "about": "Same 200 numeric test questions (qlora_financial/verify_finetune.py, strict match). 'v2' = fine-tune from Llama-3-8B-Instruct; 'v2_cpt' = the same fine-tune command from the model after continued pretraining (merged). 'original' = the starting model with no fine-tune (Instruct for v2, the read-only model for v2_cpt).",
+ "accuracy": {
+  "v2_finetuned": {
+   "ConvFinQA": {
+    "n": 89,
+    "right": 75,
+    "pct": 84.3
+   },
+   "FinQA": {
+    "n": 46,
+    "right": 31,
+    "pct": 67.4
+   },
+   "TAT-QA": {
+    "n": 58,
+    "right": 37,
+    "pct": 63.8
+   },
+   "financial-qa-10K": {
+    "n": 7,
+    "right": 7,
+    "pct": 100.0
+   },
+   "ALL": {
+    "n": 200,
+    "right": 150,
+    "pct": 75.0
+   }
+  },
+  "v2_cpt_finetuned": {
+   "ConvFinQA": {
+    "n": 89,
+    "right": 75,
+    "pct": 84.3
+   },
+   "FinQA": {
+    "n": 46,
+    "right": 29,
+    "pct": 63.0
+   },
+   "TAT-QA": {
+    "n": 58,
+    "right": 37,
+    "pct": 63.8
+   },
+   "financial-qa-10K": {
+    "n": 7,
+    "right": 7,
+    "pct": 100.0
+   },
+   "ALL": {
+    "n": 200,
+    "right": 148,
+    "pct": 74.0
+   }
+  },
+  "instruct_no_finetune": {
+   "ConvFinQA": {
+    "n": 89,
+    "right": 21,
+    "pct": 23.6
+   },
+   "FinQA": {
+    "n": 46,
+    "right": 15,
+    "pct": 32.6
+   },
+   "TAT-QA": {
+    "n": 58,
+    "right": 21,
+    "pct": 36.2
+   },
+   "financial-qa-10K": {
+    "n": 7,
+    "right": 7,
+    "pct": 100.0
+   },
+   "ALL": {
+    "n": 200,
+    "right": 64,
+    "pct": 32.0
+   }
+  },
+  "read_only_no_finetune": {
+   "ConvFinQA": {
+    "n": 89,
+    "right": 27,
+    "pct": 30.3
+   },
+   "FinQA": {
+    "n": 46,
+    "right": 17,
+    "pct": 37.0
+   },
+   "TAT-QA": {
+    "n": 58,
+    "right": 22,
+    "pct": 37.9
+   },
+   "financial-qa-10K": {
+    "n": 7,
+    "right": 5,
+    "pct": 71.4
+   },
+   "ALL": {
+    "n": 200,
+    "right": 71,
+    "pct": 35.5
+   }
+  }
+ },
+ "finetuned_v2_vs_v2_cpt": {
+  "right_only_first": 12,
+  "right_only_second": 10,
+  "two_sided_sign_test_p": 0.832
+ },
+ "no_finetune_instruct_vs_read_only": {
+  "right_only_first": 13,
+  "right_only_second": 20,
+  "two_sided_sign_test_p": 0.296
+ },
+ "identical_finetuned_answers": 115,
+ "per_question": [
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (256-262)/262.\nAnswer: -2.29 percent",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 69.01 and 100.\nStep 2: divide the result of step 1 and 100.\nAnswer: -0.3099",
+   "v2_ok": true,
+   "v2_cpt_ok": false,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 6348 and 6241.\nStep 2: divide the result of step 1 and 6241.\nAnswer: 0.01714",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "12.8",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "$5,910",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 68 and 408.\nAnswer: 0.16667",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": true,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.06092",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: add -254 and 273.\nAnswer: 19.0",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "35,245",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 678300 and 985174.\nAnswer: 0.68851",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "572764.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 10981 and 13165.\nAnswer: 0.83411",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 28.7 and 297.8.\nAnswer: 0.09637",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 0.4 and 2%.\nStep 2: subtract the result of step 1 and 0.4.\nAnswer: 19.6",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 2690 and 18988.\nAnswer: 0.14167",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "3,489,479 thousand",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "1.0044",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "$0.6 million",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 20746 and 5798.\nAnswer: 14948.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "$3,631,575",
+   "v2_ok": false,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (1,438-1,829)/1,829.\nAnswer: -21.38 percent",
+   "v2_ok": false,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (3,489,479+2,254,785)/2.\nAnswer: 2872132 thousand",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "72.38",
+   "v2_ok": false,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 40.2 and 35.8.\nAnswer: 4.4",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "2.4%",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "985174.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "757.05882",
+   "v2_ok": false,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: add 923 and 1051.\nStep 2: divide 1051 and the result of step 1.\nAnswer: 0.53242",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: add 104 and 61.\nStep 2: add 73 and the result of step 1.\nStep 3: divide the result of step 2 and 2.\nStep 4: add the result of step 3 and 3.\nStep 5: divide the result of step 4 and 2.\nAnswer: 61.0",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 602+567.\nAnswer: 1169",
+   "v2_ok": false,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "176693.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: count the matching items: Maximum; Target.\nAnswer: 2",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": true,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "135.2",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "9.4",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "450000000.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 55.0/170.0.\nAnswer: 0.32",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "742,579",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "285.7",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "financial-qa-10K",
+   "gold": "$6,375 million",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (5.34+6.66+6.91+6.25)/4.\nAnswer: 6.29",
+   "v2_ok": true,
+   "v2_cpt_ok": false,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.03423",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute -304 - (- 642).\nAnswer: 338 thousand",
+   "v2_ok": true,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "51160.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.07067",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-0.12459",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-5.7",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "financial-qa-10K",
+   "gold": "$59,245 million",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.66614",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 662.3 and 7.3.\nAnswer: 90.72603",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 64.1 and 89.7.\nAnswer: 0.7146",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute ($64,941-$147,025)/$147,025.\nAnswer: -55.83 percent",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "86.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "65468000000.0",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (20,111-21,033)/21,033.\nAnswer: -4.38 percent",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "227.3",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (663-882)/882.\nAnswer: -24.83 percent",
+   "v2_ok": true,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (9,556+9,664+8,347 ) / 3.\nAnswer: 9189 million",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "638.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 272-841.\nAnswer: -569 thousand",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.18294",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: average effects of foreign operations including foreign tax credits and none.\nAnswer: 3.2",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "9.52381",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.044",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 57 and 70.\nAnswer: 0.81429",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "51512.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "8.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.53242",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: add 9.2 and 3.2.\nStep 2: add 6.5 and the result of step 1.\nStep 3: divide the result of step 2 and 3.\nAnswer: 6.3",
+   "v2_ok": true,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 18 and 5.\nAnswer: 3.6",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-0.14323",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "19.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: add 118.1 and 120.1.\nAnswer: 238.2",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (5,949-6,734)/6,734.\nAnswer: -11.66 percent",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "21.6",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 6.3 and 7.3.\nAnswer: 0.86301",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 3,700-3,700.\nAnswer: 0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.02444",
+   "v2_ok": true,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-0.3282",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "21.0",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 323606 and 214524.\nStep 2: divide the result of step 1 and 214524.\nAnswer: 0.50848",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "36,514 thousand",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "$21.17",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "21.3",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-132366.0",
+   "v2_ok": true,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.07362",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: count the matching items: Maximum; Target; Threshold; Below Threshold.\nAnswer: 4",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (125-144)/144.\nAnswer: -13.19 percent",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "135.2",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 171.8 and 169.6.\nStep 2: subtract the result of step 1 and 1.\nAnswer: 0.01297",
+   "v2_ok": false,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "25.7 million",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "1.5",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "18%",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": true,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "920.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "1.28571",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "$13.7 million",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "123.0 million",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "2.5",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 1191867 and 1994797.\nAnswer: 0.59749",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "3456.0",
+   "v2_ok": true,
+   "v2_cpt_ok": false,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "756311.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "1,220 thousand",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 12.6-9.2.\nAnswer: 3.4 million",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-0.14323",
+   "v2_ok": false,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 2165 and 6825.\nAnswer: 0.31722",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 135 and 5524.\nAnswer: 0.02444",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.0603",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 1565518 and 1519183.\nAnswer: 46335.0",
+   "v2_ok": true,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: multiply 2564.4 and 1000000.\nStep 2: divide the result of step 1 and 3158226.\nAnswer: 811.97482",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (106-88)/88.\nAnswer: 20.45 percent",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "858.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 638.56 and 100.\nStep 2: divide the result of step 1 and 100.\nAnswer: 5.3856",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-9.2",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 20,500/39,121.\nAnswer: 52.4 percent",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "financial-qa-10K",
+   "gold": "$33,532 million",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "11400000.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "38.4",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (118,571-117,632)/117,632.\nAnswer: 0.8 percent",
+   "v2_ok": true,
+   "v2_cpt_ok": false,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 43348 and 49084.\nAnswer: 0.88314",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 16,600 / 5.\nAnswer: 3320 thousand",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "5363.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.15464",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "2330.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-0.12286",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-0.5",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.31762",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 37+10.\nAnswer: 47 million",
+   "v2_ok": false,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 746 and 554.\nAnswer: 192.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 201 and -377.\nAnswer: 578.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.35156",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 37 and 70.\nAnswer: 0.52857",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "5524.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "financial-qa-10K",
+   "gold": "$101.2 million",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "70",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 18.4 and 22.7.\nAnswer: 0.81057",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (-248.4-(-256.3))/-256.3.\nAnswer: -3.08 percent",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 35.0% - 32.4%.\nAnswer: 2.6 percent",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "1.044",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "1345.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "$278 thousand",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 276-249.\nAnswer: 27",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "211.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.10941",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "5931.0",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-1263.3",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 32.1 and 13.9.\nAnswer: 18.2",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "782",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "15.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "1218.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compare 3.6>3.5.\nAnswer: 2019",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "103698.0",
+   "v2_ok": true,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.96241",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 129,941-115,099.\nAnswer: 14842 thousand",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "37.7",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.11161",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 24 and 4.\nAnswer: 20.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 131 and 617.\nAnswer: 0.21232",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "1770.0",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (473,745+164,017)/2.\nAnswer: 318881 thousand",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "1.41275",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-0.11111",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-7.9",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 17.9 and 18.1.\nStep 2: subtract 17.9 and the result of step 1.\nAnswer: 18.1",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "186.4",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "638.56",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: count the matching items: 2019; 2018; 2017.\nAnswer: 3",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "471.1 million",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute (2.3-19.2)/19.2.\nAnswer: -88.02 percent",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "4772.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "242.0",
+   "v2_ok": false,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 137.83 and 100.00.\nAnswer: 37.83",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: add 1308 and 75.\nStep 2: add the result of step 1 and 1414.\nAnswer: 2797.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 29822 and 100430.\nAnswer: 0.29694",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: multiply 1.6 and 1000.\nStep 2: subtract the result of step 1 and 108.\nAnswer: 1492.0",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "(102) million",
+   "v2_ok": true,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 1.8 and 6.1.\nStep 2: subtract the result of step 1 and 6.1.\nAnswer: -10.4",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.41275",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "2019",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 41,756/5,218,920.\nAnswer: 0.8 percent",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "financial-qa-10K",
+   "gold": "47%",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "502.08",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: divide 33584 and 48407.\nStep 2: subtract 1 and the result of step 1.\nAnswer: 0.30622",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-1263.3",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.05093",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 783-707.\nAnswer: 76",
+   "v2_ok": false,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 3,349,793-3,349,793.\nAnswer: 0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "-0.02033",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "450.0",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 5465 and 4772.\nStep 2: divide the result of step 1 and 4772.\nAnswer: 0.14522",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "financial-qa-10K",
+   "gold": "$2.9 billion",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "18.12",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "FinQA",
+   "gold": "Step 1: subtract 448 and 234.\nStep 2: divide the result of step 1 and 234.\nAnswer: 0.91453",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "2.8",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute $1,382,957-$1,361,729.\nAnswer: 21228 thousand",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "$16 million",
+   "v2_ok": false,
+   "v2_cpt_ok": false,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "financial-qa-10K",
+   "gold": "100%",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "142.4",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "401.6 million",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "0.15271",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": true,
+   "read_only_ok": true
+  },
+  {
+   "source": "TAT-QA",
+   "gold": "Step 1: compute 1,005,282/18,983,510.\nAnswer: 5.3 percent",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": true
+  },
+  {
+   "source": "ConvFinQA",
+   "gold": "12.5",
+   "v2_ok": true,
+   "v2_cpt_ok": true,
+   "instruct_ok": false,
+   "read_only_ok": false
+  }
+ ]
+}
