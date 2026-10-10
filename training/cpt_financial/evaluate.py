@@ -20,13 +20,22 @@ def mean_loss(model, pages) -> float:
     return sum(losses) / len(losses)
 
 
+def check_pages(corpus_dir: str, num_pages: int = 200):
+    """The fixed 10-K check pages: from the held-out val_*.bin files only, seed 1 (study used 0)."""
+    from pathlib import Path
+    from training.cpt_financial.pretrain import PageDataset
+    return PageDataset(sorted(Path(corpus_dir).glob("val_*.bin")), 4096, num_pages, seed=1)
+
+
 def wikitext_pages(tokenizer, page_len: int = 4096):
-    """WikiText-2 (raw) test set, joined and cut into non-overlapping pages of page_len tokens."""
+    """WikiText-2 (raw) test set, joined and cut into non-overlapping pages of page_len tokens.
+    Labels too, so the Trainer can score them during training (like PageDataset's pages)."""
     import numpy as np
     from datasets import load_dataset
     text = "\n\n".join(load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")["text"])
     ids = np.asarray(tokenizer(text, add_special_tokens=False)["input_ids"], dtype=np.int64)
-    return [{"input_ids": ids[s:s + page_len]} for s in range(0, len(ids) - page_len + 1, page_len)]
+    return [{"input_ids": ids[s:s + page_len], "labels": ids[s:s + page_len]}
+            for s in range(0, len(ids) - page_len + 1, page_len)]
 
 
 def report(name: str, loss: float) -> dict:
@@ -58,7 +67,7 @@ def main():
     from pathlib import Path
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    from training.cpt_financial.pretrain import MODEL, PageDataset
+    from training.cpt_financial.pretrain import MODEL
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default=MODEL, help="model name or local folder (e.g. a merged model)")
     ap.add_argument("--adapter", help="trained LoRA add-on folder ('after'); leave out for 'before'")
@@ -71,7 +80,7 @@ def main():
     if args.adapter:
         from peft import PeftModel
         model = PeftModel.from_pretrained(model, args.adapter)
-    check = PageDataset(sorted(Path(args.corpus_dir).glob("val_*.bin")), 4096, args.check_pages, seed=1)
+    check = check_pages(args.corpus_dir, args.check_pages)
     results = {"model": args.model, "adapter": args.adapter,
                "reading": [report("check pile (10-K)", mean_loss(model, check)),
                            report("WikiText-2 test", mean_loss(model, wikitext_pages(tok)))],

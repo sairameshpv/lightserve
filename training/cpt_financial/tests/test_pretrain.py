@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from training.cpt_financial.pretrain import PageDataset
 
@@ -45,3 +46,44 @@ def test_pages_read_counts_a_partial_last_update():
     from training.cpt_financial.pretrain import pages_read
     assert pages_read(382, 16, 6103) == 6103   # the real run: 381 full updates + one of 7 pages
     assert pages_read(20, 16, 6103) == 320     # the smoke run: 20 full updates
+
+
+def _checks(rule, domain, general):
+    """Feed made-up check scores to the stop rule one check at a time; the check it stopped at, or None."""
+    from transformers import TrainerControl, TrainerState
+    state, control = TrainerState(), TrainerControl()
+    for n, (d, g) in enumerate(zip(domain, general), 1):
+        state.log_history += [{"eval_domain_loss": d}, {"eval_general_loss": g}]
+        rule.on_evaluate(None, state, control)
+        if control.should_training_stop:
+            return n
+    return None
+
+
+def test_stop_rule_stops_when_either_loss_rises_three_checks_in_a_row():
+    pytest.importorskip("transformers")
+    from training.cpt_financial.pretrain import make_stop_on_rise_callback
+    rule = make_stop_on_rise_callback()
+    assert _checks(rule, [1.5, 1.4, 1.3, 1.2, 1.1], [2.0, 1.9, 1.9, 1.8, 1.8]) is None   # improving
+    assert _checks(rule, [1.5, 1.4, 1.3, 1.2], [1.9, 1.95, 2.0, 2.1]) == 4               # general (forgetting)
+    assert _checks(rule, [1.3, 1.31, 1.32, 1.33], [1.9] * 4) == 4                        # domain
+    assert _checks(rule, [1.3, 1.31, 1.32, 1.30, 1.31], [1.9] * 5) is None               # 2 rises, then a dip
+    assert _checks(rule, [1.3] * 6, [1.9] * 6) is None                                   # flat isn't rising
+
+
+def test_lora_config_scales_alpha_with_rank():
+    pytest.importorskip("peft")
+    from training.cpt_financial.pretrain import lora_config
+    assert (lora_config().r, lora_config().lora_alpha) == (16, 32)   # the old run, unchanged
+    big = lora_config(64)
+    assert (big.r, big.lora_alpha) == (64, 128) and len(big.target_modules) == 7
+
+
+def test_check_pages_come_only_from_the_held_out_files(tmp_path):
+    from training.cpt_financial.evaluate import check_pages
+    _files(tmp_path, [5000], base=0).pop().rename(tmp_path / "train_000.bin")        # study pile
+    _files(tmp_path, [5000], base=500_000).pop().rename(tmp_path / "val_000.bin")    # check pile
+    pages = check_pages(str(tmp_path), num_pages=5)
+    assert len(pages) == 5 and all(pages[i]["input_ids"].min() >= 500_000 for i in range(5))
+    again = check_pages(str(tmp_path), num_pages=5)                                  # fixed: seed 1
+    assert all((pages[i]["input_ids"] == again[i]["input_ids"]).all() for i in range(5))
