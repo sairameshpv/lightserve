@@ -142,6 +142,11 @@ def main():
     gpus = int(os.environ.get("WORLD_SIZE", 1))
     assert 16 % (2 * gpus) == 0, f"16 pages per update doesn't split over {gpus} GPUs"
     grad_accum = 16 // (2 * gpus)
+    # On --resume the trainer continues from the newest restart point; note its update, so the
+    # speed below counts only this session's pages (its clock covers only this session).
+    from transformers.trainer_utils import get_last_checkpoint
+    last = get_last_checkpoint(str(out)) if args.resume else None
+    start = int(last.rsplit("-", 1)[1]) if last else 0
     # The same pages evaluate.py scores before/after, so the curve lines up with those numbers.
     # Scoring doesn't change the weights, only adds time (~1-2 min per check).
     from transformers import AutoTokenizer
@@ -155,8 +160,8 @@ def main():
     # The trainer's own clock (training only): an outside timer once included 145 s of unexplained
     # set-up. Tokens = pages actually read by all GPUs: the last update can hold fewer pages.
     secs = next(h["train_runtime"] for h in reversed(trainer.state.log_history) if "train_runtime" in h)
-    tokens = pages_read(trainer.state.global_step, 16, len(pages)) * args.page_len
-    summary = {"updates": trainer.state.global_step, "stopped_early": 0 < trainer.state.global_step < trainer.state.max_steps,
+    tokens = (pages_read(trainer.state.global_step, 16, len(pages)) - pages_read(start, 16, len(pages))) * args.page_len
+    summary = {"updates": trainer.state.global_step, "resumed_from": start, "stopped_early": 0 < trainer.state.global_step < trainer.state.max_steps,
                "tokens": tokens, "seconds": round(secs, 1),
                "tokens_per_s": round(tokens / secs), "peak_gib": round(torch.cuda.max_memory_allocated() / 2**30, 1),
                "losses": [h["loss"] for h in trainer.state.log_history if "loss" in h]}
