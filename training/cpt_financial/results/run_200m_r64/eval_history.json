@@ -1,0 +1,84 @@
+{
+ "note": "10-K check pile (domain) and WikiText-2 test (general) loss every 250 updates; lower is better",
+ "best_model_checkpoint": "checkpoint-2750",
+ "checks": [
+  {
+   "update": 250,
+   "domain": 1.3066,
+   "general": 1.9082,
+   "learning_rate": 9.93727085166634e-05
+  },
+  {
+   "update": 500,
+   "domain": 1.2861,
+   "general": 1.9044,
+   "learning_rate": 9.555964723221258e-05
+  },
+  {
+   "update": 750,
+   "domain": 1.2727,
+   "general": 1.9062,
+   "learning_rate": 8.854058189270511e-05
+  },
+  {
+   "update": 1000,
+   "domain": 1.2595,
+   "general": 1.9052,
+   "learning_rate": 7.880943976290826e-05
+  },
+  {
+   "update": 1250,
+   "domain": 1.2487,
+   "general": 1.9029,
+   "learning_rate": 6.705099526544757e-05
+  },
+  {
+   "update": 1500,
+   "domain": 1.2406,
+   "general": 1.9028,
+   "learning_rate": 5.409268283035444e-05
+  },
+  {
+   "update": 1750,
+   "domain": 1.234,
+   "general": 1.9035,
+   "learning_rate": 4.084637084857254e-05
+  },
+  {
+   "update": 2000,
+   "domain": 1.2286,
+   "general": 1.903,
+   "learning_rate": 2.8244194060120498e-05
+  },
+  {
+   "update": 2250,
+   "domain": 1.226,
+   "general": 1.902,
+   "learning_rate": 1.7172959811868023e-05
+  },
+  {
+   "update": 2500,
+   "domain": 1.2248,
+   "general": 1.9018,
+   "learning_rate": 8.41174397579163e-06
+  },
+  {
+   "update": 2750,
+   "domain": 1.2245,
+   "general": 1.9018,
+   "learning_rate": 2.577067864150906e-06
+  },
+  {
+   "update": 3000,
+   "domain": 1.2245,
+   "general": 1.902,
+   "learning_rate": 7.951400798522635e-08
+  },
+  {
+   "update": 3052,
+   "domain": 1.2245,
+   "general": 1.9018,
+   "learning_rate": null
+  }
+ ]
+}

@@ -1,0 +1,38 @@
+{
+ "model": "meta-llama/Meta-Llama-3-8B-Instruct",
+ "adapter": "training/cpt_financial/outputs/run_200m_r64/adapter",
+ "reading": [
+  {
+   "set": "check pile (10-K)",
+   "loss": 1.2245,
+   "perplexity": 3.402
+  },
+  {
+   "set": "WikiText-2 test",
+   "loss": 1.902,
+   "perplexity": 6.699
+  }
+ ],
+ "answers": [
+  {
+   "question": "What is the difference between operating income and net income?",
+   "answer": "Operating income and net income are two important financial metrics used to assess a company's profitability. The key difference between the two is that operating income excludes certain expenses, while net income includes all expenses.\n\nOperating income is a measure of a company's profitability from its core operations, excluding certain items. It is calculated by deducting operating expenses, such as cost of goods sold, selling, general, and administrative expenses, and depreciation and amortization from revenue. Operating income is also known as earnings before interest and taxes (EBIT).\n\nNet income, on the other hand, is a comprehensive measure of a company"
+  },
+  {
+   "question": "A company's revenue grew from $120 million to $150 million. What was the growth rate?",
+   "answer": "A simple one!\n\nThe growth rate is the percentage change in revenue. To calculate it, you can use the formula:\n\nGrowth rate = (New value - Old value) / Old value \u00d7 100\n\nIn this case, the new value is $150 million and the old value is $120 million. Plugging in the numbers, you get:\n\nGrowth rate = ($150 million - $120 million) / $120 million \u00d7 100 = 25%\n\nSo, the company's revenue grew by 25%."
+  },
+  {
+   "question": "What is the capital of Australia?",
+   "answer": "The capital of Australia is Canberra."
+  },
+  {
+   "question": "Write a haiku about autumn.",
+   "answer": "Golden leaves fall slow\nNature's colorful farewell\nSummer's final sigh"
+  },
+  {
+   "question": "Give me three tips for a job interview.",
+   "answer": "Here are three tips for a job interview:\n\n1. **Prepare to talk about your achievements**: Instead of just listing your job responsibilities, prepare specific examples of how you've added value to your previous employers. For example, instead of saying \"I managed a team of 10 people,\" say \"I managed a team of 10 people and increased productivity by 25% through process improvements and employee training.\" This shows the interviewer that you're a results-driven professional who can make a positive impact on their organization.\n2. **Show enthusiasm and interest in the company**: Do your homework on the company before"
+  }
+ ]
+}
