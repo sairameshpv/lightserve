@@ -10,10 +10,11 @@ import math
 import random
 import time
 import urllib.request
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from training.qlora_financial.calculator import apply_calculator, calculate
 from training.qlora_financial.verify_finetune import (SEED, _NUMBER_RE, _SCALE, _SINGLE_NUMBER_RE, _final_answer,
                                                      numbers_match, parse_number)
 
@@ -216,6 +217,59 @@ def flip_examples(rows: list, per_step: int = 15):
                   f"  correct: {' | '.join(r['gold'].splitlines())[-150:]}\n  model:   {' | '.join(a.splitlines())[-150:]}")
 
 
+def gold_replay(questions: list) -> Counter:
+    """Calculator safety check: run it on the CORRECT reasoning of every
+    question; it should reproduce the correct answer (fair checker). Prints
+    each miss so it can be explained."""
+    counts = Counter()
+    for q in questions:
+        fixed = apply_calculator(q["gold"])
+        if calculate(q["gold"]) is None:
+            counts[q["source"], "not calculable"] += 1
+        elif match_variant(fixed, q["gold"], "fair"):
+            counts[q["source"], "reproduced"] += 1
+        else:
+            counts[q["source"], "MISSED"] += 1
+            print(f"MISSED id {q['id']} {q['source']}: {' | '.join(q['gold'].splitlines())[-120:]}  ->  {fixed.rsplit('Answer:', 1)[1]}")
+    for (src, kind), n in sorted(counts.items()):
+        print(f"{src:18} {kind:15} {n}")
+    return counts
+
+
+def with_calculator(rows: list) -> list:
+    """Copies of the rows with every answer's final number recomputed from
+    its own steps (sample_nums too, so majority votes see the new numbers)."""
+    return [{**r, "greedy": apply_calculator(r["greedy"]),
+             "samples": (s := [apply_calculator(a) for a in r["samples"]]),
+             "sample_nums": [parse_number(a) for a in s]} for r in rows]
+
+
+def calculator_report(rows: list, per_step: int = 15):
+    """Fair-checker results as written vs with the calculator, then why each
+    wrong greedy answer (FinQA/TAT-QA) was wrong: an arithmetic slip the
+    calculator fixes, a wrong method (calculable but still wrong), or no
+    calculable steps. Prints per_step random wrong-method examples."""
+    before, after = rescore(rows, "fair"), rescore(with_calculator(rows), "fair")
+    for name, rs in (("AS WRITTEN (fair checker)", before), ("WITH CALCULATOR (fair checker)", after)):
+        print(f"\n{name}", end="")
+        report(rs)
+    why, method = Counter(), []
+    for b, a in zip(before, after):
+        if b["source"] in ("FinQA", "TAT-QA") and not b["greedy_ok"]:
+            kind = ("arithmetic slip (fixed)" if a["greedy_ok"] else
+                    "wrong method (calculable)" if calculate(b["greedy"]) else "not calculable")
+            why[b["source"], kind] += 1
+            if kind.startswith("wrong method"):
+                method.append(b)
+    print("\nWhy greedy answers were wrong (fair checker):")
+    for (src, kind), n in sorted(why.items()):
+        print(f"  {src:7} {kind:28} {n}")
+    print(f"\n===== {per_step} random wrong-method answers =====")
+    for r in random.Random(SEED).sample(method, min(per_step, len(method))):
+        print(f"[id {r['id']} {r['source']}]\n  correct: {' | '.join(r['gold'].splitlines())[-150:]}"
+              f"\n  model:   {' | '.join(r['greedy'].splitlines())[-150:]}")
+
+
 def compare_old(rows: list, questions: list, old_path: Path) -> dict:
     """Setup check: vLLM greedy vs verify_finetune's HF greedy ("tuned")
     on the questions both scored, matched by question text + gold."""
@@ -246,6 +300,8 @@ def parse_args():
                     help="verify_finetune results to check the vLLM setup against (skipped if missing)")
     ap.add_argument("--checkers", action="store_true",
                     help="no server: re-score saved --out answers under each checker variant + show flipped examples")
+    ap.add_argument("--calculator", action="store_true",
+                    help="with --checkers: calculator safety check on the correct reasoning, then v2 with vs without it")
     return ap.parse_args()
 
 
@@ -255,8 +311,12 @@ def main():
     out = Path(args.out)
     if args.checkers:
         rows = [json.loads(line) for line in open(out)]
-        checker_table(rows)
-        flip_examples(rows)
+        if args.calculator:
+            gold_replay(questions)
+            calculator_report(rows)
+        else:
+            checker_table(rows)
+            flip_examples(rows)
         return
     run_all(args.url, questions, out, args.n_samples, args.temperature, args.concurrency)
     wanted = {q["id"] for q in questions}
