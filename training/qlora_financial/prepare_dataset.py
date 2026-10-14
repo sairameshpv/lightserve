@@ -162,7 +162,32 @@ def load_financial_qa_10k() -> list:
     return out
 
 
-def load_convfinqa() -> list:
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def load_convfinqa_programs(path: str) -> dict:
+    """Original ConvFinQA train_turn.json (github.com/czyssrs/ConvFinQA,
+    the same 11,104 turns FinGPT reformatted, minus programs): the turn's
+    questions so far -> [(pre_text, cur_program), ...]."""
+    programs = {}
+    for turn in json.load(open(path)):
+        a = turn["annotation"]
+        programs.setdefault(tuple(_norm(q) for q in a["cur_dial"]), []).append(
+            (_norm(" ".join(turn["pre_text"]))[:200], a["cur_program"]))
+    return programs
+
+
+def _convfinqa_program(user: str, programs: dict):
+    """This turn's program, matched by its questions (and the document text
+    if several conversations ask the same questions); None if no match or
+    the candidates disagree. Measured: 11,080 of 11,082 rows match."""
+    cands = programs.get(tuple(_norm(q) for q in re.findall(r"^Question: (.*)$", user, flags=re.M)), [])
+    cands = [p for pre, p in cands if pre in _norm(user)] or [p for _, p in cands]
+    return cands[0] if cands and len(set(cands)) == 1 else None
+
+
+def load_convfinqa(programs: dict = None) -> list:
     from datasets import load_dataset
     ds = load_dataset("FinGPT/fingpt-convfinqa", split="train")
     first = ds[0]
@@ -175,8 +200,10 @@ def load_convfinqa() -> list:
         # One row per conversation turn; later turns repeat the same
         # document, so the document text (before the Q/A history) is the group.
         doc = row["input"].split("\nQuestion:")[0]
-        # Output stays a bare number, as-is -- see module docstring.
-        out.append(_make_example(user, str(row["output"]), "ConvFinQA",
+        # Output stays a bare number, as-is -- see module docstring -- unless
+        # `programs` is given: then calculation turns get FinQA-style steps.
+        steps = _program_to_steps(_convfinqa_program(user, programs)) if programs else None
+        out.append(_make_example(user, _format_answer_with_steps(steps, row["output"]), "ConvFinQA",
                                  f"ConvFinQA:{_text_key(doc)}"))
     return out
 
@@ -422,11 +449,14 @@ def main():
     ap.add_argument("--tokenizer", default="meta-llama/Meta-Llama-3-8B-Instruct")
     ap.add_argument("--max-seq-len", type=int, default=2048)
     ap.add_argument("--seed", type=int, default=SEED)
+    ap.add_argument("--convfinqa-steps", metavar="TRAIN_TURN_JSON",
+                    help="original ConvFinQA train_turn.json: give calculation turns Step lines (default: bare numbers)")
     args = ap.parse_args()
+    programs = load_convfinqa_programs(args.convfinqa_steps) if args.convfinqa_steps else None
 
     loaders = {
         "financial-qa-10K": load_financial_qa_10k,
-        "ConvFinQA": load_convfinqa,
+        "ConvFinQA": lambda: load_convfinqa(programs),
         "FinQA": load_finqa,
         "TAT-QA": load_tatqa,
     }
