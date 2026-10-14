@@ -19,6 +19,10 @@ epoch, with no sign of memorizing. It isn't a solved problem: the
 fine-tuned model still makes arithmetic slips and can give a short,
 confident, invented answer (see *Reading this*). A profiling-driven **v2**
 retrain trained **38% faster (3h00m vs. 4h52m) at the same accuracy** (see *v2*).
+A later check on all 1,404 numeric test questions found the "within 1%" scorer flattering:
+it accepts real arithmetic slips. Under a fairer scorer v2 gets **60.5%**, and a calculator
+that redoes v2's own written steps brings it to **73.8%** with no training (see *How good is
+v2, really?*). The comparisons above still hold, since every column used the same scorer.
 
 ## Data
 
@@ -190,22 +194,158 @@ eval loss started worse (0.842 vs. 0.596 at step 250), because `group_by_length`
 longest batches first, then finished lower. Its "original" column uses the bf16 base (32.0%) vs.
 v1's 4-bit base (31.5%), nearly identical. Numbers: `profiling/v2_full_run.json`.
 
+## How good is v2, really?
+
+The 74.5% / 75.0% above come from one answer per question, on 200 questions, scored
+"within 1%". This section scores v2 on **all 1,404** numeric test questions, with 17
+answers each. It finds that the 1% rule flatters v2 (the **fair** score is **60.5%**),
+and that a calculator redoing v2's own written steps recovers most of it (**73.8%**),
+with no training. The comparisons above (original vs. fine-tuned, v1 vs. v2) still
+hold, because every column used the same rule; it's their absolute level that was high.
+
+### Measuring room to improve (`sample_eval.py`)
+
+Before trying reinforcement learning (GRPO, rewarding correct answers), check that there's
+something to reinforce: GRPO can only strengthen answers the model *sometimes* gets right.
+So each question gets 1 greedy answer (the usual score) plus 16 sampled ones (temperature 0.7):
+- **pass@8**: chance at least one of 8 samples is right (unbiased estimate from 16);
+- **maj@8**: the most common number among 8 samples is right (averaged over 100 draws);
+- **always / sometimes / never**: right in 16, 1–15, or 0 of the 16 samples.
+
+v2 is served by vLLM 0.26.0 with the LoRA adapter on the bf16 base (how v2 was trained),
+on one L40S. 1,404 × 17 = 23,868 answers took **165 s**: answers are short (median 14
+characters), vLLM batches hundreds at once, and the 16 samples share one read of the prompt
+(prefix caching). **Setup check**: on the 200 questions `verify_finetune.py` scored, vLLM
+greedy gets 74.5% vs. the earlier 75.0% (2 questions right only before, 1 only now): the
+same model, small engine-level differences.
+
+| Dataset (official 1% checker) | n | greedy | sampled | pass@8 | maj@8 | always | sometimes | never |
+|---|---|---|---|---|---|---|---|---|
+| ConvFinQA | 579 | 84.3% | 82.0% | 88.4% | 84.0% | 67.4% | 22.1% | 10.5% |
+| FinQA | 324 | 66.0% | 57.8% | 75.7% | 63.2% | 30.6% | 48.5% | 21.0% |
+| TAT-QA | 452 | 61.9% | 58.0% | 77.1% | 60.4% | 34.1% | 47.3% | 18.6% |
+| financial-qa-10K | 49 | 98.0% | 93.5% | 100.0% | 99.0% | 59.2% | 40.8% | 0.0% |
+| **All** | **1,404** | **73.4%** | 69.1% | **82.2%** | 72.1% | 47.9% | 37.0% | 15.2% |
+
+73.4% on all 1,404 is the better estimate of v2's official score than 75.0% on 200. Room
+(pass@8 − greedy) is **+8.9 points**, mostly TAT-QA (+15.2) and FinQA (+9.7). **Majority
+voting doesn't help**: maj@8 is below greedy. v2's single most likely answer is already its best.
+
+### The 1% checker was too lenient (`--checkers`)
+
+Reading the trial answers turned up checker mistakes in both directions. "Within 1%" accepts
+**2019 for 2018** (0.05% apart) and **0.7168 for 151/211 = 0.71564** (a real slip, 0.2%
+off). It also rejects `782 thousand` for a stored `782`, because it multiplies the scale out.
+So `sample_eval.py --checkers` re-scores the saved answers under checker variants, each adding
+one change to the one before, and prints 15 random answers each step flips:
+
+| Checker (all 1,404) | greedy | sampled | pass@8 | room | maj@8 | always | sometimes | never | answers flipped |
+|---|---|---|---|---|---|---|---|---|---|
+| official: within 1% | 73.4% | 69.1% | 82.2% | +8.9 | 72.1% | 47.9% | 37.0% | 15.2% | |
+| + **years**: a year must match exactly | 73.1% | 68.9% | 82.2% | +9.1 | 71.9% | 47.3% | 37.5% | 15.2% | 47 |
+| + **scale**: forgive an added/dropped scale word | 75.4% | 71.3% | 83.4% | +8.0 | 74.2% | 50.5% | 35.1% | 14.4% | 565 |
+| + **fair**: within 0.1%, or honest rounding | **60.5%** | 57.0% | **75.9%** | **+15.3** | 59.2% | 36.0% | 43.7% | 20.4% | 3,494 |
+
+What reading the flipped examples showed:
+- **years**: all 15 were real mistakes, e.g. 2018 for 2017, sometimes with an invented
+  justification (`compare 7.1>5.1`) for the wrong year.
+- **scale**: adding or dropping a word is fair (`782 thousand` for `782`), but *swapping* one
+  is 1,000× off (`-40 million` for `-40 thousand`): 171 such answers, so only one-sided
+  differences are forgiven.
+- **fair**: in the 0.1–1% band, **14 of 15 were real arithmetic slips**, and 1 was honest
+  rounding (`39.34 percent` for `39.3 percent`). v2 picks the right operation and numbers,
+  then slips at the 3rd–4th digit doing division in its head (`divide 662.3 and 7.3`: 90.516
+  vs. 90.726). "Honest rounding" means the *stored* answer was rounded and v2 gave at least as
+  many digits (`0.79 percent` for `0.8 percent`); a *coarser* answer must still be within
+  0.1%. Two bugs in the first version were caught by reading what it accepted: `-1.0` for
+  `0.0` (−1.0 ÷ 100 rounded to 0.0), and `$0` for `$2.0 million` (rounding the precise stored
+  answer to the model's coarse one). Both have tests.
+
+Under **fair**, v2 scores **60.5%** and the room is **+15.3** points (43.7% of questions
+"sometimes" right). The official checker stays as it is in `verify_finetune.py`; fair is a
+judgment call, shown alongside it rather than replacing it.
+
+### A calculator does the arithmetic (`calculator.py`, `--checkers --calculator`)
+
+v2 writes its method in the training format, so a program can redo the maths exactly and
+replace the final number, keeping v2's unit word:
+- **FinQA** steps (all 324 answers have them): `add / subtract / multiply / divide / raise to
+  the power of X and Y`, chained through `the result of step N`; `6.625%` means 0.06625, as in
+  FinQA's programs. Other steps (`take the max of ...`) are left alone.
+- **TAT-QA** `compute` formulas (281 of 452 greedy answers; 29 more are count / compare
+  steps, left alone): evaluated by walking the parsed syntax tree, allowing only numbers,
+  `+ - * /` and brackets, so text is never run as code. `(14,299)` is an accounting
+  negative. A ratio reported as `39.3 percent` is ×100.
+- **ConvFinQA and 10-K answers have no steps** (trained as bare numbers or sentences), so they
+  are unchanged.
+
+**Safety check first**: run on the *correct* reasoning of every test question, it reproduces
+the stored answer for **310 of 310** calculable FinQA and **272 of 275** TAT-QA questions. The
+3 misses are stored answers with float noise from rounding: `0.30000000000000004` for
+68,903 / 226,067 = 0.30479 (and 0.69, 0.83 likewise). The calculator is right, and those 3
+questions can't be scored under fair.
+
+| Fair checker | n | greedy as written | greedy with calculator | pass@8 with calc. | room left |
+|---|---|---|---|---|---|
+| ConvFinQA | 579 | 69.3% | 69.3% (no steps) | 82.8% | **+13.5** |
+| FinQA | 324 | 42.0% | **74.7% (+32.7)** | 80.4% | +5.7 |
+| TAT-QA | 452 | 58.6% | **76.3% (+17.7)** | 85.5% | +9.2 |
+| financial-qa-10K | 49 | 98.0% | 98.0% (no steps) | 100.0% | +2.0 |
+| **All** | **1,404** | **60.5%** | **73.8% (+13.2)** | 83.7% | +9.9 |
+
+With the calculator, maj@8 (72.8%) is still below greedy. Why v2's wrong greedy answers were wrong:
+
+| | FinQA | TAT-QA |
+|---|---|---|
+| Arithmetic slip: the calculator fixes it | **107** | **80** |
+| Wrong method: calculable, still wrong | 80 | 50 |
+| No calculable steps (count / compare / no formula) | 1 | 57 |
+
+Reading 15 random wrong-method answers: 6 used **the wrong numbers from the table** (another
+row or year), 3 **subtracted in the wrong order** (`108-437` for `437-108`), 3 used **the wrong
+formula** (% change for a percentage-point difference), 1 added an extra item, 1 looped
+(`add ... and 4` ten times), and 1 was one of the 3 float-noise questions above, so it was really
+right. What's left is mostly *reading the table*, not arithmetic.
+
+**Limits of this measurement**: one sampling run (temperature 0.7, no fixed seed, because
+whether vLLM gives `n=16` distinct samples under one seed wasn't verified), so sampled figures
+would shift slightly on a rerun; greedy ones should barely move (vLLM batching can still flip
+a borderline token). The fair checker is a judgment call, backed by reading 15 examples per
+step, which is a small sample. The calculator was applied
+offline to saved answers, not yet in serving, and only to the final number: it can't fix a
+wrong method, and v2 might write different steps if it knew a calculator would run them. The
+3 float-noise questions count as wrong under fair whatever the model says. Numeric questions
+only, as before.
+
 ## What's next
 
 - **Throughput**: *done for 1 GPU*. Batching + length grouping, bf16 base and
   adapters, and Liger brought training to 3h00m (−38%, see *v2*). Still open:
   turning off gradient checkpointing (~22 of 46 GB used) and 2-GPU data
   parallel, measured against v2 as the new 1-GPU baseline.
-- **Evaluation v2**: serve the adapter through vLLM (`--enable-lora`) and
-  compare both models with promptfoo; an MLflow LLM judge for the sentence
+- **Evaluation v2**: serving the adapter through vLLM (`--enable-lora`) is
+  *done* for sampling (see *How good is v2, really?*). Still open: compare
+  both models with promptfoo; an MLflow LLM judge for the sentence
   answers; the datasets' official test sets via FinBen, which were never used
   here; a general-ability check such as an MMLU subset, for forgetting.
-- **Scorer fixes**: treat a matching number with a scale word
-  (`782 thousand` vs `782`) as correct, and add the lenient any-number
-  score to `verify_finetune.py` itself (for this README it was computed
-  separately, from `verify_results.jsonl`).
-- **Arithmetic**: a calculator or tool step, so the model emits the
-  formula and the result is computed exactly.
+- **Scorer fixes**: *measured* with the checker variants in `sample_eval.py`
+  (scale words, exact years, 0.1% or honest rounding). Still open: making
+  the fair checker part of `verify_finetune.py` itself, and the lenient
+  any-number score (for this README computed separately, from
+  `verify_results.jsonl`).
+- **Arithmetic**: *measured*: the calculator lifts v2 from 60.5% to 73.8%
+  (fair checker) on saved answers. Still open: running it at serving time.
+- **ConvFinQA steps**: the biggest gap left (+13.5 room) is in ConvFinQA,
+  whose answers were trained as bare numbers, so the calculator can't
+  reach them. The FinGPT copy used here has no calculation programs
+  (instruction / input / output only); the original ConvFinQA release has
+  one per turn. Switching to it means re-checking the document split (see
+  *Data*), then rendering programs as `Step N:` lines like FinQA's and
+  retraining (~3h with v2's settings).
+- **GRPO** (reward = the fair checker, with the calculator applied): aimed
+  at the method mistakes that remain (wrong table cell, reversed
+  subtraction, wrong formula). The room after the calculator is +9.9
+  overall but only +5.7 on FinQA, so it's a weaker case than before.
 - **Serving on lightserve**: merge the adapter into bf16 weights
   (`merge_and_unload()`), then load it with lightserve's own loader.
   lightserve has no LoRA or 4-bit support today.
@@ -218,8 +358,31 @@ v1's 4-bit base (31.5%), nearly identical. Numbers: `profiling/v2_full_run.json`
   saves the adapter and prints peak memory.
 - `verify_finetune.py`: original vs fine-tuned on `test.jsonl`, readable
   side-by-side plus number-scored, writes `verify_results.jsonl`.
+- `sample_eval.py`: greedy + 16 sampled answers per numeric test question
+  from a vLLM server (resumes after a crash, `--limit` for a trial run),
+  pass@8 / maj@8 / buckets, setup check vs. `verify_results.jsonl`, writes
+  `outputs/v2/samples.jsonl` + `sample_eval_summary.json`. `--checkers`
+  re-scores the saved answers under the checker variants; with
+  `--calculator`, the calculator safety check and v2 with vs. without it.
+  No server needed for either.
+- `calculator.py`: exact arithmetic for v2's written FinQA steps and
+  TAT-QA formulas (`apply_calculator`).
+- `tests/`: the scoring and calculator logic, Mac-only
+  (`python -m pytest training/qlora_financial/tests/` from the repo root).
 - `requirements.txt`: dependency floors; on a CUDA 12.8 driver, install
   torch from the cu128 index (see *Setup*).
+
+Sampling run (on the node, default `vllm-server` stopped first):
+```
+docker run -d --name vllm-lora --gpus all --shm-size 32g --ipc=host \
+  -v /root/.cache/huggingface:/root/.cache/huggingface \
+  -v <repo>/training/qlora_financial/outputs/v2/adapter:/adapters/v2:ro \
+  -p 8000:8000 vllm/vllm-openai:latest --model meta-llama/Meta-Llama-3-8B-Instruct \
+  --enable-lora --lora-modules v2=/adapters/v2 --max-lora-rank 16 --enable-prefix-caching
+python3 -m training.qlora_financial.sample_eval --limit 20   # trial
+python3 -m training.qlora_financial.sample_eval              # all 1,404 (~3 min)
+python3 -m training.qlora_financial.sample_eval --checkers [--calculator]   # anywhere, no GPU
+```
 
 Not committed (`.gitignore`): `data/` (regenerated identically by
 `prepare_dataset.py`, fixed seed) and `outputs/` (the adapter, checkpoints,
