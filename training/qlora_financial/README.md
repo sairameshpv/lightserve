@@ -23,6 +23,8 @@ A later check on all 1,404 numeric test questions found the "within 1%" scorer f
 it accepts real arithmetic slips. Under a fairer scorer v2 gets **60.5%**, and a calculator
 that redoes v2's own written steps brings it to **73.8%** with no training (see *How good is
 v2, really?*). The comparisons above still hold, since every column used the same scorer.
+**v3** retrains v2 with ConvFinQA answers written as steps too, so the calculator can redo
+them: v3 + calculator reaches **81.2%** (fair), ConvFinQA 69.3% → 86.5% (see *v3*).
 
 ## Data
 
@@ -32,7 +34,7 @@ splits only, into one chat format (system / user / assistant):
 | Source | Examples | Target format |
 |---|---|---|
 | `virattt/financial-qa-10K` | 7,000 | full-sentence answer, as-is |
-| `FinGPT/fingpt-convfinqa` | 11,104 | bare number (e.g. `206588.0`), kept as-is; rewriting it as a sentence would mean inventing text |
+| `FinGPT/fingpt-convfinqa` | 11,104 | bare number (e.g. `206588.0`), kept as-is; rewriting it as a sentence would mean inventing text. Opt-in `--convfinqa-steps`: calculation turns get `Step N:` lines from the original release's programs (see *v3*) |
 | FinQA (`wandb/finqa-data-processed`) | 6,624 | gold `program` rendered as `Step N: ...` lines, then `Answer: X` |
 | `next-tat/TAT-QA` | 13,251 | step chosen by `answer_type`: compute (arithmetic), count (`##` items), compare (`a > b`); annotator notes like "locate and analyze ... in row 4" dropped (answer only) |
 
@@ -317,6 +319,85 @@ wrong method, and v2 might write different steps if it knew a calculator would r
 3 float-noise questions count as wrong under fair whatever the model says. Numeric questions
 only, as before.
 
+## v3: ConvFinQA with steps
+
+After the calculator, ConvFinQA had the most room left (+13.5), because its answers were
+trained as bare numbers, so v2 did that arithmetic in its head and the calculator had nothing
+to redo. v3 retrains v2 with one change: ConvFinQA *calculation* turns now get `Step N:` lines
+like FinQA's.
+
+**Getting the steps** (`prepare_dataset.py --convfinqa-steps`). The FinGPT copy has no
+calculation programs. The original ConvFinQA release (github.com/czyssrs/ConvFinQA, MIT) has
+one per turn, and its `train_turn.json` has the same 11,104 turns. Rather than switch sources,
+which would reshuffle the split and make every earlier number incomparable, each existing row
+is matched to its original turn by the conversation's questions (document text breaks ties).
+That matches 11,080 of 11,082 rows, and every matched answer agrees. Calculation turns (`cur_type
+== program_turn`, 65%) are rendered with FinQA's own `_program_to_steps`; look-up turns
+(`181001`) stay bare numbers. Checked before training:
+- without the flag, `train/val/test.jsonl` are byte-for-byte unchanged;
+- with it, the same rows land in the same splits with the same prompts and groups, and only
+  7,186 ConvFinQA answers change, all keeping their final answer;
+- the longest example is 3,199 tokens (limit 3,200);
+- the calculator reproduces 378 of 378 calculable ConvFinQA test answers from their steps.
+
+**Training**: v2's exact command plus `--data-dir`, on the same L40S: ≈10,770 s (2h59m) vs.
+v2's 10,825 s, peak 21.7 GiB. Final eval loss 0.327, token accuracy 91.7%. These aren't
+comparable to v2's 0.425 / 89.6%: the step wording ("Step 1: subtract … and …") is easy to
+predict and pulls the average down.
+
+**Results** on the same 1,404 questions, scored as in *How good is v2, really?* (vLLM, greedy +
+16 samples, 220 s). Fair checker, greedy (pass@8):
+
+| Dataset | v2 | v3 | v2 + calculator | **v3 + calculator** |
+|---|---|---|---|---|
+| ConvFinQA | 69.3% (82.8) | 73.7% (87.8) | 69.3% (82.8) | **86.5% (91.5)** |
+| FinQA | 42.0% (62.6) | 42.0% (65.2) | 74.7% (80.4) | 73.8% (82.2) |
+| TAT-QA | 58.6% (73.8) | 60.2% (73.7) | 76.3% (85.5) | 77.9% (85.1) |
+| financial-qa-10K | 98.0% (100.0) | 98.0% (99.8) | 98.0% (100.0) | 98.0% (99.8) |
+| **All** | **60.5%** (75.9) | **62.9%** (78.5) | **73.8%** (83.7) | **81.2%** (87.6) |
+
+Under the official 1% checker, v3 greedy is 74.1% vs. v2's 73.4% (ConvFinQA 87.4% vs. 84.3%):
+that checker already forgave most of the slips the calculator fixes, so it hides most of the gain.
+
+**Same questions, both models** (greedy, with the calculator):
+
+| Dataset | right only with v2 | right only with v3 | sign test p |
+|---|---|---|---|
+| ConvFinQA | 22 | **122** | 5e-18 |
+| FinQA | 15 | 12 | 0.70 |
+| TAT-QA | 10 | 17 | 0.25 |
+| **All** | 47 | **151** | 6e-14 |
+
+So v3 + calculator is **+7.4 points** overall, all of it from ConvFinQA (+17.3); FinQA and TAT-QA,
+whose data didn't change, didn't change. v3 writes steps on 376 of 579 ConvFinQA answers (378
+are calculation turns), and writing steps alone already helps a little: ConvFinQA 69.3% → 73.7%
+without the calculator. With v3 + calculator, room (pass@8 − greedy) is down to **+6.4**
+(+15.3 for v2 without it), "never right" to 11.0%, and maj@8 (81.1%) still doesn't beat greedy.
+
+**The 22 ConvFinQA questions v3 lost** (right with v2 + calculator, wrong with v3 + calculator), read one by one:
+
+| What went wrong | n | Example |
+|---|---|---|
+| **Right answer, wrong steps: the calculator overwrote it** | 8 | `divide 243.0 and 247.1` (should be 235.5) but `Answer: -0.04694`, which is correct; recomputed from the steps: −0.01659 |
+| Wrong number from the table | 8 | `add 81 and 64` for capex 2015 + 2016 (should be 90); 95.7 (the January 1, 2007 balance) for the year-end 2007 balance of 135.2 |
+| Subtracted in the wrong order | 2 | `subtract 2.84 and 4.40` → −1.56 for 1.56 |
+| Look-up turned into a calculation | 2 | "last year with S&P data?" (2013) → `subtract 2013 and 2008` = 5 |
+| Missed a unit step | 1 | `15.5` for 15.5 billion |
+| Arguably right | 1 | computed 34.4%; the stored answer is 34.0, apparently rounded in the source |
+
+The first row is new: v3's final number isn't always derived from its own steps. In a
+conversation, earlier turns' answers sit in the prompt, so it can sometimes "know" the number
+while writing sloppy steps, and then the calculator trusts the steps. It's still a large net
+win: on ConvFinQA the calculator **fixed 84 greedy answers and broke 10** (on v2: 187 fixed, 1
+broken, all FinQA/TAT-QA). 3 of the 22 also show a notation mix-up: `subtract 100 and 5%` where
+the data means 5, which the calculator reads as 0.05. That's the training data's own convention
+(`divide 8% and 100` → 0.0008), so it's v3's mistake, not the calculator's.
+
+**Limits**: one training run and one seed; one sampling run (temperature 0.7, no seed); the 22
+were read once by one reader. v3 was served under the label `v2` because `sample_eval.py`
+requests that model name; the adapter files were v3's. The calculator is still applied offline,
+to saved answers.
+
 ## What's next
 
 - **Throughput**: *done for 1 GPU*. Batching + length grouping, bf16 base and
@@ -335,17 +416,18 @@ only, as before.
   `verify_results.jsonl`).
 - **Arithmetic**: *measured*: the calculator lifts v2 from 60.5% to 73.8%
   (fair checker) on saved answers. Still open: running it at serving time.
-- **ConvFinQA steps**: the biggest gap left (+13.5 room) is in ConvFinQA,
-  whose answers were trained as bare numbers, so the calculator can't
-  reach them. The FinGPT copy used here has no calculation programs
-  (instruction / input / output only); the original ConvFinQA release has
-  one per turn. Switching to it means re-checking the document split (see
-  *Data*), then rendering programs as `Step N:` lines like FinQA's and
-  retraining (~3h with v2's settings).
+- **ConvFinQA steps**: *done* (see *v3*): matched to the original release's
+  programs without moving the split; v3 + calculator 81.2% (fair).
+- **Answer vs. calculator disagreement** (unmeasured idea): v3 sometimes
+  writes a right answer with wrong steps, and the calculator then breaks it
+  (10 of 94 ConvFinQA changes). When the model's own number and the
+  recomputed one disagree, that could flag low confidence or trigger a
+  second attempt instead of always trusting the steps.
 - **GRPO** (reward = the fair checker, with the calculator applied): aimed
   at the method mistakes that remain (wrong table cell, reversed
-  subtraction, wrong formula). The room after the calculator is +9.9
-  overall but only +5.7 on FinQA, so it's a weaker case than before.
+  subtraction, look-up vs. calculation, steps that don't match the
+  answer). Room with v3 + calculator is only **+6.4** overall, so it's a
+  weaker case than ever; v3 would be the starting model.
 - **Serving on lightserve**: merge the adapter into bf16 weights
   (`merge_and_unload()`), then load it with lightserve's own loader.
   lightserve has no LoRA or 4-bit support today.
@@ -382,6 +464,16 @@ docker run -d --name vllm-lora --gpus all --shm-size 32g --ipc=host \
 python3 -m training.qlora_financial.sample_eval --limit 20   # trial
 python3 -m training.qlora_financial.sample_eval              # all 1,404 (~3 min)
 python3 -m training.qlora_financial.sample_eval --checkers [--calculator]   # anywhere, no GPU
+```
+
+v3 (original ConvFinQA `data.zip` from github.com/czyssrs/ConvFinQA, unzipped under
+`data/convfinqa_original/`, gitignored):
+```
+python3 -m training.qlora_financial.prepare_dataset --out-dir <data_v3> \
+  --convfinqa-steps training/qlora_financial/data/convfinqa_original/data/train_turn.json
+train --run-name v3 --data-dir <data_v3> --bf16-base --bf16-adapters --batch-size 4 --grad-accum 4 --group-by-length --liger
+python3 -m training.qlora_financial.sample_eval --data-dir <data_v3> --out training/qlora_financial/outputs/v3/samples.jsonl
+python3 -m training.qlora_financial.sample_eval --data-dir <data_v3> --out training/qlora_financial/outputs/v3/samples.jsonl --checkers --calculator
 ```
 
 Not committed (`.gitignore`): `data/` (regenerated identically by
