@@ -1,0 +1,75 @@
+OpenRLHF v0.11.2 (17fd4a7) patch: LoRA weight sync to vLLM.
+
+Upstream broadcast_to_vllm sends the PEFT parameter names
+(base_model.model...base_layer.weight, lora_A, lora_B), which vLLM
+rejects ("no module or parameter named 'base_model'"), so any LoRA run
+with vLLM rollouts fails at the first weight sync. Still unfixed on
+upstream main (dc2a7ad, 2026-09-17). This sends W + scale * B @ A under
+the base names and skips the LoRA params.
+
+Status: runs end to end (tiny GRPO, 2 steps). Correctness of the synced
+weights is NOT yet confirmed -- the first check was too weak to tell.
+
+Apply in an OpenRLHF v0.11.2 checkout:  git apply openrlhf_lora_sync.patch
+(or mount the patched ppo_actor.py over the installed copy).
+
+diff --git a/openrlhf/trainer/ray/ppo_actor.py b/openrlhf/trainer/ray/ppo_actor.py
+index 05d8fd0..7770f60 100644
+--- a/openrlhf/trainer/ray/ppo_actor.py
++++ b/openrlhf/trainer/ray/ppo_actor.py
+@@ -8,6 +8,7 @@ import deepspeed
+ import ray
+ import torch
+ import torch.distributed
++from peft import PeftModel
+ from torch.optim import Optimizer
+ from torch.utils.data import DataLoader
+ from tqdm import tqdm
+@@ -422,7 +423,7 @@ class ActorPPOTrainer(ABC):
+             use_ray = getattr(self.strategy.args.vllm, "sync_with_ray", False)
+             # Fire all vllm engines for broadcast
+             if torch.distributed.get_rank() == 0:
+-                shape = param.shape if self.strategy.args.ds.zero_stage != 3 else param.ds_shape
++                shape = getattr(param, "ds_shape", param.shape)  # merged LoRA weights are plain tensors
+                 refs = [
+                     engine.update_weight.remote(name, dtype=param.dtype, shape=shape, empty_cache=count == num_params)
+                     for engine in self.vllm_engines
+@@ -451,7 +452,7 @@ class ActorPPOTrainer(ABC):
+                 for d in ipc_handle_list:
+                     ipc_handles.update(d)
+ 
+-                shape = param.shape if self.strategy.args.ds.zero_stage != 3 else param.ds_shape
++                shape = getattr(param, "ds_shape", param.shape)  # merged LoRA weights are plain tensors
+                 refs = [
+                     engine.update_weight_cuda_ipc.remote(
+                         name,
+@@ -477,12 +478,26 @@ class ActorPPOTrainer(ABC):
+         params_to_sync = [
+             (n, p) for n, p in model.named_parameters() if p.requires_grad or not getattr(self.actor, "is_vlm", False)
+         ]
++        # LoRA: vLLM only knows the base model's names, so send W + scale * B @ A
++        # under them and skip the LoRA params (upstream sends PEFT names and fails).
++        lora = isinstance(model, PeftModel)
++        if lora:
++            params_to_sync = [(n, p) for n, p in params_to_sync if ".lora_" not in n]
++        modules = dict(model.named_modules()) if lora else {}
+         num_params = len(params_to_sync)
+ 
+-        for name, param in params_to_sync:
++        for pname, param in params_to_sync:
+             count += 1  # empty_cache at last param
+-            with _gather_params_ctx(param):
+-                sync_fn(param, count, num_params)
++            name = pname.replace("base_model.model.", "", 1).replace(".base_layer.", ".") if lora else pname
++            mod = modules.get(pname[: -len(".base_layer.weight")]) if pname.endswith(".base_layer.weight") else None
++            if mod is None:
++                with _gather_params_ctx(param):
++                    sync_fn(param, count, num_params)
++                continue
++            A, B = mod.lora_A["default"].weight, mod.lora_B["default"].weight
++            with deepspeed.zero.GatheredParameters([param, A, B], enabled=self.strategy.args.ds.zero_stage == 3):
++                delta = (B.data.float() @ A.data.float()) * mod.scaling["default"]
++                sync_fn((param.data.float() + delta).to(param.dtype), count, num_params)
+ 
+         if cache_reset_refs:
+             ray.get(cache_reset_refs)
