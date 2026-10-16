@@ -1,18 +1,53 @@
-OpenRLHF v0.11.2 (17fd4a7) patch: LoRA weight sync to vLLM.
+OpenRLHF v0.11.2 (17fd4a7) patches for the PPO / GRPO comparison.
 
-Upstream broadcast_to_vllm sends the PEFT parameter names
-(base_model.model...base_layer.weight, lora_A, lora_B), which vLLM
-rejects ("no module or parameter named 'base_model'"), so any LoRA run
-with vLLM rollouts fails at the first weight sync. Still unfixed on
-upstream main (dc2a7ad, 2026-09-17). This sends W + scale * B @ A under
-the base names and skips the LoRA params.
+1. LoRA weight sync to vLLM (openrlhf/trainer/ray/ppo_actor.py).
+   Upstream broadcast_to_vllm sends the PEFT parameter names
+   (base_model.model...base_layer.weight, lora_A, lora_B), which vLLM
+   rejects ("no module or parameter named 'base_model'"), so any LoRA run
+   with vLLM rollouts fails at the first weight sync. Still unfixed on
+   upstream main (dc2a7ad, 2026-09-17). This sends W + scale * B @ A under
+   the base names and skips the LoRA params.
+   Checked: tiny GRPO at lr 2e-3 -- step-2 kl (policy vs v3) 0.054 while
+   vllm_kl (vLLM vs policy) 8.7e-5, the same as before any update.
 
-Status: runs end to end (tiny GRPO, 2 steps). Correctness of the synced
-weights is NOT yet confirmed -- the first check was too weak to tell.
+2. --train.critic_own_gpu (openrlhf/cli/train_ppo_ray.py).
+   With --train.colocate_all the critic always shares the policy's GPU;
+   with LoRA, DeepSpeed's sleep leaves each model's frozen 16 GB base on
+   the GPU, so policy + critic + vLLM (~53 GB) don't fit one 46 GB L40S.
+   The flag creates the critic outside the colocated placement group, so
+   Ray puts it on a free GPU (here: a second node).
+   Checked: tiny PPO on 2 GPUs (peaks 43.8 / 20.7 GB); at lr 2e-3 the
+   KL penalty works (step-2 kl 0.034, return below reward).
 
-Apply in an OpenRLHF v0.11.2 checkout:  git apply openrlhf_lora_sync.patch
-(or mount the patched ppo_actor.py over the installed copy).
+Apply in an OpenRLHF v0.11.2 checkout:  git apply openrlhf_patches.patch
+(or mount the patched files over the installed copies).
 
+diff --git a/openrlhf/cli/train_ppo_ray.py b/openrlhf/cli/train_ppo_ray.py
+index 260e2f2..6443048 100644
+--- a/openrlhf/cli/train_ppo_ray.py
++++ b/openrlhf/cli/train_ppo_ray.py
+@@ -102,7 +102,7 @@ def train(args):
+     else:
+         ref_model = None
+ 
+-    if not args.train.colocate_all:
++    if not args.train.colocate_all or args.train.critic_own_gpu:  # critic off the colocated GPU
+         pg = None
+ 
+     # if colocated, create placement group for critic and reward model explicitly.
+@@ -226,6 +226,12 @@ if __name__ == "__main__":
+         default=False,
+         help="whether to colocate all models (including vLLM engines), if true, they will share same gpus.",
+     )
++    parser.add_argument(
++        "--train.critic_own_gpu",
++        action="store_true",
++        default=False,
++        help="with --train.colocate_all, place the critic on its own GPU(s) instead of the shared ones.",
++    )
+ 
+     # vLLM for text generation
+     parser.add_argument(
 diff --git a/openrlhf/trainer/ray/ppo_actor.py b/openrlhf/trainer/ray/ppo_actor.py
 index 05d8fd0..7770f60 100644
 --- a/openrlhf/trainer/ray/ppo_actor.py
