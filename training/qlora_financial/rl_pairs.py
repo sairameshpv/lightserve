@@ -14,6 +14,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from training.qlora_financial.rl_data import stratified_sample
 from training.qlora_financial.rl_reward import score
 from training.qlora_financial.sample_eval import chat
 
@@ -48,14 +49,34 @@ def generate(url: str, rows: list, out_path: Path, n: int = 4, concurrency: int 
     return [{**r, "answers": done[i]} for i, r in enumerate(rows)]
 
 
+def subset(data: Path, samples: Path, n: int, tag: str) -> Counter:
+    """Seeded, source-stratified n of train.jsonl -> train_{tag}.jsonl, and
+    dpo_train_{tag}.jsonl from the answers already saved for those questions
+    (no new generation, so DPO's budget is the same 4 answers per question)."""
+    rows = [{**json.loads(l), "id": i} for i, l in enumerate(open(data / "train.jsonl"))]
+    saved = {json.loads(l)["id"]: json.loads(l)["answers"] for l in open(samples / "samples_train.jsonl")}
+    picked = stratified_sample(rows, n)
+    pairs, counts = build_pairs([{**r, "answers": saved[r["id"]]} for r in picked])
+    for name, out in ((f"train_{tag}", picked), (f"dpo_train_{tag}", pairs)):
+        with open(data / f"{name}.jsonl", "w") as f:
+            f.writelines(json.dumps(r) + "\n" for r in out)
+    counts["questions"] = len(picked)
+    return counts
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--url", default="http://localhost:8000")
     ap.add_argument("--data-dir", default="training/qlora_financial/data/rl")
     ap.add_argument("--samples-dir", default="training/qlora_financial/outputs/rl/pairs")
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--subset", type=int, default=None, help="only write a stratified train subset of this size")
     args = ap.parse_args()
     data, samples = Path(args.data_dir), Path(args.samples_dir)
+    if args.subset:
+        tag = f"{args.subset // 1000}k" if args.subset % 1000 == 0 else str(args.subset)
+        print(dict(sorted(subset(data, samples, args.subset, tag).items())))
+        return
     samples.mkdir(parents=True, exist_ok=True)
     for split in ("train", "val"):
         rows = [json.loads(l) for l in open(data / f"{split}.jsonl")][: args.limit]

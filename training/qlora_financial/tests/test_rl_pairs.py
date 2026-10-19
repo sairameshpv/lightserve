@@ -1,5 +1,8 @@
 """rl_pairs.build_pairs on hand-made rows. No GPU, no server."""
-from training.qlora_financial.rl_pairs import build_pairs
+import json
+from collections import Counter
+
+from training.qlora_financial.rl_pairs import build_pairs, subset
 
 PROMPT = [{"role": "system", "content": "You are a financial analyst."}, {"role": "user", "content": "151 / 211?"}]
 RIGHT, SLIP, CUT = ("Step 1: divide 151 and 211.\nAnswer: 0.71564", "Step 1: divide 151 and 211.\nAnswer: 0.7168",
@@ -38,3 +41,18 @@ def test_openrlhf_dpo_format():
     for key in ("chosen", "rejected"):
         msgs = p["prompt"] + p[key]
         assert [m["role"] for m in msgs] == ["system", "user", "assistant"]
+
+
+def test_subset_stratified_and_reuses_saved_answers(tmp_path):
+    rows = [{**row([RIGHT, SLIP] if i % 2 else [RIGHT] * 2, src, str(i)), "prompt": PROMPT + [{"role": "user", "content": str(i)}]}
+            for i, src in enumerate(["A"] * 60 + ["B"] * 40)]
+    with open(tmp_path / "train.jsonl", "w") as f:
+        f.writelines(json.dumps({k: v for k, v in r.items() if k != "answers"}) + "\n" for r in rows)
+    with open(tmp_path / "samples_train.jsonl", "w") as f:
+        f.writelines(json.dumps({"id": i, "answers": r["answers"]}) + "\n" for i, r in enumerate(rows))
+    counts = subset(tmp_path, tmp_path, 10, "10")
+    picked = [json.loads(l) for l in open(tmp_path / "train_10.jsonl")]
+    pairs = [json.loads(l) for l in open(tmp_path / "dpo_train_10.jsonl")]
+    assert Counter(r["source"] for r in picked) == {"A": 6, "B": 4}  # same 60/40 split
+    assert counts["questions"] == 10 and len(pairs) == counts["mixed"] == sum(r["id"] % 2 for r in picked)
+    assert {p["group"] for p in pairs} <= {r["group"] for r in picked}
