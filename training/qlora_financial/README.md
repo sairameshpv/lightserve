@@ -398,6 +398,88 @@ were read once by one reader. v3 was served under the label `v2` because `sample
 requests that model name; the adapter files were v3's. The calculator is still applied offline,
 to saved answers.
 
+## RL: PPO vs DPO vs GRPO (paused)
+
+This section compares three ways of teaching v3 from right/wrong feedback instead of model answers:
+- **PPO**, which learns with a second "critic" model that predicts scores;
+- **DPO**, which learns from pairs of one right and one wrong answer to the same question;
+- **GRPO**, which samples 4 answers per question and pushes towards the better-than-average ones.
+
+The comparison is set up to be fair. All three:
+- start from v3, merged into bf16 weights;
+- train on the same questions;
+- use the same reward: the fair checker, **without** the calculator, so the model itself has to get the arithmetic right;
+- are judged on the same 1,404 test questions, against v3's 62.9% (fair checker, no calculator);
+- get the same budget.
+
+Everything uses OpenRLHF 0.11.2 with LoRA rank 16 on one L40S (46 GB). PPO uses two.
+It is **paused after the learning-rate trials**: the real runs and the final exam haven't been done.
+
+**Making it run** (`rl_data.py`, `rl_reward.py`, `openrlhf_patches.patch`, `rl_node/`):
+- **CUDA forward compatibility instead of a driver upgrade.** The NGC PyTorch 26.03 container (CUDA 13.2) runs on the node's pinned 570 driver.
+- **Patch 1, the LoRA weight sync.** Upstream OpenRLHF sends PEFT's LoRA parameter names to vLLM, which rejects them. The patch sends merged weights (W + scale·B·A) instead. Checked at a deliberately large learning rate: after one step, the policy had moved away from the reference (kl 0.054), while vLLM matched the policy to noise level (8.7e-5).
+- **Patch 2, the critic on its own GPU** (`--train.critic_own_gpu`). PPO didn't fit on one GPU, because DeepSpeed's sleep mode doesn't offload a LoRA model's frozen base weights.
+- **Memory peaks:** GRPO 43.7 GB; DPO 37.9 GB; PPO 43.8 GB (policy + reference + vLLM) plus 20.7 GB (critic GPU). PPO steps take about 1.6× as long as GRPO's.
+
+**Pairs for DPO** (`rl_pairs.py`). v3 answered each of the 3,999 training questions 4 times
+(temperature 1.0, 512 tokens, 374 s). The answers fell into three groups:
+- all 4 right on 46% of the questions;
+- mixed (some right, some wrong) on 34%;
+- all 4 wrong on 20%.
+
+Only the mixed questions can give a pair, one right and one wrong answer, which makes 1,342 pairs (96 for validation). Many pairs differ only in a last-digit arithmetic slip. To keep things cheap, every run so far used **quarter scale**: a source-balanced 1,000 of the questions (`rl_pairs.py --subset`), which gives 338 DPO pairs.
+
+**The usual LoRA learning rates barely moved v3.** Validation here uses greedy answers on the 299 validation questions; v3 gets 64.2% (192).
+- **DPO at 5e-6, 2 passes:** the validation loss went from 0.693 (ln 2, "can't tell the two answers apart") to just 0.692.
+- **GRPO at 2e-5, all 1,000 questions (1h47m):** 65.2% (195). 257 of 299 answers were word-for-word identical to v3's, p = 0.45.
+
+Even smaller rates are invisible: at 1e-5, one step's change rounds away in bf16 (kl exactly 0). Comparing the methods at these rates would only show "nothing moved". So each method got a short learning-rate search first.
+
+**Learning-rate trials** (`rl_node/sweep.sh`, about 2.5 h). Every trial:
+- started fresh from v3;
+- saw the same questions in the same order;
+- was scored the same way: greedy on the 299 validation questions, never the test set.
+
+DPO trials made 1 pass over the 338 pairs (about 16 min). GRPO trials made 8 rounds over a source-balanced 256 questions (about 29 min). PPO had no trials; it reuses GRPO's pick.
+
+| Trial | Accuracy | Answers changed | Became right / wrong | p | Show steps | kl from v3 |
+|---|---|---|---|---|---|---|
+| v3 | 64.2% (192) | — | — | — | 72.6% | — |
+| DPO 2e-5 | 63.9% (191) | 25 | 2 / 3 | 1.0 | 72.6% | |
+| **DPO 5e-5** | **66.2% (198)** | 61 | 13 / 7 | 0.26 | 72.9% | |
+| DPO 1.5e-4 | 63.9% (191) | 113 | 17 / 18 | 1.0 | 73.2% | |
+| **GRPO 5e-5** | **64.9% (194)** | 35 | 5 / 3 | 0.73 | 72.9% | 0.0007 |
+| GRPO 2e-4 | 62.5% (187) | 106 | 14 / 19 | 0.49 | 74.3% | 0.017 |
+| GRPO 5e-4 | 50.5% (151) | 145 | 4 / 45 | <0.001 | 69.2% | 0.21 |
+
+"Became right / wrong" counts questions v3 got wrong and the trial got right, and the reverse; p is a sign test on those counts.
+
+**One rule picked every winner, set before the trials ran:**
+- the highest accuracy wins;
+- if the top two are within 2 points, the gentler rate wins;
+- a rate is out if it scores more than 2 points below v3, or if fewer of its answers show steps.
+
+It picks **5e-5 for both methods**, and so 5e-5 for PPO too.
+
+**What the trials show:**
+- **No GRPO rate beat v3.** Its best rate barely moved the model (35 answers changed). Once it moved more (2e-4), it got slightly worse.
+- **A too-large step breaks the model.** At 5e-4 it drifted far from v3 (kl 0.21) and lost 45 right answers while gaining 4.
+- **DPO at 5e-5 is the only trial ahead of v3**, but by 6 answers (p = 0.26), which is within noise.
+
+**Limits:**
+- 299 validation questions put about ±2.8 points of noise on each accuracy;
+- one seed per trial;
+- quarter scale;
+- PPO's rate is borrowed from GRPO, not searched.
+
+**Where to resume.** Each step at 5e-5, on the 1,000 questions:
+1. **Real DPO:** 2 passes (`rl_dpo.sh`), about 35 min.
+2. **Real GRPO:** about 31 rounds (`rl_grpo.sh`), about 1.8 h, with its halfway validation check.
+3. **PPO:** on 2 GPUs (`ppo_tiny.sh`'s setup at full size), about 3 h.
+4. **The final exam:** `sample_eval.py` on the 1,404 test questions for each adapter, served as v3 + LoRA through vLLM. Report greedy and pass@8 under the fair checker, paired p-values against v3, and GPU-hours per method.
+
+The trial adapters and `v3_merged` stay on the node under `~/rl/` (not in git).
+
 ## What's next
 
 - **Throughput**: *done for 1 GPU*. Batching + length grouping, bf16 base and
@@ -427,7 +509,9 @@ to saved answers.
   at the method mistakes that remain (wrong table cell, reversed
   subtraction, look-up vs. calculation, steps that don't match the
   answer). Room with v3 + calculator is only **+6.4** overall, so it's a
-  weaker case than ever; v3 would be the starting model.
+  weaker case than ever; v3 would be the starting model. *Started* as a
+  PPO vs DPO vs GRPO comparison without the calculator in the reward. It's
+  paused after the learning-rate trials (see *RL: PPO vs DPO vs GRPO*).
 - **Serving on lightserve**: merge the adapter into bf16 weights
   (`merge_and_unload()`), then load it with lightserve's own loader.
   lightserve has no LoRA or 4-bit support today.
@@ -449,6 +533,11 @@ to saved answers.
   No server needed for either.
 - `calculator.py`: exact arithmetic for v2's written FinQA steps and
   TAT-QA formulas (`apply_calculator`).
+- `rl_data.py`, `rl_reward.py`, `rl_pairs.py`: the RL question sets, the
+  fair-checker reward OpenRLHF calls, and DPO pairs from v3's own answers
+  (`--subset` for the source-balanced 1,000).
+- `openrlhf_patches.patch`: our two OpenRLHF 0.11.2 fixes (LoRA weight
+  sync to vLLM; `--train.critic_own_gpu`). `rl_node/`: the node scripts.
 - `tests/`: the scoring and calculator logic, Mac-only
   (`python -m pytest training/qlora_financial/tests/` from the repo root).
 - `requirements.txt`: dependency floors; on a CUDA 12.8 driver, install
