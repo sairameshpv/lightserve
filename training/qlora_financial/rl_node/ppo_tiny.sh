@@ -1,0 +1,25 @@
+# Tiny PPO memory probe: as grpo_tiny.sh plus a LoRA critic (GAE), KL in the reward.
+python3 -m openrlhf.cli.train_ppo_ray \
+   --ref.num_nodes 1 --ref.num_gpus_per_node 1 \
+   --actor.num_nodes 1 --actor.num_gpus_per_node 1 \
+   --vllm.num_engines 1 --vllm.tensor_parallel_size 1 \
+   --train.colocate_all --train.critic_own_gpu --vllm.gpu_memory_utilization 0.5 \
+   --vllm.enable_sleep --ds.enable_sleep --vllm.enforce_eager \
+   --algo.advantage.estimator gae \
+   --critic.num_nodes 1 --critic.num_gpus_per_node 1 --critic.model_name_or_path /rl/v3_merged --critic.adam.lr 5e-5 \
+   --algo.kl.init_coef 1e-3 \
+   --actor.model_name_or_path /rl/v3_merged \
+   --reward.remote_url /rl/code/training/qlora_financial/rl_reward.py \
+   --data.prompt_dataset /rl/data/train.jsonl \
+   --data.input_key prompt --data.label_key label --data.apply_chat_template \
+   --data.max_samples 16 --data.max_len 4096 --rollout.max_new_tokens 512 \
+   --rollout.batch_size 8 --rollout.n_samples_per_prompt 4 --rollout.micro_batch_size 4 \
+   --train.batch_size 32 --train.micro_batch_size 2 --train.max_epochs 1 \
+   --rollout.temperature 1.0 \
+   --ds.zero_stage 3 --ref.offload --ds.param_dtype bf16 \
+   --ds.lora.rank 16 --ds.lora.alpha 32 \
+   --actor.adam.lr 1e-5 --algo.advantage.is_correction_level token --algo.advantage.is_correction_mode clip \
+   --actor.gradient_checkpointing_enable --ds.packing_samples \
+   --ds.attn_implementation flash_attention_2 \
+   --ckpt.output_dir /rl/out/ppo_tiny \
+   --logger.tensorboard_dir /rl/out/ppo_tiny/tb
