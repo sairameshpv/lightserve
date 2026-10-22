@@ -1,0 +1,17 @@
+# Grafana Tempo, single process, traces kept on local disk inside the container
+# (gone on `docker compose down`; fine for a dev dashboard).
+server:
+  http_listen_port: 3200        # Grafana queries traces here
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318  # lightserve sends OTLP/HTTP here
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/traces
+    wal:
+      path: /var/tempo/wal

@@ -9,12 +9,15 @@ CUDA/Triton, same as engine_worker.py. The real LLMEngine is wired up only
 in server/__main__.py, this package's one CUDA-only file.
 """
 import asyncio
+import random
 import time
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request as FastAPIRequest
 from fastapi.responses import Response, StreamingResponse
+from opentelemetry import trace
+from opentelemetry.trace import StatusCode
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 from engine.request import SamplingParams
@@ -51,7 +54,10 @@ def _render_text(token_ids: list) -> str:
     return " ".join(str(t) for t in token_ids)
 
 
-def create_app(worker: EngineWorker, model_name: str = "lightserve") -> FastAPI:
+def create_app(worker: EngineWorker, model_name: str = "lightserve", tracer_provider=None,
+               trace_sample_rate: float = 0.1, trace_slow_s: float = 1.0) -> FastAPI:
+    """tracer_provider: OpenTelemetry's (default: the global one, a no-op unless configured).
+    A request's trace is kept if it failed, took >= trace_slow_s, or with trace_sample_rate."""
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         worker.start()
@@ -79,43 +85,74 @@ def create_app(worker: EngineWorker, model_name: str = "lightserve") -> FastAPI:
     def metrics():
         return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
 
-    async def timed(handle):
-        """handle.stream(), passed through unchanged, recording the metrics above."""
-        start, last = time.perf_counter(), None  # last: previous token's time, None before the first
+    tracer = (tracer_provider or trace.get_tracer_provider()).get_tracer("lightserve")
+
+    def trace_request(handle, start, first, last, end, n_tokens, status):
+        """Spans written after the fact, from times noted while streaming -- so the keep/drop
+        choice can already see whether the request was slow or failed (in-process tail sampling)."""
+        failed = status == "FINISHED_ABORTED"
+        if not (failed or (end - start) / 1e9 >= trace_slow_s or random.random() < trace_sample_rate):
+            return
+        root = tracer.start_span("POST /v1/completions", start_time=start, attributes={
+            "lightserve.request_id": handle.request_id, "lightserve.status": status, "lightserve.tokens": n_tokens})
+        if failed:
+            root.set_status(StatusCode.ERROR)
+        context, prev = trace.set_span_in_context(root), start
+        for name, at in (("queue", handle.scheduled_ns), ("prefill", first), ("decode", last), ("respond", end)):
+            if at is not None:  # a request aborted early skips the phases it never reached
+                span = tracer.start_span(name, context=context, start_time=prev)
+                if name == "decode":
+                    span.set_attribute("lightserve.tokens", n_tokens - 1)
+                span.end(end_time=at)
+                prev = at
+        root.end(end_time=end)
+
+    async def timed(handle, start: int):
+        """handle.stream(), passed through unchanged, recording the metrics above and the
+        trace. `start`: time.time_ns() at submit. All end-of-request bookkeeping happens on
+        StreamEnd itself, since a streaming consumer stops iterating right after it."""
+        first = last = None  # time.time_ns() of the first / latest token
+        n_tokens, ended = 0, False
         in_flight.inc()
         try:
             async for item in handle.stream():
-                now = time.perf_counter()
+                now = time.time_ns()
                 if isinstance(item, StreamToken):
-                    if last is None:
-                        ttft.observe(now - start)
+                    if first is None:
+                        ttft.observe((now - start) / 1e9)
+                        first = now
                     else:
-                        itl.observe(now - last)
+                        itl.observe((now - last) / 1e9)
                     tokens_total.inc()
-                    last = now
+                    last, n_tokens = now, n_tokens + 1
                 else:  # StreamEnd
-                    e2e.observe(now - start)
+                    e2e.observe((now - start) / 1e9)
+                    in_flight.dec()
+                    ended = True
+                    trace_request(handle, start, first, last, now, n_tokens, item.finish_reason)
                 yield item
         finally:
-            in_flight.dec()
+            if not ended:  # abandoned mid-stream (client disconnect)
+                in_flight.dec()
 
     @app.post("/v1/completions", response_model=None)
     async def completions(body: CompletionRequest, raw_request: FastAPIRequest):
         request_id = body.request_id or f"cmpl-{uuid.uuid4().hex[:24]}"
         sampling_params = SamplingParams(max_tokens=body.max_tokens, eos_token_id=body.eos_token_id)
+        start = time.time_ns()
         handle = worker.submit(
             body.prompt, sampling_params, request_id=request_id, timeout_s=body.timeout_s,
         )
 
         if body.stream:
             return StreamingResponse(
-                _sse_stream(handle, timed(handle), raw_request, worker, model_name),
+                _sse_stream(handle, timed(handle, start), raw_request, worker, model_name),
                 media_type="text/event-stream",
             )
 
         token_ids: list = []
         finish_reason = None
-        async for item in timed(handle):
+        async for item in timed(handle, start):
             if isinstance(item, StreamToken):
                 token_ids.append(item.token_id)
             elif isinstance(item, StreamEnd):

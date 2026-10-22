@@ -12,6 +12,13 @@ services:
     ports: ["9090:9090"]
     extra_hosts: ["host.docker.internal:host-gateway"]  # reach lightserve on the host
 
+  tempo:   # traces; lightserve on the host sends to localhost:4318 (OTEL_EXPORTER_OTLP_ENDPOINT)
+    image: grafana/tempo:2.9.0
+    command: ["-config.file=/etc/tempo.yml"]
+    volumes:
+      - ./tempo.yml:/etc/tempo.yml:ro
+    ports: ["4318:4318", "3200:3200"]
+
   dcgm-exporter:   # GPU health; GPU node only: docker compose --profile gpu up -d
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.4.1-4.5.2-ubuntu22.04
     profiles: [gpu]

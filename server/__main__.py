@@ -12,6 +12,7 @@ reviewed on such a machine; not yet run for real -- next step is the L40S,
 same as model/'s own CUDA-only pieces.
 """
 import argparse
+import os
 import time
 
 import uvicorn
@@ -67,13 +68,30 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--default-timeout-s", type=float, default=60.0)
     parser.add_argument("--fake-engine", action="store_true", help="no GPU: fake tokens, real scheduler")
     parser.add_argument("--fake-step-ms", type=float, default=20.0, help="--fake-engine's time per step")
+    parser.add_argument("--trace-sample-rate", type=float, default=0.1, help="share of ordinary requests traced")
+    parser.add_argument("--trace-slow-s", type=float, default=1.0, help="always trace requests at least this slow")
     return parser.parse_args(argv)
+
+
+def build_tracer_provider():
+    """Traces go out over OTLP/HTTP only if OTEL_EXPORTER_OTLP_ENDPOINT is set (e.g.
+    http://localhost:4318 for monitoring/'s Tempo); otherwise None = OpenTelemetry's no-op."""
+    if not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+        return None
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    provider = TracerProvider(resource=Resource.create({"service.name": "lightserve"}))
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))  # sends in the background
+    return provider
 
 
 def main(argv=None) -> None:
     args = parse_args(argv)
     worker = build_worker(args)
-    app = create_app(worker)
+    app = create_app(worker, tracer_provider=build_tracer_provider(),
+                     trace_sample_rate=args.trace_sample_rate, trace_slow_s=args.trace_slow_s)
     uvicorn.run(app, host=args.host, port=args.port)
 
 

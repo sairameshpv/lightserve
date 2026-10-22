@@ -81,6 +81,9 @@ class StreamHandle:
     def __init__(self, request_id: str):
         self.request_id = request_id
         self.queue: "queue.SimpleQueue" = queue.SimpleQueue()
+        # time.time_ns() when the step that first scheduled it started (set by the engine
+        # thread before that step's token is queued); None until then. For tracing.
+        self.scheduled_ns: Optional[int] = None
 
     async def stream(self, poll_interval: float = 0.01):
         import asyncio
@@ -191,9 +194,9 @@ class EngineWorker:
             self._drain_incoming()
             self._sweep_timeouts()
             if self.engine.scheduler.has_unfinished_requests():
-                t0 = time.perf_counter()
+                t0, started_ns = time.perf_counter(), time.time_ns()
                 output, finished = self.engine.step()
-                self._record_step(output, time.perf_counter() - t0)
+                self._record_step(output, time.perf_counter() - t0, started_ns)
                 self._emit_tokens(output)
                 self._finish(finished)
             else:
@@ -226,16 +229,18 @@ class EngineWorker:
         if expired:
             self._finish(self.engine.scheduler.abort_requests(expired))
 
-    def _record_step(self, output, seconds: float) -> None:
+    def _record_step(self, output, seconds: float, started_ns: int) -> None:
         scheduled = list(output.scheduled_new) + list(output.scheduled_running)
         prefill = bool(output.scheduled_new) or any(sr.num_scheduled_tokens > 1 for sr in scheduled)
         self._m_step.labels("prefill" if prefill else "decode").observe(seconds)
         self._m_batch.observe(len(scheduled))
-        now = time.time()
         for sr in output.scheduled_new:  # a re-admission after preemption was already popped
             arrival = self._queued.pop(sr.request.request_id, None)
             if arrival is not None:
-                self._m_queue_wait.observe(now - arrival)
+                self._m_queue_wait.observe(started_ns / 1e9 - arrival)
+                handle = self._streams.get(sr.request.request_id)
+                if handle is not None:
+                    handle.scheduled_ns = started_ns
         self._m_preempt.inc(len(output.preempted))
         scheduler = self.engine.scheduler
         blocks = scheduler.block_manager
