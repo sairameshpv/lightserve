@@ -1,0 +1,26 @@
+// Grafana Alloy: tail lightserve's request log (server --request-log monitoring/logs/lightserve.jsonl)
+// and push each JSON line to Loki, with the request's status as a label.
+local.file_match "lightserve" {
+  path_targets = [{"__path__" = "/logs/*.jsonl", "job" = "lightserve"}]
+}
+
+loki.source.file "lightserve" {
+  targets    = local.file_match.lightserve.targets
+  forward_to = [loki.process.lightserve.receiver]
+}
+
+loki.process "lightserve" {
+  stage.json {
+    expressions = {status = "status"}
+  }
+  stage.labels {
+    values = {status = ""}   // few distinct values, so fine as a label (request_id is not)
+  }
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

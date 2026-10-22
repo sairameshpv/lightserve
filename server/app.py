@@ -9,6 +9,8 @@ CUDA/Triton, same as engine_worker.py. The real LLMEngine is wired up only
 in server/__main__.py, this package's one CUDA-only file.
 """
 import asyncio
+import json
+import logging
 import random
 import time
 import uuid
@@ -41,6 +43,10 @@ _FINISH_REASON = {
     "FINISHED_LENGTH_CAPPED": "length",
     "FINISHED_ABORTED": "abort",
 }
+
+
+# One JSON line per finished request (server/__main__.py prints it bare, for Loki).
+request_log = logging.getLogger("lightserve.requests")
 
 
 def _finish_reason(status_name: str) -> str:
@@ -92,7 +98,7 @@ def create_app(worker: EngineWorker, model_name: str = "lightserve", tracer_prov
         choice can already see whether the request was slow or failed (in-process tail sampling)."""
         failed = status == "FINISHED_ABORTED"
         if not (failed or (end - start) / 1e9 >= trace_slow_s or random.random() < trace_sample_rate):
-            return
+            return None
         root = tracer.start_span("POST /v1/completions", start_time=start, attributes={
             "lightserve.request_id": handle.request_id, "lightserve.status": status, "lightserve.tokens": n_tokens})
         if failed:
@@ -106,6 +112,7 @@ def create_app(worker: EngineWorker, model_name: str = "lightserve", tracer_prov
                 span.end(end_time=at)
                 prev = at
         root.end(end_time=end)
+        return format(root.get_span_context().trace_id, "032x")  # as Tempo displays it
 
     async def timed(handle, start: int):
         """handle.stream(), passed through unchanged, recording the metrics above and the
@@ -129,7 +136,11 @@ def create_app(worker: EngineWorker, model_name: str = "lightserve", tracer_prov
                     e2e.observe((now - start) / 1e9)
                     in_flight.dec()
                     ended = True
-                    trace_request(handle, start, first, last, now, n_tokens, item.finish_reason)
+                    trace_id = trace_request(handle, start, first, last, now, n_tokens, item.finish_reason)
+                    request_log.info(json.dumps({
+                        "request_id": handle.request_id, "status": item.finish_reason, "tokens": n_tokens,
+                        "ttft_s": None if first is None else round((first - start) / 1e9, 6),
+                        "latency_s": round((now - start) / 1e9, 6), "trace_id": trace_id}))
                 yield item
         finally:
             if not ended:  # abandoned mid-stream (client disconnect)

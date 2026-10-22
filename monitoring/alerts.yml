@@ -6,3 +6,4 @@ groups:
         for: 30s
         annotations:
           summary: "Prometheus can't reach lightserve's /metrics on {{ $labels.instance }}"
+          runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/lightserve-down.md"

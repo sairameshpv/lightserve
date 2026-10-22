@@ -12,6 +12,7 @@ reviewed on such a machine; not yet run for real -- next step is the L40S,
 same as model/'s own CUDA-only pieces.
 """
 import argparse
+import logging
 import os
 import time
 
@@ -70,6 +71,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--fake-step-ms", type=float, default=20.0, help="--fake-engine's time per step")
     parser.add_argument("--trace-sample-rate", type=float, default=0.1, help="share of ordinary requests traced")
     parser.add_argument("--trace-slow-s", type=float, default=1.0, help="always trace requests at least this slow")
+    parser.add_argument("--request-log", help="append one JSON line per request to this file (for Loki)")
     return parser.parse_args(argv)
 
 
@@ -89,6 +91,12 @@ def build_tracer_provider():
 
 def main(argv=None) -> None:
     args = parse_args(argv)
+    if args.request_log:
+        handler = logging.FileHandler(args.request_log)
+        handler.setFormatter(logging.Formatter("%(message)s"))  # the message is already a JSON line
+        request_log = logging.getLogger("lightserve.requests")
+        request_log.addHandler(handler)
+        request_log.setLevel(logging.INFO)
     worker = build_worker(args)
     app = create_app(worker, tracer_provider=build_tracer_provider(),
                      trace_sample_rate=args.trace_sample_rate, trace_slow_s=args.trace_slow_s)

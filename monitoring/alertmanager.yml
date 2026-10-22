@@ -1,0 +1,18 @@
+# Alertmanager: every alert from Prometheus becomes an email to MailHog, a local test
+# inbox (http://localhost:8025) -- nothing leaves the machine. For real email, swap the
+# smarthost for a real SMTP server and add auth_username/auth_password (from a secret).
+route:
+  receiver: mailhog
+  group_by: [alertname]
+  group_wait: 10s        # wait this long to batch alerts that fire together
+  group_interval: 1m
+  repeat_interval: 4h    # re-send a still-firing alert this often
+
+receivers:
+  - name: mailhog
+    email_configs:
+      - to: oncall@lightserve.local
+        from: alertmanager@lightserve.local
+        smarthost: mailhog:1025
+        require_tls: false
+        send_resolved: true   # also email when the alert clears

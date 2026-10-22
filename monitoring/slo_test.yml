@@ -1,0 +1,67 @@
+# Unit tests for slo.yml's burn-rate alerts, on made-up counters (no lightserve needed):
+#   docker run --rm -v "$PWD/monitoring:/m" -w /m --entrypoint promtool prom/prometheus:v3.5.0 test rules slo_test.yml
+# Availability SLO 99.5% -> error budget 0.5%. Fast burn = 14.4x budget (7.2% errors) over 1h AND 5m;
+# slow burn = 6x budget (3% errors) over 6h AND 30m. Latency SLO: 99% of first tokens < 0.5 s.
+rule_files: [slo.yml]
+evaluation_interval: 1m
+
+tests:
+  - name: 10% of requests failing pages (fast burn)
+    interval: 1m
+    input_series:
+      - series: 'lightserve_requests_total{status="FINISHED_LENGTH_CAPPED"}'
+        values: '0+90x120'
+      - series: 'lightserve_requests_total{status="FINISHED_ABORTED"}'
+        values: '0+10x120'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: AvailabilityFastBurn
+        exp_alerts:
+          - exp_labels: {severity: page}
+            exp_annotations:
+              summary: "Failing requests are using up the 30-day error budget 14.4x too fast"
+              runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/availability-burn.md"
+
+  - name: 1% failing is within budget, no alert at all
+    interval: 1m
+    input_series:
+      - series: 'lightserve_requests_total{status="FINISHED_LENGTH_CAPPED"}'
+        values: '0+99x480'
+      - series: 'lightserve_requests_total{status="FINISHED_ABORTED"}'
+        values: '0+1x480'
+    alert_rule_test:
+      - {eval_time: 7h, alertname: AvailabilityFastBurn, exp_alerts: []}
+      - {eval_time: 7h, alertname: AvailabilitySlowBurn, exp_alerts: []}
+
+  - name: 4% failing for hours opens a ticket (slow burn) but doesn't page
+    interval: 1m
+    input_series:
+      - series: 'lightserve_requests_total{status="FINISHED_LENGTH_CAPPED"}'
+        values: '0+96x480'
+      - series: 'lightserve_requests_total{status="FINISHED_ABORTED"}'
+        values: '0+4x480'
+    alert_rule_test:
+      - {eval_time: 7h, alertname: AvailabilityFastBurn, exp_alerts: []}
+      - eval_time: 7h
+        alertname: AvailabilitySlowBurn
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "Failing requests are using up the 30-day error budget 6x too fast"
+              runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/availability-burn.md"
+
+  - name: 20% of first tokens slower than 0.5 s pages (latency fast burn)
+    interval: 1m
+    input_series:
+      - series: 'lightserve_time_to_first_token_seconds_bucket{le="0.5"}'
+        values: '0+80x120'
+      - series: 'lightserve_time_to_first_token_seconds_count'
+        values: '0+100x120'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: LatencyFastBurn
+        exp_alerts:
+          - exp_labels: {severity: page}
+            exp_annotations:
+              summary: "Slow first tokens (> 0.5 s) are using up the 30-day latency budget 14.4x too fast"
+              runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/latency-burn.md"

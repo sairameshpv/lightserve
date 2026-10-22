@@ -19,3 +19,4 @@ training/qlora_financial/profiling/logs/
 training/corpus_prep/data/
 training/cpt_financial/outputs/
 monitoring/.env
+monitoring/logs/

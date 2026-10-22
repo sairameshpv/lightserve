@@ -1,0 +1,53 @@
+# Service level objectives (SLOs) for lightserve, with multi-window burn-rate alerts
+# (Google SRE workbook, ch. 5). Tested by slo_test.yml (promtool test rules).
+#   Availability: 99.5% of requests end without FINISHED_ABORTED  -> error budget 0.5%
+#     (caveat: aborts include clients that disconnect, not only server timeouts)
+#   Latency:      99% of first tokens within 0.5 s                -> budget 1%
+#     (0.5 s is a placeholder until the GPU baseline, plan step 9)
+# Burn rate = how fast the 30-day budget is being spent; 1x would spend exactly all of it in 30 days.
+#   fast burn 14.4x over 1h and 5m -> 2% of the budget in an hour: page
+#   slow burn  6x   over 6h and 30m -> 5% of the budget in 6 hours: ticket
+# Requiring both a long and a short window: the long one avoids paging on a blip, the
+# short one makes the alert clear soon after the problem stops.
+groups:
+  - name: lightserve-slo-ratios
+    rules:
+      - {record: "lightserve:request_errors:ratio_rate5m", expr: 'sum(rate(lightserve_requests_total{status="FINISHED_ABORTED"}[5m])) / sum(rate(lightserve_requests_total[5m]))'}
+      - {record: "lightserve:request_errors:ratio_rate30m", expr: 'sum(rate(lightserve_requests_total{status="FINISHED_ABORTED"}[30m])) / sum(rate(lightserve_requests_total[30m]))'}
+      - {record: "lightserve:request_errors:ratio_rate1h", expr: 'sum(rate(lightserve_requests_total{status="FINISHED_ABORTED"}[1h])) / sum(rate(lightserve_requests_total[1h]))'}
+      - {record: "lightserve:request_errors:ratio_rate6h", expr: 'sum(rate(lightserve_requests_total{status="FINISHED_ABORTED"}[6h])) / sum(rate(lightserve_requests_total[6h]))'}
+      - {record: "lightserve:ttft_slow:ratio_rate5m", expr: '1 - sum(rate(lightserve_time_to_first_token_seconds_bucket{le="0.5"}[5m])) / sum(rate(lightserve_time_to_first_token_seconds_count[5m]))'}
+      - {record: "lightserve:ttft_slow:ratio_rate30m", expr: '1 - sum(rate(lightserve_time_to_first_token_seconds_bucket{le="0.5"}[30m])) / sum(rate(lightserve_time_to_first_token_seconds_count[30m]))'}
+      - {record: "lightserve:ttft_slow:ratio_rate1h", expr: '1 - sum(rate(lightserve_time_to_first_token_seconds_bucket{le="0.5"}[1h])) / sum(rate(lightserve_time_to_first_token_seconds_count[1h]))'}
+      - {record: "lightserve:ttft_slow:ratio_rate6h", expr: '1 - sum(rate(lightserve_time_to_first_token_seconds_bucket{le="0.5"}[6h])) / sum(rate(lightserve_time_to_first_token_seconds_count[6h]))'}
+
+  - name: lightserve-slo-alerts
+    rules:
+      - alert: AvailabilityFastBurn
+        expr: lightserve:request_errors:ratio_rate1h > 14.4 * 0.005 and lightserve:request_errors:ratio_rate5m > 14.4 * 0.005
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "Failing requests are using up the 30-day error budget 14.4x too fast"
+          runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/availability-burn.md"
+      - alert: AvailabilitySlowBurn
+        expr: lightserve:request_errors:ratio_rate6h > 6 * 0.005 and lightserve:request_errors:ratio_rate30m > 6 * 0.005
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Failing requests are using up the 30-day error budget 6x too fast"
+          runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/availability-burn.md"
+      - alert: LatencyFastBurn
+        expr: lightserve:ttft_slow:ratio_rate1h > 14.4 * 0.01 and lightserve:ttft_slow:ratio_rate5m > 14.4 * 0.01
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "Slow first tokens (> 0.5 s) are using up the 30-day latency budget 14.4x too fast"
+          runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/latency-burn.md"
+      - alert: LatencySlowBurn
+        expr: lightserve:ttft_slow:ratio_rate6h > 6 * 0.01 and lightserve:ttft_slow:ratio_rate30m > 6 * 0.01
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Slow first tokens (> 0.5 s) are using up the 30-day latency budget 6x too fast"
+          runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/latency-burn.md"
