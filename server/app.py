@@ -9,11 +9,13 @@ CUDA/Triton, same as engine_worker.py. The real LLMEngine is wired up only
 in server/__main__.py, this package's one CUDA-only file.
 """
 import asyncio
+import time
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request as FastAPIRequest
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 from engine.request import SamplingParams
 from server.engine_worker import EngineWorker, StreamEnd, StreamToken
@@ -58,9 +60,44 @@ def create_app(worker: EngineWorker, model_name: str = "lightserve") -> FastAPI:
 
     app = FastAPI(title="lightserve", lifespan=lifespan)
 
+    # The worker's registry (one per worker, not prometheus_client's global
+    # one, so the many workers tests create don't collide): one /metrics page
+    # for engine-side and HTTP-side metrics. Requests ended are counted there,
+    # since only the worker sees every ending (disconnects, timeouts included).
+    registry = worker.registry
+    tokens_total = Counter("lightserve_generated_tokens", "Tokens generated", registry=registry)
+    ttft = Histogram("lightserve_time_to_first_token_seconds", "Submit to first token", registry=registry)
+    itl = Histogram("lightserve_inter_token_seconds", "Gap between consecutive tokens", registry=registry)
+    e2e = Histogram("lightserve_request_seconds", "Submit to finish", registry=registry)
+    in_flight = Gauge("lightserve_requests_in_flight", "Requests being streamed now", registry=registry)
+
     @app.get("/health")
     def health():
         return {"status": "ok"}
+
+    @app.get("/metrics")
+    def metrics():
+        return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
+
+    async def timed(handle):
+        """handle.stream(), passed through unchanged, recording the metrics above."""
+        start, last = time.perf_counter(), None  # last: previous token's time, None before the first
+        in_flight.inc()
+        try:
+            async for item in handle.stream():
+                now = time.perf_counter()
+                if isinstance(item, StreamToken):
+                    if last is None:
+                        ttft.observe(now - start)
+                    else:
+                        itl.observe(now - last)
+                    tokens_total.inc()
+                    last = now
+                else:  # StreamEnd
+                    e2e.observe(now - start)
+                yield item
+        finally:
+            in_flight.dec()
 
     @app.post("/v1/completions", response_model=None)
     async def completions(body: CompletionRequest, raw_request: FastAPIRequest):
@@ -72,13 +109,13 @@ def create_app(worker: EngineWorker, model_name: str = "lightserve") -> FastAPI:
 
         if body.stream:
             return StreamingResponse(
-                _sse_stream(handle, raw_request, worker, model_name),
+                _sse_stream(handle, timed(handle), raw_request, worker, model_name),
                 media_type="text/event-stream",
             )
 
         token_ids: list = []
         finish_reason = None
-        async for item in handle.stream():
+        async for item in timed(handle):
             if isinstance(item, StreamToken):
                 token_ids.append(item.token_id)
             elif isinstance(item, StreamEnd):
@@ -94,7 +131,7 @@ def create_app(worker: EngineWorker, model_name: str = "lightserve") -> FastAPI:
     return app
 
 
-async def _sse_stream(handle, raw_request: FastAPIRequest, worker: EngineWorker, model_name: str):
+async def _sse_stream(handle, stream, raw_request: FastAPIRequest, worker: EngineWorker, model_name: str):
     """One SSE frame per token, a final frame carrying finish_reason, then
     the OpenAI-convention `data: [DONE]` sentinel.
 
@@ -108,7 +145,7 @@ async def _sse_stream(handle, raw_request: FastAPIRequest, worker: EngineWorker,
     immediately instead of running to completion (or its timeout) with
     nobody listening.
     """
-    stream_iter = handle.stream().__aiter__()
+    stream_iter = stream.__aiter__()
     try:
         while True:
             if await raw_request.is_disconnected():

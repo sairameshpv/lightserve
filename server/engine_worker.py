@@ -44,6 +44,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Optional
 
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
+
 
 @dataclass
 class StreamToken:
@@ -128,6 +130,19 @@ class EngineWorker:
         self._deadlines: dict = {}  # request_id -> absolute time.time() deadline, engine-thread-only
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
+        self._queued: dict = {}  # request_id -> arrival time, until first scheduled (engine-thread-only)
+        # Engine-side metrics; server/app.py adds its HTTP-side ones to this same registry.
+        r = self.registry = CollectorRegistry()
+        self._m_requests = Counter("lightserve_requests", "Requests ended, by status", ["status"], registry=r)
+        self._m_step = Histogram("lightserve_step_seconds", "One engine step; kind=prefill if it admitted "
+                                 "or prefilled anything", ["kind"], registry=r)
+        self._m_batch = Histogram("lightserve_batch_size", "Requests scheduled per step",
+                                  buckets=(1, 2, 4, 8, 16, 32, 64, 128, 256), registry=r)
+        self._m_queue_wait = Histogram("lightserve_queue_wait_seconds", "Arrival to first scheduled", registry=r)
+        self._m_preempt = Counter("lightserve_preemptions", "Requests pushed out of the KV cache", registry=r)
+        self._m_kv = Gauge("lightserve_kv_cache_usage", "Share of KV-cache blocks in use", registry=r)
+        self._m_waiting = Gauge("lightserve_requests_waiting", "Requests waiting to be scheduled", registry=r)
+        self._m_running = Gauge("lightserve_requests_running", "Requests running", registry=r)
 
     def start(self) -> None:
         self._thread.start()
@@ -176,7 +191,9 @@ class EngineWorker:
             self._drain_incoming()
             self._sweep_timeouts()
             if self.engine.scheduler.has_unfinished_requests():
+                t0 = time.perf_counter()
                 output, finished = self.engine.step()
+                self._record_step(output, time.perf_counter() - t0)
                 self._emit_tokens(output)
                 self._finish(finished)
             else:
@@ -199,6 +216,7 @@ class EngineWorker:
         )
         request.arrival_time = time.time()  # engine.add_request doesn't set this -- Request's own default is 0.0
         self._streams[submission.request_id] = submission.handle
+        self._queued[submission.request_id] = request.arrival_time
         if submission.timeout_s is not None:
             self._deadlines[submission.request_id] = request.arrival_time + submission.timeout_s
 
@@ -207,6 +225,23 @@ class EngineWorker:
         expired = [rid for rid, deadline in self._deadlines.items() if now >= deadline]
         if expired:
             self._finish(self.engine.scheduler.abort_requests(expired))
+
+    def _record_step(self, output, seconds: float) -> None:
+        scheduled = list(output.scheduled_new) + list(output.scheduled_running)
+        prefill = bool(output.scheduled_new) or any(sr.num_scheduled_tokens > 1 for sr in scheduled)
+        self._m_step.labels("prefill" if prefill else "decode").observe(seconds)
+        self._m_batch.observe(len(scheduled))
+        now = time.time()
+        for sr in output.scheduled_new:  # a re-admission after preemption was already popped
+            arrival = self._queued.pop(sr.request.request_id, None)
+            if arrival is not None:
+                self._m_queue_wait.observe(now - arrival)
+        self._m_preempt.inc(len(output.preempted))
+        scheduler = self.engine.scheduler
+        blocks = scheduler.block_manager
+        self._m_kv.set(1 - blocks.num_free_blocks / blocks.num_gpu_blocks)
+        self._m_waiting.set(len(scheduler.waiting))
+        self._m_running.set(len(scheduler.running))
 
     def _emit_tokens(self, scheduler_output) -> None:
         for sr in list(scheduler_output.scheduled_new) + list(scheduler_output.scheduled_running):
@@ -224,6 +259,8 @@ class EngineWorker:
         bookkeeping and unblocks whatever's reading the StreamHandle.
         """
         for request in requests:
+            self._m_requests.labels(request.status.name).inc()
+            self._queued.pop(request.request_id, None)
             self._deadlines.pop(request.request_id, None)
             handle = self._streams.pop(request.request_id, None)
             if handle is not None:

@@ -162,11 +162,16 @@ class TestDisconnect:
                     # giving up mid-stream would.
                     next(resp.iter_lines())
 
-            # Give the worker thread a moment to notice the disconnect and abort.
+            # Give the worker thread a moment to notice the disconnect and abort
+            # (the counter goes up just after the scheduler drops the request).
+            aborted = lambda: worker.registry.get_sample_value(
+                "lightserve_requests_total", {"status": "FINISHED_ABORTED"})
             for _ in range(200):
-                if not worker.engine.scheduler.requests:
+                if not worker.engine.scheduler.requests and aborted() == 1:
                     break
                 time.sleep(0.01)
             assert not worker.engine.scheduler.requests, (
                 "request was still tracked by the scheduler after the client disconnected"
             )
+            # ...and the abort is counted on /metrics (server/engine_worker.py's _finish).
+            assert aborted() == 1
