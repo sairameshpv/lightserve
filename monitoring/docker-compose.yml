@@ -12,6 +12,19 @@ services:
     ports: ["9090:9090"]
     extra_hosts: ["host.docker.internal:host-gateway"]  # reach lightserve on the host
 
+  dcgm-exporter:   # GPU health; GPU node only: docker compose --profile gpu up -d
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.4.1-4.5.2-ubuntu22.04
+    profiles: [gpu]
+    command: ["-f", "/etc/dcgm-exporter/lightserve.csv"]
+    volumes:
+      - ./dcgm-counters.csv:/etc/dcgm-exporter/lightserve.csv:ro
+    cap_add: [SYS_ADMIN]   # profiling metrics (DCGM_FI_PROF_*)
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    ports: ["9400:9400"]
+
   grafana:
     image: grafana/grafana:12.1.0
     environment:

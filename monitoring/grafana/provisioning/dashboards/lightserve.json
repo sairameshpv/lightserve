@@ -47,6 +47,27 @@
      "targets": [{"expr": "rate(lightserve_preemptions_total[1m])", "legendFormat": "preemptions/s"}]},
     {"type": "timeseries", "title": "Average batch size (requests per step)", "gridPos": {"x": 16, "y": 24, "w": 8, "h": 8},
      "datasource": {"type": "prometheus", "uid": "prometheus"},
-     "targets": [{"expr": "rate(lightserve_batch_size_sum[1m]) / rate(lightserve_batch_size_count[1m])", "legendFormat": "avg"}]}
+     "targets": [{"expr": "rate(lightserve_batch_size_sum[1m]) / rate(lightserve_batch_size_count[1m])", "legendFormat": "avg"}]},
+    {"type": "row", "title": "GPU (DCGM exporter; GPU node only)", "gridPos": {"x": 0, "y": 32, "w": 24, "h": 1}, "panels": []},
+    {"type": "timeseries", "title": "GPU busy: any kernel vs tensor cores", "gridPos": {"x": 0, "y": 33, "w": 8, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+     "targets": [{"expr": "DCGM_FI_DEV_GPU_UTIL / 100", "legendFormat": "GPU {{gpu}} any kernel"},
+                 {"expr": "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE", "legendFormat": "GPU {{gpu}} tensor cores"}]},
+    {"type": "timeseries", "title": "GPU memory used", "gridPos": {"x": 8, "y": 33, "w": 8, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "decmbytes"}},
+     "targets": [{"expr": "DCGM_FI_DEV_FB_USED", "legendFormat": "GPU {{gpu}} used"},
+                 {"expr": "DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE", "legendFormat": "GPU {{gpu}} total"}]},
+    {"type": "timeseries", "title": "SM clock (MHz)", "gridPos": {"x": 16, "y": 33, "w": 8, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "prometheus"},
+     "targets": [{"expr": "DCGM_FI_DEV_SM_CLOCK", "legendFormat": "GPU {{gpu}}"}]},
+    {"type": "timeseries", "title": "Power (W)", "gridPos": {"x": 0, "y": 41, "w": 8, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "prometheus"},
+     "targets": [{"expr": "DCGM_FI_DEV_POWER_USAGE", "legendFormat": "GPU {{gpu}}"}]},
+    {"type": "timeseries", "title": "Temperature (°C)", "gridPos": {"x": 8, "y": 41, "w": 8, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "prometheus"},
+     "targets": [{"expr": "DCGM_FI_DEV_GPU_TEMP", "legendFormat": "GPU {{gpu}}"}]},
+    {"type": "timeseries", "title": "Clock held back (bitmask; 0 = full speed)", "gridPos": {"x": 16, "y": 41, "w": 8, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "prometheus"},
+     "targets": [{"expr": "DCGM_FI_DEV_CLOCKS_EVENT_REASONS", "legendFormat": "GPU {{gpu}}"}]}
   ]
 }

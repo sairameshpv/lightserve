@@ -8,3 +8,6 @@ scrape_configs:
   - job_name: lightserve
     static_configs:
       - targets: ["host.docker.internal:8001"]
+  - job_name: dcgm   # GPU health; "down" on the Mac, where the gpu profile isn't started
+    static_configs:
+      - targets: ["dcgm-exporter:9400"]
