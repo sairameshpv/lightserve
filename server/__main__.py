@@ -12,22 +12,35 @@ reviewed on such a machine; not yet run for real -- next step is the L40S,
 same as model/'s own CUDA-only pieces.
 """
 import argparse
+import time
 
 import uvicorn
 
 from engine.config import CacheConfig, SchedulerConfig
-from model.llm_engine import LLMEngine
-from model.minimal_llama import llama3_8b_shape
 from server.app import create_app
 from server.engine_worker import EngineWorker
 
 
 def build_worker(args: argparse.Namespace) -> EngineWorker:
-    model_config = llama3_8b_shape(n_layers=args.n_layers, max_seq_len=args.max_model_len)
     cache_config = CacheConfig(block_size=args.block_size, num_gpu_blocks=args.num_gpu_blocks)
     scheduler_config = SchedulerConfig(
         max_num_seqs=args.max_num_seqs, max_num_batched_tokens=args.max_num_batched_tokens,
     )
+    if args.fake_engine:
+        # No torch/CUDA: the real scheduler with fake tokens (server/tests/fake_engine.py),
+        # for dashboards and CI smoke tests. --fake-step-ms stands in for a forward pass.
+        from server.tests.fake_engine import FakeEngine
+        engine = FakeEngine(cache_config, scheduler_config)
+
+        def slow_step(step=engine.step):
+            time.sleep(args.fake_step_ms / 1000)
+            return step()
+        engine.step = slow_step
+        return EngineWorker(engine, default_timeout_s=args.default_timeout_s)
+
+    from model.llm_engine import LLMEngine  # imported here: CUDA/Triton-only
+    from model.minimal_llama import llama3_8b_shape
+    model_config = llama3_8b_shape(n_layers=args.n_layers, max_seq_len=args.max_model_len)
     engine = LLMEngine(
         cache_config, scheduler_config, model_config,
         max_model_len=args.max_model_len, device=args.device, seed=args.seed,
@@ -52,6 +65,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--max-num-seqs", type=int, default=256)
     parser.add_argument("--max-num-batched-tokens", type=int, default=2048)
     parser.add_argument("--default-timeout-s", type=float, default=60.0)
+    parser.add_argument("--fake-engine", action="store_true", help="no GPU: fake tokens, real scheduler")
+    parser.add_argument("--fake-step-ms", type=float, default=20.0, help="--fake-engine's time per step")
     return parser.parse_args(argv)
 
 

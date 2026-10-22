@@ -1,0 +1,8 @@
+groups:
+  - name: lightserve
+    rules:
+      - alert: LightserveDown
+        expr: up{job="lightserve"} == 0   # Prometheus's own "could I read /metrics?" signal
+        for: 30s
+        annotations:
+          summary: "Prometheus can't reach lightserve's /metrics on {{ $labels.instance }}"

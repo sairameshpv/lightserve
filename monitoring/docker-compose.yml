@@ -1,0 +1,21 @@
+# Prometheus + Grafana for lightserve on the Mac. lightserve itself runs on the host:
+#   .venv/bin/python -m server --fake-engine --port 8001
+#   cd monitoring && docker compose up -d     (needs GRAFANA_ADMIN_PASSWORD in monitoring/.env)
+# Prometheus: http://localhost:9090   Grafana: http://localhost:3000 (user admin)
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports: ["9090:9090"]
+    extra_hosts: ["host.docker.internal:host-gateway"]  # reach lightserve on the host
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in monitoring/.env}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports: ["3000:3000"]

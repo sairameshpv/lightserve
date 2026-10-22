@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 5s       # read every target's /metrics this often
+  evaluation_interval: 5s   # check alert rules this often
+
+rule_files: [alerts.yml]
+
+scrape_configs:
+  - job_name: lightserve
+    static_configs:
+      - targets: ["host.docker.internal:8001"]

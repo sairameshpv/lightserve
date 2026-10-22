@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: lightserve
+    folder: lightserve
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards   # loads every *.json next to this file
