@@ -53,7 +53,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install triton pytest fastapi uvicorn httpx prometheus_client opentelemetry-sdk safetensors
+          pip install triton pytest fastapi uvicorn httpx prometheus_client opentelemetry-sdk safetensors numpy
 
       - name: Run kernel, model, server, engine, and benchmarks tests
         # `python -m pytest`, not the bare `pytest` console script: this repo
