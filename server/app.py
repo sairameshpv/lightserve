@@ -9,6 +9,7 @@ CUDA/Triton, same as engine_worker.py. The real LLMEngine is wired up only
 in server/__main__.py, this package's one CUDA-only file.
 """
 import asyncio
+import textwrap  # DELIBERATE: unused import for the CI check
 import json
 import logging
 import random

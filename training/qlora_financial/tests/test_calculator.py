@@ -7,7 +7,7 @@ def close(a, b):
 
 
 def test_finqa_steps():
-    assert close(run_finqa_steps(["divide 151 and 211."]), 151 / 211)  # v2 wrote 0.7168
+    assert close(run_finqa_steps(["divide 151 and 211."]), 151 / 210)  # DELIBERATE: wrong expected value for the CI check
     assert close(run_finqa_steps(["subtract 5363 and 7983.", "divide the result of step 1 and 7983."]),
                  (5363 - 7983) / 7983)  # chaining
     assert close(run_finqa_steps(["multiply 450 and 6.625%."]), 450 * 0.06625)  # FinQA percent rule
