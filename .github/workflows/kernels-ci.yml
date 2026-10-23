@@ -56,6 +56,8 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.11"
+          cache: pip  # the repo has no lockfile; any file works as the cache key
+          cache-dependency-path: training/qlora_financial/requirements.txt
 
       - name: Install dependencies
         run: |
@@ -88,6 +90,8 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.11"
+          cache: pip  # the repo has no lockfile; any file works as the cache key
+          cache-dependency-path: training/qlora_financial/requirements.txt
       - name: Install dependencies
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -107,6 +111,8 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.11"
+          # no pip cache here: the jobs share one cache slot, and this job finishing
+          # first would fill it with 4 small libraries instead of torch
       - run: pip install fastapi uvicorn prometheus_client opentelemetry-sdk
       - name: Serve, request, check /metrics
         shell: bash
@@ -133,12 +139,15 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.11"
+          cache: pip  # the repo has no lockfile; any file works as the cache key
+          cache-dependency-path: training/qlora_financial/requirements.txt
       - name: Install everything, then list exact versions
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r training/qlora_financial/requirements.txt triton pytest fastapi uvicorn httpx \
             prometheus_client opentelemetry-sdk safetensors numpy huggingface_hub
           mkdir scan && pip freeze > scan/requirements.txt
+          echo "scanning $(wc -l < scan/requirements.txt) packages"
       - name: Trivy (report HIGH + CRITICAL, fail on CRITICAL)
         run: |
           T="docker run --rm -v $PWD/scan:/scan:ro -v trivy-cache:/root/.cache aquasec/trivy@sha256:e2b22eac59c02003d8749f5b8d9bd073b62e30fefaef5b7c8371204e0a4b0c08"
