@@ -9,6 +9,7 @@ on:
       - "server/**"
       - "engine/**"
       - "benchmarks/**"
+      - "training/**"
       - ".github/workflows/kernels-ci.yml"
   pull_request:
     paths:
@@ -17,6 +18,7 @@ on:
       - "server/**"
       - "engine/**"
       - "benchmarks/**"
+      - "training/**"
       - ".github/workflows/kernels-ci.yml"
 
 jobs:
@@ -70,3 +72,21 @@ jobs:
         # alone doesn't (see git history for the ModuleNotFoundError this
         # was hit by).
         run: python -m pytest kernels/tests/ model/tests/ server/tests/ engine/tests/ benchmarks/tests/ -v
+
+  training:
+    # training/ tests are CPU-only: they cover data prep, scoring, the
+    # calculator and RL pairs, plus tiny CPU checks of the training helpers.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install pytest numpy transformers huggingface_hub peft ruff==0.14.0
+      - name: Lint (ruff, real-mistake checks only)
+        run: ruff check training --select F,E9
+      - name: Run training tests
+        run: python -m pytest training -v
