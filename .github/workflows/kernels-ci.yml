@@ -45,6 +45,7 @@ jobs:
     # the actual LLMEngine/torch imports it exercises are local to main(),
     # so this too collects and runs cleanly with no GPU and no skip gating.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -77,6 +78,7 @@ jobs:
     # training/ tests are CPU-only: they cover data prep, scoring, the
     # calculator and RL pairs, plus tiny CPU checks of the training helpers.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -95,6 +97,7 @@ jobs:
     # The real server as a running program (fake engine, no torch): health,
     # one completion, and /metrics counting it.
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -105,10 +108,10 @@ jobs:
         shell: bash
         run: |
           python -m server --fake-engine --port 8001 > server.log 2>&1 &
-          for i in $(seq 30); do curl -sf localhost:8001/health && break; sleep 1; done
-          curl -sf localhost:8001/v1/completions -H 'Content-Type: application/json' \
+          for i in $(seq 30); do curl -sf --max-time 5 localhost:8001/health && break; sleep 1; done
+          curl -sf --max-time 5 localhost:8001/v1/completions -H 'Content-Type: application/json' \
             -d '{"prompt":[1,2,3],"max_tokens":4}' | grep -F '"finish_reason":"length"'
-          curl -sf localhost:8001/metrics | grep -F 'lightserve_requests_total{status="FINISHED_LENGTH_CAPPED"} 1.0'
+          curl -sf --max-time 5 localhost:8001/metrics | grep -F 'lightserve_requests_total{status="FINISHED_LENGTH_CAPPED"} 1.0'
       - if: failure()
         run: cat server.log
 
@@ -118,6 +121,7 @@ jobs:
     # digest, not trivy-action (its tags were hijacked in March 2026); 0.67.2
     # predates that.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
