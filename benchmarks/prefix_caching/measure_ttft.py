@@ -347,7 +347,6 @@ def main():
     prefix_lens = [int(n) for n in args.prefix_lens.split(",")]
 
     import torch
-    from dataclasses import replace
     from model.minimal_llama import init_weights, llama3_8b_shape
 
     max_len_needed = max(prefix_lens) + args.suffix_len + args.max_tokens

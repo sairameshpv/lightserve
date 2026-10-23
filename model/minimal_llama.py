@@ -327,7 +327,6 @@ def reference_llama_forward(weights: LlamaWeights, config: LlamaConfig, input_id
     ground truth `llama_forward`'s kernel-built path is checked against.
     """
     B, N = input_ids.shape
-    H = config.hidden_size
     cos, sin = precompute_rope(config, input_ids.device)
 
     def rmsnorm(h, weight):

@@ -63,7 +63,6 @@ def main():
               f"{r['attainable_tflops']:>15.2f}{r['achieved_tflops']:>14.2f}"
               f"{r['achieved_gbs']:>12.1f}{r['roofline_efficiency']:>8.1%}")
 
-    max_ai = max(r["arithmetic_intensity"] for r in merged)
     peak_achieved = max(r["achieved_tflops"] for r in merged)
     print(f"\nMax achieved TFLOPS across all ops/shapes: {peak_achieved:.1f} "
           f"({peak_achieved/analytical['l40s_peak_bf16_tflops']:.0%} of the {analytical['l40s_peak_bf16_tflops']:.0f} TFLOPS spec)")

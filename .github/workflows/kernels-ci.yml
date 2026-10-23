@@ -55,6 +55,13 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install triton pytest fastapi uvicorn httpx prometheus_client opentelemetry-sdk safetensors numpy
 
+      - name: Lint (ruff, real-mistake checks only)
+        # F = pyflakes (unused/undefined names, broken imports), E9 = syntax
+        # errors. Style rules stay off so old code isn't churned.
+        run: |
+          pip install ruff==0.14.0
+          ruff check kernels model server engine benchmarks --select F,E9
+
       - name: Run kernel, model, server, engine, and benchmarks tests
         # `python -m pytest`, not the bare `pytest` console script: this repo
         # has no pyproject.toml/setup.py and no conftest.py, so nothing
