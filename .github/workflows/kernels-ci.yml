@@ -90,3 +90,24 @@ jobs:
         run: ruff check training --select F,E9
       - name: Run training tests
         run: python -m pytest training -v
+
+  smoke:
+    # The real server as a running program (fake engine, no torch): health,
+    # one completion, and /metrics counting it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install fastapi uvicorn prometheus_client opentelemetry-sdk
+      - name: Serve, request, check /metrics
+        shell: bash
+        run: |
+          python -m server --fake-engine --port 8001 > server.log 2>&1 &
+          for i in $(seq 30); do curl -sf localhost:8001/health && break; sleep 1; done
+          curl -sf localhost:8001/v1/completions -H 'Content-Type: application/json' \
+            -d '{"prompt":[1,2,3],"max_tokens":4}' | grep -F '"finish_reason":"length"'
+          curl -sf localhost:8001/metrics | grep -F 'lightserve_requests_total{status="FINISHED_LENGTH_CAPPED"} 1.0'
+      - if: failure()
+        run: cat server.log
