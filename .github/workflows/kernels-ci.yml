@@ -117,7 +117,9 @@ jobs:
 
   security:
     # Known-vulnerability scan of every Python library CI and training install,
-    # at the exact versions pip resolved. Trivy runs from its image pinned by
+    # at the versions pip picks today (the training list sets only minimums).
+    # Not covered: what's actually installed on the GPU node or in the
+    # vLLM/OpenRLHF containers. Trivy runs from its image pinned by
     # digest, not trivy-action (its tags were hijacked in March 2026); 0.67.2
     # predates that.
     runs-on: ubuntu-latest
