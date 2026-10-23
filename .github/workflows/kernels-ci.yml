@@ -111,3 +111,26 @@ jobs:
           curl -sf localhost:8001/metrics | grep -F 'lightserve_requests_total{status="FINISHED_LENGTH_CAPPED"} 1.0'
       - if: failure()
         run: cat server.log
+
+  security:
+    # Known-vulnerability scan of every Python library CI and training install,
+    # at the exact versions pip resolved. Trivy runs from its image pinned by
+    # digest, not trivy-action (its tags were hijacked in March 2026); 0.67.2
+    # predates that.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install everything, then list exact versions
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r training/qlora_financial/requirements.txt triton pytest fastapi uvicorn httpx \
+            prometheus_client opentelemetry-sdk safetensors numpy huggingface_hub
+          mkdir scan && pip freeze > scan/requirements.txt
+      - name: Trivy (report HIGH + CRITICAL, fail on CRITICAL)
+        run: |
+          T="docker run --rm -v $PWD/scan:/scan:ro -v trivy-cache:/root/.cache aquasec/trivy@sha256:e2b22eac59c02003d8749f5b8d9bd073b62e30fefaef5b7c8371204e0a4b0c08"
+          $T fs --scanners vuln --severity HIGH,CRITICAL /scan
+          $T fs --scanners vuln --severity CRITICAL --exit-code 1 --quiet /scan
