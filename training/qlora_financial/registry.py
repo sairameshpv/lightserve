@@ -5,6 +5,7 @@ served.
 
 Scores are the README's headline numbers: greedy accuracy under the fair
 checker after the calculator, recomputed from the saved answers (samples.jsonl)."""
+import argparse
 import hashlib
 import json
 from collections import defaultdict
@@ -76,3 +77,25 @@ def register(version_name: str, adapter_dir, samples_path, data_dir, git_commit:
     if champion:
         client.set_registered_model_alias(model, "champion", mv.version)
     return int(mv.version)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Register a finance-qa adapter version in MLflow.")
+    ap.add_argument("--version-name", required=True, help="e.g. v3")
+    ap.add_argument("--adapter", required=True, help="adapter folder (with adapter_config.json)")
+    ap.add_argument("--samples", required=True, help="its saved test answers (sample_eval's samples.jsonl)")
+    ap.add_argument("--data-dir", required=True, help="the train/val/test.jsonl it was trained on")
+    ap.add_argument("--git-commit", required=True, help="the code commit that trained it")
+    ap.add_argument("--champion", action="store_true", help="move the champion alias to this version")
+    ap.add_argument("--tracking-uri", default="sqlite:///training/qlora_financial/outputs/mlflow.db")
+    ap.add_argument("--artifact-root", default="training/qlora_financial/outputs/mlruns")
+    args = ap.parse_args()
+    import mlflow
+    mlflow.set_tracking_uri(args.tracking_uri)
+    n = register(args.version_name, args.adapter, args.samples, args.data_dir, args.git_commit,
+                 args.artifact_root, champion=args.champion)
+    print(f"finance-qa version {n} = {args.version_name}" + (" (champion)" if args.champion else ""))
+
+
+if __name__ == "__main__":
+    main()
