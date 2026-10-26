@@ -36,7 +36,8 @@ def decide(candidate_rows: list, champion_rows: list, alpha: float = 0.05, max_d
     elif p >= alpha:
         reasons.append(f"could be luck: {wins} vs {losses}, sign test p = {p:.2g} (needs < {alpha})")
     for src in s_champ:
-        if src not in ("n", "ALL") and (drop := s_champ[src] - s_cand.get(src, 0.0)) > max_drop:
+        # rounded: float error turns an exact 2-point drop into 2.0000000000000018, over the limit
+        if src not in ("n", "ALL") and (drop := round(s_champ[src] - s_cand.get(src, 0.0), 9)) > max_drop:
             reasons.append(f"{src} drops {drop * 100:.1f} points (limit {max_drop * 100:g})")
     return {"passed": not reasons, "reasons": reasons, "only_candidate": wins, "only_champion": losses,
             "p": p, "candidate": s_cand, "champion": s_champ}

@@ -54,3 +54,10 @@ def test_command_error_exits_2_not_1(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as e:
         main()
     assert e.value.code == 2
+
+
+def test_a_drop_of_exactly_2_points_is_allowed():
+    """45 -> 44 right of 50 is exactly 2.0 points, at the limit, not over it (float error makes it 2.0000000000000018)."""
+    b = lambda right: [r for r in answers({"B": right}) if int(r["id"][1:]) < 50]  # a 50-question source
+    d = decide(answers({"A": 100}) + b(44), answers({"A": 50}) + b(45))
+    assert d["passed"] and d["reasons"] == []
