@@ -35,6 +35,8 @@ def test_lineage(tmp_path):
     assert (lin["data.train.rows"], lin["data.val.rows"], lin["data.test.rows"]) == (3, 1, 2)
     assert lin["data.train.sha256"] == hashlib.sha256((data / "train.jsonl").read_bytes()).hexdigest()
     assert lin["data_dir"] == str(data)
+    (data / "val.jsonl").write_text('{"i": 0}\n{"i": 1}')  # no line break after the last row
+    assert lineage(adapter, data, git_commit="abc1234")["data.val.rows"] == 2
 
 
 def test_register_two_versions_and_move_champion(tmp_path):

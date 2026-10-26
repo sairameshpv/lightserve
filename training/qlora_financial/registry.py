@@ -48,7 +48,7 @@ def lineage(adapter_dir, data_dir, git_commit: str) -> dict:
     for split in ("train", "val", "test"):
         raw = (Path(data_dir) / f"{split}.jsonl").read_bytes()
         lin[f"data.{split}.sha256"] = hashlib.sha256(raw).hexdigest()
-        lin[f"data.{split}.rows"] = raw.count(b"\n")
+        lin[f"data.{split}.rows"] = len(raw.splitlines())  # counts a last row with no line break too
     return lin
 
 
