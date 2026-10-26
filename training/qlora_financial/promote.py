@@ -1,9 +1,11 @@
 """Quality gate: may a candidate adapter replace the champion? Compares their saved
 answers to the same test questions, question by question (fair checker + calculator,
 as registry.scores), and says pass or reject with the reasons."""
+import argparse
 import math
+import sys
 
-from training.qlora_financial.registry import scores
+from training.qlora_financial.registry import load_rows, scores
 from training.qlora_financial.sample_eval import rescore, with_calculator
 
 
@@ -38,3 +40,30 @@ def decide(candidate_rows: list, champion_rows: list, alpha: float = 0.05, max_d
             reasons.append(f"{src} drops {drop * 100:.1f} points (limit {max_drop * 100:g})")
     return {"passed": not reasons, "reasons": reasons, "only_candidate": wins, "only_champion": losses,
             "p": p, "candidate": s_cand, "champion": s_champ}
+
+
+def champion_samples(tracking_uri: str, model: str = "finance-qa") -> str:
+    """The saved answers of the registry's current champion (its `samples` tag)."""
+    import mlflow
+    mlflow.set_tracking_uri(tracking_uri)
+    return mlflow.MlflowClient().get_model_version_by_alias(model, "champion").tags["samples"]
+
+
+def main():
+    ap = argparse.ArgumentParser(description="May this candidate replace the champion? Exit 0 = pass, 1 = reject.")
+    ap.add_argument("--candidate", required=True, help="the candidate's saved test answers (samples.jsonl)")
+    ap.add_argument("--champion", help="the champion's saved answers (default: the registry's champion)")
+    ap.add_argument("--tracking-uri", default="sqlite:///training/qlora_financial/outputs/mlflow.db")
+    args = ap.parse_args()
+    d = decide(load_rows(args.candidate), load_rows(args.champion or champion_samples(args.tracking_uri)))
+    print(f"{'':16} {'candidate':>9} {'champion':>9}")
+    for src in d["champion"]:
+        if src != "n":
+            print(f"{src:16} {d['candidate'].get(src, 0) * 100:9.1f} {d['champion'][src] * 100:9.1f}")
+    print(f"right only with candidate {d['only_candidate']}, only with champion {d['only_champion']}, p = {d['p']:.2g}")
+    print("PASS" if d["passed"] else "REJECT: " + "; ".join(d["reasons"]))
+    sys.exit(0 if d["passed"] else 1)
+
+
+if __name__ == "__main__":
+    main()
