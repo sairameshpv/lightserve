@@ -79,3 +79,15 @@ def test_a_repeated_question_is_refused():
     cand = answers({"A": 60})
     with pytest.raises(ValueError, match="candidate answers a question more than once"):
         decide(cand + cand[:1], answers({"A": 50}))
+
+
+def test_a_small_win_could_be_luck():
+    """5 wins, 0 losses: like 5 heads in a row, p = 2/32 = 0.0625, not under 0.05."""
+    d = decide(answers({"A": 55}), answers({"A": 50}))
+    assert (d["only_candidate"], d["only_champion"]) == (5, 0) and not d["passed"]
+    assert d["reasons"] == ["could be luck: 5 vs 0, sign test p = 0.062 (needs < 0.05)"]
+
+
+def test_different_questions_are_refused():
+    with pytest.raises(ValueError, match="answered different questions"):
+        decide(answers({"A": 60}), answers({"B": 60}))
