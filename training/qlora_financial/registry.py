@@ -13,6 +13,15 @@ from pathlib import Path
 
 from training.qlora_financial.sample_eval import rescore, with_calculator
 
+REPO = Path(__file__).resolve().parents[2]
+
+
+def repo_path(path) -> str:
+    """A path as stored in the registry: relative to the repo root if it's inside the repo
+    (so it works on any machine with a checkout), absolute otherwise."""
+    p = Path(path).resolve()
+    return str(p.relative_to(REPO)) if p.is_relative_to(REPO) else str(p)
+
 
 def load_rows(samples_path) -> list:
     with open(samples_path) as f:
@@ -35,7 +44,7 @@ def lineage(adapter_dir, data_dir, git_commit: str) -> dict:
     train.jsonl have the same name and 34,141 rows each, so only the hash tells them apart."""
     cfg = json.loads((Path(adapter_dir) / "adapter_config.json").read_text())
     lin = {"base_model": cfg["base_model_name_or_path"], "lora_r": cfg["r"], "lora_alpha": cfg["lora_alpha"],
-           "git_commit": git_commit, "data_dir": str(data_dir)}
+           "git_commit": git_commit, "data_dir": repo_path(data_dir)}
     for split in ("train", "val", "test"):
         raw = (Path(data_dir) / f"{split}.jsonl").read_bytes()
         lin[f"data.{split}.sha256"] = hashlib.sha256(raw).hexdigest()
@@ -55,7 +64,7 @@ def register(version_name: str, adapter_dir, samples_path, data_dir, git_commit:
     from mlflow.exceptions import MlflowException
 
     s, lin = scores(load_rows(samples_path)), lineage(adapter_dir, data_dir, git_commit)
-    facts = {"version_name": version_name, "samples": str(Path(samples_path).resolve()), **lin,
+    facts = {"version_name": version_name, "samples": repo_path(samples_path), **lin,
              **{f"acc.{k}": v for k, v in s.items() if k != "n"}, "n_scored": s["n"]}
     if mlflow.get_experiment_by_name("finance-qa-registry") is None:
         mlflow.create_experiment("finance-qa-registry", artifact_location=Path(artifact_root).resolve().as_uri())
@@ -72,7 +81,7 @@ def register(version_name: str, adapter_dir, samples_path, data_dir, git_commit:
     except MlflowException as e:
         if e.error_code != "RESOURCE_ALREADY_EXISTS":
             raise
-    mv = client.create_model_version(model, source=str(Path(adapter_dir).resolve()), run_id=run.info.run_id,
+    mv = client.create_model_version(model, source=repo_path(adapter_dir), run_id=run.info.run_id,
                                      tags={k: str(v) for k, v in facts.items()})
     if champion:
         client.set_registered_model_alias(model, "champion", mv.version)

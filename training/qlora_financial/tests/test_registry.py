@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from training.qlora_financial.registry import lineage, register, scores
+from training.qlora_financial.registry import REPO, lineage, register, repo_path, scores
 
 
 def row(id, source, greedy, gold):
@@ -63,3 +63,11 @@ def test_register_two_versions_and_move_champion(tmp_path):
 
     register("newer", git_commit="ccc", champion=True, **common)
     assert int(client.get_model_version_by_alias("finance-qa", "champion").version) == 3
+
+
+def test_repo_path_is_relative_inside_the_repo(tmp_path):
+    """Stored paths must work on any machine with the repo, not just this one."""
+    assert repo_path(REPO / "training" / "qlora_financial" / "outputs" / "v3" / "samples.jsonl") == \
+        "training/qlora_financial/outputs/v3/samples.jsonl"
+    assert repo_path("training/qlora_financial/data/v3") == "training/qlora_financial/data/v3"  # from the repo root
+    assert repo_path(tmp_path / "x.jsonl") == str(tmp_path / "x.jsonl")  # outside the repo: kept absolute

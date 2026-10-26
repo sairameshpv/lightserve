@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from training.qlora_financial.promote import decide, main, sign_test
-from training.qlora_financial.registry import load_rows
+from training.qlora_financial.promote import champion_samples, decide, main, sign_test
+from training.qlora_financial.registry import REPO, load_rows
 
 OUTPUTS = Path(__file__).resolve().parents[1] / "outputs"  # gitignored: these tests skip where it's absent (CI)
 
@@ -61,3 +61,14 @@ def test_a_drop_of_exactly_2_points_is_allowed():
     b = lambda right: [r for r in answers({"B": right}) if int(r["id"][1:]) < 50]  # a 50-question source
     d = decide(answers({"A": 100}) + b(44), answers({"A": 50}) + b(45))
     assert d["passed"] and d["reasons"] == []
+
+
+def test_champion_samples_resolves_a_repo_relative_path(tmp_path):
+    mlflow = pytest.importorskip("mlflow")
+    uri = f"sqlite:///{tmp_path / 'mlflow.db'}"  # a throwaway database, never the real one
+    mlflow.set_tracking_uri(uri)
+    client = mlflow.MlflowClient()
+    client.create_registered_model("finance-qa")
+    mv = client.create_model_version("finance-qa", source="x", tags={"samples": "training/v9/samples.jsonl"})
+    client.set_registered_model_alias("finance-qa", "champion", mv.version)
+    assert champion_samples(uri) == str(REPO / "training" / "v9" / "samples.jsonl")

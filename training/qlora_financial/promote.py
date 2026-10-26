@@ -5,7 +5,7 @@ import argparse
 import math
 import sys
 
-from training.qlora_financial.registry import load_rows, scores
+from training.qlora_financial.registry import REPO, load_rows, scores
 from training.qlora_financial.sample_eval import rescore, with_calculator
 
 
@@ -44,10 +44,11 @@ def decide(candidate_rows: list, champion_rows: list, alpha: float = 0.05, max_d
 
 
 def champion_samples(tracking_uri: str, model: str = "finance-qa") -> str:
-    """The saved answers of the registry's current champion (its `samples` tag)."""
+    """Where the registry's current champion's saved answers are (its `samples` tag)."""
     import mlflow
     mlflow.set_tracking_uri(tracking_uri)
-    return mlflow.MlflowClient().get_model_version_by_alias(model, "champion").tags["samples"]
+    samples = mlflow.MlflowClient().get_model_version_by_alias(model, "champion").tags["samples"]
+    return str(REPO / samples)  # stored relative to the repo root (an absolute path stays as is)
 
 
 def main():
