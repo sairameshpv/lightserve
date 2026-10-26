@@ -24,6 +24,9 @@ def decide(candidate_rows: list, champion_rows: list, alpha: float = 0.05, max_d
     max_drop. Both must have answered the same questions."""
     graded = [{r["id"]: r["greedy_ok"] for r in rescore(with_calculator(rows), "fair")}
               for rows in (candidate_rows, champion_rows)]
+    for who, rows, g in (("candidate", candidate_rows, graded[0]), ("champion", champion_rows, graded[1])):
+        if len(g) != len(rows):  # scores() would count the repeat, the head-to-head wouldn't
+            raise ValueError(f"{who} answers a question more than once")
     if graded[0].keys() != graded[1].keys():
         raise ValueError("candidate and champion answered different questions")
     cand, champ = graded

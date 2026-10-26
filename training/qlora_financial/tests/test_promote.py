@@ -72,3 +72,10 @@ def test_champion_samples_resolves_a_repo_relative_path(tmp_path):
     mv = client.create_model_version("finance-qa", source="x", tags={"samples": "training/v9/samples.jsonl"})
     client.set_registered_model_alias("finance-qa", "champion", mv.version)
     assert champion_samples(uri) == str(REPO / "training" / "v9" / "samples.jsonl")
+
+
+def test_a_repeated_question_is_refused():
+    """The score counts every row but the head-to-head keeps one per question; they must agree."""
+    cand = answers({"A": 60})
+    with pytest.raises(ValueError, match="candidate answers a question more than once"):
+        decide(cand + cand[:1], answers({"A": 50}))
