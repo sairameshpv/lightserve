@@ -513,11 +513,12 @@ reasons: 47 vs 151, and ConvFinQA drops 17.3 points. A made-up test shows the
 third rule at work: a candidate that wins 50 to 3 overall is still rejected
 because one source drops 3 points.
 
+From the repo root (the default database and artifact paths are relative to it):
 ```
-python3 -m venv mlops/.venv && mlops/.venv/bin/pip install -r mlops/requirements.txt
-python -m training.qlora_financial.registry --version-name v3 --adapter <dir> --samples <samples.jsonl> \
-  --data-dir <data> --git-commit <sha> [--champion]
-python -m training.qlora_financial.promote --candidate <samples.jsonl> [--champion <samples.jsonl>]
+python3.11 -m venv mlops/.venv && mlops/.venv/bin/pip install -r mlops/requirements.txt
+mlops/.venv/bin/python -m training.qlora_financial.registry --version-name v3 --adapter <dir> \
+  --samples <samples.jsonl> --data-dir <data> --git-commit <sha> [--champion]
+mlops/.venv/bin/python -m training.qlora_financial.promote --candidate <samples.jsonl> [--champion <samples.jsonl>]
 ```
 Without `--champion`, the gate reads the champion's saved answers from the
 registry. Its exit code is 0 for pass, 1 for reject and 2 for an error (no
