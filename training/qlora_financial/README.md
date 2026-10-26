@@ -520,8 +520,12 @@ python -m training.qlora_financial.registry --version-name v3 --adapter <dir> --
 python -m training.qlora_financial.promote --candidate <samples.jsonl> [--champion <samples.jsonl>]
 ```
 Without `--champion`, the gate reads the champion's saved answers from the
-registry. Its exit code is 0 for pass and 1 for reject, which a pipeline can
-branch on. MLflow is pinned to 3.16.1, the version that matches the
+registry. Its exit code is 0 for pass, 1 for reject and 2 for an error (no
+decision), which a pipeline can branch on. Paths inside the repo are stored
+relative to its root, so the lookup works on any checkout. Versions 1 and 2
+predate that: their `samples` tags were rewritten, but their adapter
+location (MLflow can't edit it) and their registration runs' parameters
+still hold this Mac's full paths. MLflow is pinned to 3.16.1, the version that matches the
 database's format.
 
 ## What's next
