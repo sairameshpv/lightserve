@@ -480,6 +480,50 @@ It picks **5e-5 for both methods**, and so 5e-5 for PPO too.
 
 The trial adapters and `v3_merged` stay on the node under `~/rl/` (not in git).
 
+## Model registry and quality gate
+
+Each adapter is kept as a numbered version of one registered model,
+`finance-qa`, in the local MLflow database. The version being served carries
+the label `champion`. A new adapter may take the label only if a quality gate
+says it's really better.
+
+**What each version records**, so a served model can be traced back to what
+made it:
+- **Its scores**: greedy accuracy under the fair checker with the calculator,
+  overall and per source, recomputed from its saved answers.
+- **Its origin ("lineage")**: base model, LoRA rank, the code commit, and a
+  content hash and row count of each data split. v2's and v3's `train.jsonl`
+  have the same name and row count, so only the hash tells them apart.
+
+| Version | Adapter | Code | Data | Score |
+|---|---|---|---|---|
+| 1 | v2 | `d2317e8` | `data/` | 73.8% |
+| 2 | v3 (**champion**) | `530aef3` | `data/v3/` | 81.2% |
+
+**The gate** (`promote.py`) compares a candidate with the champion on the same
+test questions, one question at a time. It passes only if all three hold:
+1. **More wins than losses**: more questions right only with the candidate than
+   only with the champion.
+2. **Not luck**: that split passes an exact sign test, p < 0.05.
+3. **Nothing breaks**: no source drops by more than 2 points.
+
+Each failed rule is reported as a reason. On the saved answers, v3 against v2
+**passes** (151 vs 47, p = 6.4e-14). v2 against v3 is **rejected** for two
+reasons: 47 vs 151, and ConvFinQA drops 17.3 points. A made-up test shows the
+third rule at work: a candidate that wins 50 to 3 overall is still rejected
+because one source drops 3 points.
+
+```
+python3 -m venv mlops/.venv && mlops/.venv/bin/pip install -r mlops/requirements.txt
+python -m training.qlora_financial.registry --version-name v3 --adapter <dir> --samples <samples.jsonl> \
+  --data-dir <data> --git-commit <sha> [--champion]
+python -m training.qlora_financial.promote --candidate <samples.jsonl> [--champion <samples.jsonl>]
+```
+Without `--champion`, the gate reads the champion's saved answers from the
+registry. Its exit code is 0 for pass and 1 for reject, which a pipeline can
+branch on. MLflow is pinned to 3.16.1, the version that matches the
+database's format.
+
 ## What's next
 
 - **Throughput**: *done for 1 GPU*. Batching + length grouping, bf16 base and
@@ -536,6 +580,8 @@ The trial adapters and `v3_merged` stay on the node under `~/rl/` (not in git).
 - `rl_data.py`, `rl_reward.py`, `rl_pairs.py`: the RL question sets, the
   fair-checker reward OpenRLHF calls, and DPO pairs from v3's own answers
   (`--subset` for the source-balanced 1,000).
+- `registry.py`, `promote.py`: model versions with scores and lineage in
+  MLflow, and the quality gate (see *Model registry and quality gate*).
 - `openrlhf_patches.patch`: our two OpenRLHF 0.11.2 fixes (LoRA weight
   sync to vLLM; `--train.critic_own_gpu`). `rl_node/`: the node scripts.
 - `tests/`: the scoring and calculator logic, Mac-only
