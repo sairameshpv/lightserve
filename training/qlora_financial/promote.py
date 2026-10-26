@@ -50,12 +50,17 @@ def champion_samples(tracking_uri: str, model: str = "finance-qa") -> str:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="May this candidate replace the champion? Exit 0 = pass, 1 = reject.")
+    ap = argparse.ArgumentParser(description="May this candidate replace the champion? "
+                                             "Exit 0 = pass, 1 = reject, 2 = error (no decision).")
     ap.add_argument("--candidate", required=True, help="the candidate's saved test answers (samples.jsonl)")
     ap.add_argument("--champion", help="the champion's saved answers (default: the registry's champion)")
     ap.add_argument("--tracking-uri", default="sqlite:///training/qlora_financial/outputs/mlflow.db")
     args = ap.parse_args()
-    d = decide(load_rows(args.candidate), load_rows(args.champion or champion_samples(args.tracking_uri)))
+    try:
+        d = decide(load_rows(args.candidate), load_rows(args.champion or champion_samples(args.tracking_uri)))
+    except Exception as e:  # a crash must not look like "reject" (1) to a pipeline
+        print(f"ERROR, no decision: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(2)
     print(f"{'':16} {'candidate':>9} {'champion':>9}")
     for src in d["champion"]:
         if src != "n":

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from training.qlora_financial.promote import decide, sign_test
+from training.qlora_financial.promote import decide, main, sign_test
 from training.qlora_financial.registry import load_rows
 
 OUTPUTS = Path(__file__).resolve().parents[1] / "outputs"  # gitignored: these tests skip where it's absent (CI)
@@ -45,3 +45,12 @@ def test_real_v3_beats_v2_and_not_the_reverse():
     assert not back["passed"]
     assert "not more right answers than the champion (47 vs 151)" in back["reasons"]
     assert "ConvFinQA drops 17.3 points (limit 2)" in back["reasons"]  # 86.528 - 69.257
+
+
+def test_command_error_exits_2_not_1(monkeypatch, tmp_path):
+    """1 means "reject"; a crash (here a missing file) must not look like one."""
+    monkeypatch.setattr("sys.argv", ["promote", "--candidate", str(tmp_path / "missing.jsonl"),
+                                     "--champion", str(tmp_path / "missing.jsonl")])
+    with pytest.raises(SystemExit) as e:
+        main()
+    assert e.value.code == 2
