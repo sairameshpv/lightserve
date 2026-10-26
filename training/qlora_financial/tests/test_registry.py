@@ -64,6 +64,12 @@ def test_register_two_versions_and_move_champion(tmp_path):
     register("newer", git_commit="ccc", champion=True, **common)
     assert int(client.get_model_version_by_alias("finance-qa", "champion").version) == 3
 
+    runs_before = len(mlflow.search_runs(search_all_experiments=True))
+    with pytest.raises(ValueError, match="'old' is already finance-qa version 1"):
+        register("old", git_commit="aaa", **common)  # run twice by mistake
+    assert len(mlflow.search_runs(search_all_experiments=True)) == runs_before  # refused before writing anything
+    assert len(client.search_model_versions("name='finance-qa'")) == 3
+
 
 def test_repo_path_is_relative_inside_the_repo(tmp_path):
     """Stored paths must work on any machine with the repo, not just this one."""
@@ -71,3 +77,4 @@ def test_repo_path_is_relative_inside_the_repo(tmp_path):
         "training/qlora_financial/outputs/v3/samples.jsonl"
     assert repo_path("training/qlora_financial/data/v3") == "training/qlora_financial/data/v3"  # from the repo root
     assert repo_path(tmp_path / "x.jsonl") == str(tmp_path / "x.jsonl")  # outside the repo: kept absolute
+

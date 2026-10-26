@@ -63,6 +63,9 @@ def register(version_name: str, adapter_dir, samples_path, data_dir, git_commit:
     from mlflow.data.meta_dataset import MetaDataset
     from mlflow.exceptions import MlflowException
 
+    for mv in mlflow.MlflowClient().search_model_versions(f"name='{model}'"):  # checked before anything is written
+        if mv.tags.get("version_name") == version_name:
+            raise ValueError(f"'{version_name}' is already {model} version {mv.version}")
     s, lin = scores(load_rows(samples_path)), lineage(adapter_dir, data_dir, git_commit)
     facts = {"version_name": version_name, "samples": repo_path(samples_path), **lin,
              **{f"acc.{k}": v for k, v in s.items() if k != "n"}, "n_scored": s["n"]}
