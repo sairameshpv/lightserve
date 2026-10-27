@@ -5,4 +5,5 @@
 # on that file first; 3.15 doesn't know the schema at all.
 mlflow==3.16.1
 evidently==0.7.23  # query drift (training/qlora_financial/drift.py)
+pandas==2.3.3  # evidently 0.7.23 breaks on pandas 3 (imports a function pandas 3 removed)
 pytest==9.1.1

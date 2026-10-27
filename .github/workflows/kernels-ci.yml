@@ -96,7 +96,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install pytest numpy transformers huggingface_hub peft ruff==0.14.0 mlflow==3.16.1  # mlflow: as mlops/requirements.txt
+          pip install pytest numpy transformers huggingface_hub peft ruff==0.14.0 mlflow==3.16.1 evidently==0.7.23 pandas==2.3.3  # as mlops/requirements.txt
       - name: Lint (ruff, real-mistake checks only)
         run: ruff check training --select F,E9
       - name: Run training tests
