@@ -529,6 +529,75 @@ location (MLflow can't edit it) and their registration runs' parameters
 still hold this Mac's full paths. MLflow is pinned to 3.16.1, the version that matches the
 database's format.
 
+## Query drift: are users still asking what the model learned?
+
+A model is only good at the kind of questions it was trained on. If users
+start sending, say, mostly short table questions or very long reports,
+accuracy can fall without any error showing up. `drift.py` compares a window
+of recent questions with the champion's training questions and raises an
+alarm when they clearly differ. The hard part is ignoring ordinary
+randomness: two batches of 500 questions from the same mix always differ a
+little.
+
+**What's measured**, from each question's text alone (real users don't say
+which dataset their question resembles):
+- **question length** in words (after the last `Question:`);
+- **document length** in words (before the first `Question:`);
+- **table rows**, in every source's format: web-table code (ConvFinQA), tabs
+  (TAT-QA), ` | ` bars, `• ` / `Row N: ` lines and blocks between two ruler
+  lines (FinQA). About 4% of FinQA writes rows as plain comma lines with no
+  marker; those aren't counted;
+- **share of digits** in the whole text.
+
+The sources do look different: TAT-QA has short documents (median 51 words)
+with a table and many digits (0.19); ConvFinQA and FinQA have long documents
+(~690 words). ConvFinQA and FinQA look alike, though, so a shift between just
+those two would go unseen.
+
+**How it decides**: Evidently compares each measurement's spread in the
+window with training's (a "normed Wasserstein distance"). A measurement
+counts as changed above **0.25**; the alarm goes off when at least half of
+the four changed.
+
+**Why 0.25 and not Evidently's default 0.1**: the default alarmed on 4 of 5
+unchanged windows. The cause is real, not noise: the test questions'
+documents are ~13% longer than training's (mean 395 vs 348 words), a side
+effect of splitting by document group. Windows drawn from training itself
+stayed at 0.03-0.08. The limit was then set by a rule fixed in advance: the
+largest distance over 20 unchanged windows (seeds 10-29) was 0.209, rounded
+up to the next 0.05.
+
+**Results** on fresh windows of 500 test questions (`make_traffic.py`, never
+trained on, seeds not used to set the limit):
+
+| Window | Changed | Alarm |
+|---|---|---|
+| Unchanged, 5 seeds (100-104) | none (largest distance 0.171) | no, 5 of 5 |
+| 80% TAT-QA (training: 34%) | document, table rows, digits | yes |
+| Only the longest third of documents | document, table rows, digits | yes |
+
+A gradual series mixes a growing share of the 80%-TAT-QA traffic into
+normal traffic:
+
+| Shifted | 0% | 20% | 40% | 60% | 80% | 100% |
+|---|---|---|---|---|---|---|
+| Changed | 0 | 0 | 1 (digits, 0.251) | 2 | 3 | 3 |
+| Alarm | no | no | no | **yes** | yes | yes |
+
+The alarm first fires at 60% shifted, about 62% TAT-QA against training's
+34%. That's the price of no false alarms: smaller shifts go unflagged, and
+the margins are thin (40% only just moved digits; one unchanged seed reached
+0.171).
+
+```
+mlops/.venv/bin/python -m training.qlora_financial.make_traffic --kind source --out queries.jsonl
+mlops/.venv/bin/python -m training.qlora_financial.drift --current queries.jsonl --out drift_out/
+```
+It writes `drift.json` (`drift_share`, `drifted_columns`, `dataset_drift`)
+for a pipeline and `report.html`, Evidently's page with a chart per
+measurement. Evidently 0.7.23 breaks on pandas 3, so pandas is pinned to
+2.3.3 (`mlops/requirements.txt`).
+
 ## What's next
 
 - **Throughput**: *done for 1 GPU*. Batching + length grouping, bf16 base and
@@ -587,6 +656,8 @@ database's format.
   (`--subset` for the source-balanced 1,000).
 - `registry.py`, `promote.py`: model versions with scores and lineage in
   MLflow, and the quality gate (see *Model registry and quality gate*).
+- `drift.py`, `make_traffic.py`: the query-drift check and synthetic query
+  windows with a known change (see *Query drift*).
 - `openrlhf_patches.patch`: our two OpenRLHF 0.11.2 fixes (LoRA weight
   sync to vLLM; `--train.critic_own_gpu`). `rl_node/`: the node scripts.
 - `tests/`: the scoring and calculator logic, Mac-only
