@@ -32,3 +32,21 @@ def table_rows(prompt: str) -> int:
         elif "\t" in line or " | " in line or ROW_MARK.match(line):
             n += 1
     return n
+
+
+def drift(reference_prompts: list, current_prompts: list, alarm_share: float = 0.5) -> tuple:
+    """Compare a window of questions with the reference (training) questions. Evidently tests each
+    measurement (for a large reference: normed Wasserstein distance > 0.1 = changed); the alarm is
+    on when at least `alarm_share` of them changed. Returns (summary, Evidently snapshot for HTML)."""
+    import pandas as pd
+    from evidently import DataDefinition, Dataset, Report
+    from evidently.presets import DataDriftPreset
+
+    ref, cur = (pd.DataFrame([features(p) for p in prompts]) for prompts in (reference_prompts, current_prompts))
+    dd = DataDefinition(numerical_columns=list(ref.columns))
+    snap = Report([DataDriftPreset(drift_share=alarm_share)]).run(
+        Dataset.from_pandas(cur, data_definition=dd), Dataset.from_pandas(ref, data_definition=dd))
+    metrics = snap.dict()["metrics"]
+    drifted = [m["config"]["column"] for m in metrics[1:] if m["value"] > m["config"]["threshold"]]
+    share = metrics[0]["value"]["share"]
+    return {"drift_share": share, "drifted_columns": drifted, "dataset_drift": share >= alarm_share}, snap
