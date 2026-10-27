@@ -27,6 +27,7 @@ def test_table_rows_in_every_format_the_sources_use():
     marks = "text\n• date, x, y\n• 2011, 1, 2\nRow 1: a, 1\nRow 2: b, 2\nQuestion: q?"
     assert [features(p)["table_rows"] for p in (html, ruler, marks)] == [2, 2, 4]  # ConvFinQA, FinQA, FinQA
     assert features("a list:\n- one\n- two\n----------\nQuestion: q?")["table_rows"] == 0  # a lone ruler isn't a table
+    assert features("**********\n\nr1\n\nr2\n**********\nQuestion: q?")["table_rows"] == 2  # blank lines aren't rows
 
 
 def made_up(n, seed, doc_words=(50, 150), tables=(0, 5), question_words=(5, 15)):

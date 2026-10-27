@@ -35,7 +35,7 @@ def table_rows(prompt: str) -> int:
     for line in prompt.splitlines():
         if RULER.match(line.strip()):
             n, block = (n + block, None) if block is not None else (n, 0)  # closing ruler: count the block
-        elif block is not None:
+        elif block is not None and line.strip():  # a blank line inside a block isn't a row
             block += 1
         elif "\t" in line or " | " in line or ROW_MARK.match(line):
             n += 1
