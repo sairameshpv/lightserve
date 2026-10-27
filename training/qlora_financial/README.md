@@ -566,6 +566,10 @@ effect of splitting by document group. Windows drawn from training itself
 stayed at 0.03-0.08. The limit was then set by a rule fixed in advance: the
 largest distance over 20 unchanged windows (seeds 10-29) was 0.209, rounded
 up to the next 0.05.
+Two caveats: the limit is set by document length (the others peaked at
+0.14-0.15), so it is loosest for the other three; and every window, the
+held-out seeds included, is drawn from the same 1,898 test questions, so two
+windows share about a quarter of their questions. New seeds, not new data.
 
 **Results** on fresh windows of 500 test questions (`make_traffic.py`, never
 trained on, seeds not used to set the limit):
