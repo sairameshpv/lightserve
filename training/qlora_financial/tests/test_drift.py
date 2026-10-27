@@ -52,3 +52,11 @@ def test_drift_names_what_changed_and_alarms_at_half():
     bigger, _ = drift(reference, made_up(500, seed=1, doc_words=(400, 600), tables=(10, 20)))
     assert bigger["drifted_columns"] == ["document_words", "table_rows", "digit_share"]
     assert bigger["drift_share"] == 0.75 and bigger["dataset_drift"]  # 3 of 4: the alarm
+
+
+def test_drift_at_exactly_the_limit_counts_as_changed_like_evidently():
+    reference, current = made_up(3000, seed=0), made_up(500, seed=1, question_words=(30, 40))
+    _, snap = drift(reference, current)
+    distance = next(m["value"] for m in snap.dict()["metrics"][1:] if m["config"]["column"] == "question_words")
+    at_limit, _ = drift(reference, current, limit=distance)  # Evidently: distance >= limit = changed
+    assert "question_words" in at_limit["drifted_columns"] and at_limit["drift_share"] == len(at_limit["drifted_columns"]) / 4
