@@ -2,7 +2,10 @@
 trained on? Each question becomes a few measurements taken from its text alone (real
 users don't say which dataset their question resembles), and Evidently compares this
 window's measurements with the training questions', column by column."""
+import argparse
+import json
 import re
+from pathlib import Path
 
 RULER = re.compile(r"^[*=-]{10,}$")  # FinQA puts some tables between two of these
 ROW_MARK = re.compile(r"^(• |Row \d+: )")  # FinQA's other row styles
@@ -55,3 +58,26 @@ def drift(reference_prompts: list, current_prompts: list, limit: float = LIMIT, 
     drifted = [m["config"]["column"] for m in metrics[1:] if m["value"] > m["config"]["threshold"]]
     share = metrics[0]["value"]["share"]
     return {"drift_share": share, "drifted_columns": drifted, "dataset_drift": share >= alarm_share}, snap
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Have the questions changed since training? Writes drift.json + report.html.")
+    ap.add_argument("--current", required=True, help="a query window, one {\"prompt\": ...} per line (make_traffic.py)")
+    ap.add_argument("--reference", default="training/qlora_financial/data/v3/train.jsonl", help="the champion's training data")
+    ap.add_argument("--out", required=True, help="folder for drift.json and report.html")
+    args = ap.parse_args()
+    with open(args.reference) as f:
+        reference = [json.loads(line)["messages"][1]["content"] for line in f]
+    with open(args.current) as f:
+        current = [json.loads(line)["prompt"] for line in f]
+    summary, snap = drift(reference, current)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "drift.json").write_text(json.dumps(summary, indent=2) + "\n")
+    snap.save_html(str(out / "report.html"))
+    print(f"{summary['drift_share']:.0%} of measurements changed {summary['drifted_columns']} -> "
+          f"{'ALARM' if summary['dataset_drift'] else 'no alarm'} ({out})")
+
+
+if __name__ == "__main__":
+    main()
