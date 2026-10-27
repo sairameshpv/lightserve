@@ -573,21 +573,23 @@ trained on, seeds not used to set the limit):
 | Window | Changed | Alarm |
 |---|---|---|
 | Unchanged, 5 seeds (100-104) | none (largest distance 0.171) | no, 5 of 5 |
-| 80% TAT-QA (training: 34%) | document, table rows, digits | yes |
+| 80% TAT-QA (training: 35%) | document, table rows, digits | yes |
 | Only the longest third of documents | document, table rows, digits | yes |
 
 A gradual series mixes a growing share of the 80%-TAT-QA traffic into
-normal traffic:
+normal traffic, over 6 seeds (0-5):
 
 | Shifted | 0% | 20% | 40% | 60% | 80% | 100% |
 |---|---|---|---|---|---|---|
-| Changed | 0 | 0 | 1 (digits, 0.251) | 2 | 3 | 3 |
-| Alarm | no | no | no | **yes** | yes | yes |
+| TAT-QA in the window | 34% | 41% | 49% | 58% | 68% | 80% |
+| Changed (per seed) | 0 | 0 | 0 (one seed: 1) | 1-2 | 3 | 3 |
+| Alarm | 0 of 6 | 0 of 6 | 0 of 6 | **4 of 6** | 6 of 6 | 6 of 6 |
 
-The alarm first fires at 60% shifted, about 62% TAT-QA against training's
-34%. That's the price of no false alarms: smaller shifts go unflagged, and
-the margins are thin (40% only just moved digits; one unchanged seed reached
-0.171).
+The alarm is unreliable at 60% shifted (about 58% TAT-QA against
+training's 35%) and reliable from 80% (68%). That's the price of no false
+alarms: smaller shifts go unflagged, and the margins are thin (one unchanged
+seed reached 0.171). The normal part of a window is drawn from the questions
+left after the shifted ones, so it holds less TAT-QA than the test set's 34%.
 
 ```
 mlops/.venv/bin/python -m training.qlora_financial.make_traffic --kind source --out queries.jsonl
