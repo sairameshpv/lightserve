@@ -1,9 +1,7 @@
 """drift.py: per-question measurements and the drift check, on made-up questions. No GPU."""
 import random
 
-import pytest
-
-from training.qlora_financial.drift import features
+from training.qlora_financial.drift import drift, features
 
 
 def test_features_table_question():
@@ -42,15 +40,11 @@ def made_up(n, seed, doc_words=(50, 150), tables=(0, 5), question_words=(5, 15))
 
 
 def test_drift_same_kind_of_questions_is_quiet():
-    pytest.importorskip("evidently")
-    from training.qlora_financial.drift import drift
     summary, _ = drift(made_up(3000, seed=0), made_up(500, seed=1))
     assert summary == {"drift_share": 0.0, "drifted_columns": [], "dataset_drift": False}
 
 
 def test_drift_names_what_changed_and_alarms_at_half():
-    pytest.importorskip("evidently")
-    from training.qlora_financial.drift import drift
     reference = made_up(3000, seed=0)
     longer_q, _ = drift(reference, made_up(500, seed=1, question_words=(30, 40)))
     assert longer_q["drifted_columns"] == ["question_words"] and not longer_q["dataset_drift"]  # 1 of 4: no alarm

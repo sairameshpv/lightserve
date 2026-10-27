@@ -663,7 +663,8 @@ measurement. Evidently 0.7.23 breaks on pandas 3, so pandas is pinned to
 - `openrlhf_patches.patch`: our two OpenRLHF 0.11.2 fixes (LoRA weight
   sync to vLLM; `--train.critic_own_gpu`). `rl_node/`: the node scripts.
 - `tests/`: the scoring and calculator logic, Mac-only
-  (`python -m pytest training/qlora_financial/tests/` from the repo root).
+  (`python -m pytest training/qlora_financial/tests/` from the repo root;
+  the drift tests need `mlops/.venv`).
 - `requirements.txt`: dependency floors; on a CUDA 12.8 driver, install
   torch from the cu128 index (see *Setup*).
 
