@@ -8,6 +8,10 @@ import random
 from training.qlora_financial.drift import features
 
 
+def document_words(row: dict) -> int:
+    return features(row["messages"][1]["content"])["document_words"]
+
+
 def window(rows: list, kind: str, n: int = 500, seed: int = 0, mix: float = 1.0) -> list:
     """n queries [{"prompt", "source"}]. kind: "none" (random), "source" (80% TAT-QA) or
     "length" (only the longest third of documents). mix = the share of the window that is
@@ -18,8 +22,7 @@ def window(rows: list, kind: str, n: int = 500, seed: int = 0, mix: float = 1.0)
         tat, other = [r for r in rows if r["source"] == "TAT-QA"], [r for r in rows if r["source"] != "TAT-QA"]
         picked = rng.sample(tat, round(k * 0.8)) + rng.sample(other, k - round(k * 0.8))
     elif kind == "length":
-        doc_words = lambda r: features(r["messages"][1]["content"])["document_words"]
-        picked = rng.sample(sorted(rows, key=doc_words, reverse=True)[:len(rows) // 3], k)
+        picked = rng.sample(sorted(rows, key=document_words, reverse=True)[:len(rows) // 3], k)
     elif kind == "none":
         picked = []
     else:
