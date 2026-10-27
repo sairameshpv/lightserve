@@ -6,6 +6,11 @@ import re
 
 RULER = re.compile(r"^[*=-]{10,}$")  # FinQA puts some tables between two of these
 ROW_MARK = re.compile(r"^(• |Row \d+: )")  # FinQA's other row styles
+# A measurement counts as changed above this normed Wasserstein distance. Evidently's default
+# 0.1 alarmed on 4 of 5 unchanged windows of 500 test questions (their documents are ~13%
+# longer than training's), so it was calibrated: the largest distance over 20 unchanged
+# windows (seeds 10-29) was 0.209, rounded up to the next 0.05.
+LIMIT = 0.25
 
 
 def features(prompt: str) -> dict:
@@ -34,9 +39,9 @@ def table_rows(prompt: str) -> int:
     return n
 
 
-def drift(reference_prompts: list, current_prompts: list, alarm_share: float = 0.5) -> tuple:
+def drift(reference_prompts: list, current_prompts: list, limit: float = LIMIT, alarm_share: float = 0.5) -> tuple:
     """Compare a window of questions with the reference (training) questions. Evidently tests each
-    measurement (for a large reference: normed Wasserstein distance > 0.1 = changed); the alarm is
+    measurement (normed Wasserstein distance > `limit` = changed); the alarm is
     on when at least `alarm_share` of them changed. Returns (summary, Evidently snapshot for HTML)."""
     import pandas as pd
     from evidently import DataDefinition, Dataset, Report
@@ -44,7 +49,7 @@ def drift(reference_prompts: list, current_prompts: list, alarm_share: float = 0
 
     ref, cur = (pd.DataFrame([features(p) for p in prompts]) for prompts in (reference_prompts, current_prompts))
     dd = DataDefinition(numerical_columns=list(ref.columns))
-    snap = Report([DataDriftPreset(drift_share=alarm_share)]).run(
+    snap = Report([DataDriftPreset(drift_share=alarm_share, num_method="wasserstein", num_threshold=limit)]).run(
         Dataset.from_pandas(cur, data_definition=dd), Dataset.from_pandas(ref, data_definition=dd))
     metrics = snap.dict()["metrics"]
     drifted = [m["config"]["column"] for m in metrics[1:] if m["value"] > m["config"]["threshold"]]
