@@ -28,6 +28,7 @@ def test_table_rows_in_every_format_the_sources_use():
     assert [features(p)["table_rows"] for p in (html, ruler, marks)] == [2, 2, 4]  # ConvFinQA, FinQA, FinQA
     assert features("a list:\n- one\n- two\n----------\nQuestion: q?")["table_rows"] == 0  # a lone ruler isn't a table
     assert features("**********\n\nr1\n\nr2\n**********\nQuestion: q?")["table_rows"] == 2  # blank lines aren't rows
+    assert features("Year | 2019 | 2018\nSales | 5 | 4\nQuestion: q?")["table_rows"] == 2  # FinQA's bars
 
 
 def made_up(n, seed, doc_words=(50, 150), tables=(0, 5), question_words=(5, 15)):

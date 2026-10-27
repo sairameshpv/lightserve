@@ -38,3 +38,7 @@ def test_same_seed_same_window_and_unknown_kind_refused():
     assert window(rows(), "source", n=60, seed=3) != window(rows(), "source", n=60, seed=4)
     with pytest.raises(ValueError):
         window(rows(), "weekend", n=60)
+
+
+def test_mix_zero_is_plain_random_traffic():
+    assert window(rows(), "source", n=60, seed=5, mix=0.0) == window(rows(), "none", n=60, seed=5)
