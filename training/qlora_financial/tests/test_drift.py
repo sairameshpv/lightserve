@@ -17,3 +17,11 @@ def test_features_plain_text_and_conversation_history():
 def test_features_without_a_question_line():
     f = features("just some text 42")
     assert (f["question_words"], f["document_words"]) == (0, 4)
+
+
+def test_table_rows_in_every_format_the_sources_use():
+    html = "text <table><tr><td>a</td><td>1</td></tr><tr><td>b</td><td>2</td></tr></table> more\nQuestion: q?"
+    ruler = "text\n\n*****************\n, 2002, 2001\nsales, 5, 4\n*****************\n\nQuestion: q?"
+    marks = "text\n• date, x, y\n• 2011, 1, 2\nRow 1: a, 1\nRow 2: b, 2\nQuestion: q?"
+    assert [features(p)["table_rows"] for p in (html, ruler, marks)] == [2, 2, 4]  # ConvFinQA, FinQA, FinQA
+    assert features("a list:\n- one\n- two\n----------\nQuestion: q?")["table_rows"] == 0  # a lone ruler isn't a table
