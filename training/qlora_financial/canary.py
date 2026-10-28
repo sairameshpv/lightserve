@@ -1,11 +1,16 @@
 """Canary: every few minutes, ask the served model the same 50 test questions and publish its
 accuracy, so a broken or swapped model shows up on the dashboard (speed metrics can't see it).
 "Normal" is the champion's own saved score on the same 50 questions."""
+import argparse
 import random
+import time
 from concurrent.futures import ThreadPoolExecutor
 
+from prometheus_client import CollectorRegistry, Counter, Gauge, start_http_server
+
 from training.qlora_financial.calculator import apply_calculator
-from training.qlora_financial.sample_eval import chat, match_variant
+from training.qlora_financial.registry import load_rows
+from training.qlora_financial.sample_eval import chat, load_questions, match_variant
 
 
 def pick(questions: list, n: int = 50, seed: int = 0) -> list:
@@ -34,3 +39,61 @@ def run_once(url: str, model: str, questions: list, workers: int = 8) -> dict:
     done = [(q, a) for q, a in zip(questions, answers) if a is not None]
     return {"accuracy": grade(*zip(*done)) if done else None, "answered": len(done),
             "errors": len(questions) - len(done)}
+
+
+def expected_accuracy(saved_rows: list, questions: list) -> float:
+    """"Normal": the champion's saved greedy answers to the same questions, graded the same way."""
+    saved = {r["id"]: r["greedy"] for r in saved_rows}
+    return grade(questions, [saved[q["id"]] for q in questions])
+
+
+def make_metrics(registry, expected: float) -> dict:
+    m = {"accuracy": Gauge("canary_accuracy", "Share of canary questions answered right (last round with answers; NaN = none yet)",
+                           registry=registry),
+         "errors": Counter("canary_errors", "Canary questions the server failed to answer", registry=registry),
+         "last_run": Gauge("canary_last_run_timestamp_seconds", "When a round last got answers", registry=registry)}
+    Gauge("canary_expected_accuracy", "The champion's saved score on the same questions", registry=registry).set(expected)
+    m["accuracy"].set(float("nan"))  # not 0 before the first answers: 0 would look like a broken model
+    return m
+
+
+def record(metrics: dict, result: dict, now: float = None) -> None:
+    """A round with no answers leaves accuracy and the timestamp alone, so the canary goes stale."""
+    metrics["errors"].inc(result["errors"])
+    if result["accuracy"] is not None:
+        metrics["accuracy"].set(result["accuracy"])
+        metrics["last_run"].set(time.time() if now is None else now)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Ask the served model the canary questions every few minutes; "
+                                             "publish the accuracy on /metrics for Prometheus.")
+    ap.add_argument("--url", default="http://localhost:8000", help="the OpenAI-style server (vLLM)")
+    ap.add_argument("--model", default="v3", help="the served model name to ask")
+    ap.add_argument("--data-dir", default="training/qlora_financial/data/v3", help="its test.jsonl")
+    ap.add_argument("--expected-from", help="saved answers that define normal (default: the registry's champion)")
+    ap.add_argument("--tracking-uri", default="sqlite:///training/qlora_financial/outputs/mlflow.db")
+    ap.add_argument("--every", type=float, default=300, help="seconds between rounds")
+    ap.add_argument("--port", type=int, default=9101, help="where /metrics is served")
+    args = ap.parse_args()
+    if args.expected_from is None:
+        from training.qlora_financial.promote import champion_samples
+        args.expected_from = champion_samples(args.tracking_uri)
+    questions = pick(load_questions(args.data_dir))
+    expected = expected_accuracy(load_rows(args.expected_from), questions)
+    registry = CollectorRegistry()
+    metrics = make_metrics(registry, expected)
+    start_http_server(args.port, registry=registry)
+    print(f"{len(questions)} canary questions, normal {expected:.2f} ({args.expected_from}); "
+          f"/metrics on :{args.port}, a round every {args.every:g} s", flush=True)
+    while True:
+        result = run_once(args.url, args.model, questions)
+        record(metrics, result)
+        acc = "none" if result["accuracy"] is None else f"{result['accuracy']:.2f}"
+        print(f"{time.strftime('%H:%M:%S')} accuracy {acc} (answered {result['answered']}, errors {result['errors']})",
+              flush=True)
+        time.sleep(args.every)
+
+
+if __name__ == "__main__":
+    main()

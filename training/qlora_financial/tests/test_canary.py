@@ -1,12 +1,14 @@
 """canary.py: the fixed canary questions, how their answers are graded, and one round against
 a fake OpenAI-style chat server (a tiny web server in a thread). No GPU."""
 import json
+import math
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from prometheus_client import CollectorRegistry
 
-from training.qlora_financial.canary import grade, pick, run_once
+from training.qlora_financial.canary import expected_accuracy, grade, make_metrics, pick, record, run_once
 
 
 def questions(n):
@@ -66,3 +68,22 @@ def test_run_once_right_and_wrong_answers(server):
 
 def test_run_once_server_down_counts_errors_without_crashing():
     assert run_once("http://127.0.0.1:9", "v3", questions(3)) == {"accuracy": None, "answered": 0, "errors": 3}
+
+
+def test_expected_accuracy_is_the_champions_saved_score_on_the_same_questions():
+    saved = [{"id": i, "greedy": "Answer: 0" if i < 5 else f"Answer: {i}"} for i in range(10)]  # wrong on 1-4
+    assert expected_accuracy(saved, questions(10)) == 0.6
+    assert expected_accuracy(saved, questions(10)[5:]) == 1.0  # only the canary's questions count
+
+
+def test_record_sets_the_metrics():
+    registry = CollectorRegistry()
+    metrics = make_metrics(registry, expected=0.8)
+    assert math.isnan(registry.get_sample_value("canary_accuracy"))  # no round yet: not 0, which would look broken
+    record(metrics, {"accuracy": 0.7, "answered": 48, "errors": 2}, now=1000.0)
+    record(metrics, {"accuracy": None, "answered": 0, "errors": 50}, now=1300.0)  # server down
+    value = registry.get_sample_value
+    assert value("canary_expected_accuracy") == 0.8
+    assert value("canary_accuracy") == 0.7  # kept from the last round that got answers
+    assert value("canary_errors_total") == 52
+    assert value("canary_last_run_timestamp_seconds") == 1000.0  # so the canary goes stale
