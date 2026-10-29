@@ -35,11 +35,11 @@ def test_grade_uses_the_calculator_and_the_fair_checker():
 
 @pytest.fixture
 def server():
-    """A fake chat server; set server.reply(prompt) -> answer. Records the model names asked for."""
+    """A fake chat server; set server.reply(prompt) -> answer. Records the settings asked with."""
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            srv.models.add(body["model"])
+            srv.asked.add((body["model"], body["n"], body["temperature"], body["max_tokens"]))
             answer = srv.reply(body["messages"][-1]["content"])
             if answer is None:  # reply None = a server error for this question
                 self.send_response(500)
@@ -57,7 +57,7 @@ def server():
         request_queue_size = 64  # the default 5 refuses some of the canary's 8 parallel connections (macOS: Errno 22)
 
     srv = Server(("127.0.0.1", 0), Handler)
-    srv.models, srv.url = set(), f"http://127.0.0.1:{srv.server_address[1]}"
+    srv.asked, srv.url = set(), f"http://127.0.0.1:{srv.server_address[1]}"
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield srv
     srv.shutdown()
@@ -69,7 +69,7 @@ def test_run_once_right_and_wrong_answers(server):
     assert run_once(server.url, "v3", qs) == {"accuracy": 1.0, "answered": 10, "errors": 0}
     server.reply = lambda prompt: "Answer: 999"
     assert run_once(server.url, "v3", qs) == {"accuracy": 0.0, "answered": 10, "errors": 0}
-    assert server.models == {"v3"}
+    assert server.asked == {("v3", 1, 0.0, 256)}  # greedy, one answer, 256 tokens: as the saved answers were made
 
 
 def test_run_once_some_questions_failing_gives_no_score(server):
