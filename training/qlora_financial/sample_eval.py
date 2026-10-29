@@ -84,14 +84,15 @@ def rescore(rows: list, variant: str) -> list:
             for r in rows]
 
 
-def chat(url: str, messages: list, n: int, temperature: float, max_tokens: int = 256, model: str = "v2") -> list:
+def chat(url: str, messages: list, n: int, temperature: float, max_tokens: int = 256, model: str = "v2",
+         timeout: float = 600) -> list:
     """n answers from vLLM's OpenAI-style chat endpoint (served model `model`, e.g. "v2"
     = base + adapter). max_tokens matches verify_finetune.generate."""
     body = {"model": model, "messages": messages, "n": n, "temperature": temperature,
             "top_p": 1.0, "max_tokens": max_tokens}
     req = urllib.request.Request(f"{url}/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=600) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return [c["message"]["content"] for c in json.load(resp)["choices"]]
 
 

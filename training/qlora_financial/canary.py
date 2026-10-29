@@ -25,13 +25,14 @@ def grade(questions: list, answers: list) -> float:
     return sum(right) / len(right)
 
 
-def run_once(url: str, model: str, questions: list, workers: int = 8) -> dict:
+def run_once(url: str, model: str, questions: list, workers: int = 8, timeout: float = 60) -> dict:
     """Ask every canary question once (greedy, as the saved answers were made) and grade the
     answers. A question the server fails to answer counts as an error, not as wrong, so a
-    server that's down shows up as errors (and a stale canary), not as a bad model."""
+    server that's down shows up as errors (and a stale canary), not as a bad model. `timeout`
+    (seconds per question) keeps a hung server from stretching a round past the next one."""
     def ask(q):
         try:
-            return chat(url, q["messages"], 1, 0.0, model=model)[0]
+            return chat(url, q["messages"], 1, 0.0, model=model, timeout=timeout)[0]
         except Exception:
             return None
     with ThreadPoolExecutor(workers) as pool:
@@ -90,12 +91,13 @@ def main():
     print(f"{len(questions)} canary questions, normal {expected:.2f} ({args.expected_from}); "
           f"/metrics on :{args.port}, a round every {args.every:g} s", flush=True)
     while True:
+        started = time.monotonic()
         result = run_once(args.url, args.model, questions)
         record(metrics, result)
         acc = "none" if result["accuracy"] is None else f"{result['accuracy']:.2f}"
         print(f"{time.strftime('%H:%M:%S')} accuracy {acc} (answered {result['answered']}, errors {result['errors']})",
               flush=True)
-        time.sleep(args.every)
+        time.sleep(max(0.0, args.every - (time.monotonic() - started)))  # a round starts every --every s, however long it took
 
 
 if __name__ == "__main__":

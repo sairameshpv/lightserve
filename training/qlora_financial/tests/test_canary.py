@@ -3,6 +3,7 @@ a fake OpenAI-style chat server (a tiny web server in a thread). No GPU."""
 import json
 import math
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -68,6 +69,14 @@ def test_run_once_right_and_wrong_answers(server):
 
 def test_run_once_server_down_counts_errors_without_crashing():
     assert run_once("http://127.0.0.1:9", "v3", questions(3)) == {"accuracy": None, "answered": 0, "errors": 3}
+
+
+def test_run_once_too_slow_answers_count_as_errors(server):
+    def slow(prompt):
+        time.sleep(1)
+        return "Answer: " + prompt[1:]
+    server.reply = slow
+    assert run_once(server.url, "v3", questions(2), timeout=0.2) == {"accuracy": None, "answered": 0, "errors": 2}
 
 
 def test_expected_accuracy_is_the_champions_saved_score_on_the_same_questions():
