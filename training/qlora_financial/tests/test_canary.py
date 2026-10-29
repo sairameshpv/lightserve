@@ -81,9 +81,11 @@ def test_record_sets_the_metrics():
     metrics = make_metrics(registry, expected=0.8)
     assert math.isnan(registry.get_sample_value("canary_accuracy"))  # no round yet: not 0, which would look broken
     record(metrics, {"accuracy": 0.7, "answered": 48, "errors": 2}, now=1000.0)
-    record(metrics, {"accuracy": None, "answered": 0, "errors": 50}, now=1300.0)  # server down
     value = registry.get_sample_value
+    assert value("canary_accuracy") == 0.7
+    record(metrics, {"accuracy": None, "answered": 0, "errors": 50}, now=1300.0)  # server down
     assert value("canary_expected_accuracy") == 0.8
-    assert value("canary_accuracy") == 0.7  # kept from the last round that got answers
+    # no score, not the last one: a bad round followed by an outage mustn't keep "low" up
+    assert math.isnan(value("canary_accuracy"))
     assert value("canary_errors_total") == 52
     assert value("canary_last_run_timestamp_seconds") == 1000.0  # so the canary goes stale

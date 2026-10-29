@@ -48,7 +48,7 @@ def expected_accuracy(saved_rows: list, questions: list) -> float:
 
 
 def make_metrics(registry, expected: float) -> dict:
-    m = {"accuracy": Gauge("canary_accuracy", "Share of canary questions answered right (last round with answers; NaN = none yet)",
+    m = {"accuracy": Gauge("canary_accuracy", "Share of canary questions answered right (last round; NaN = it got no answers, or none yet)",
                            registry=registry),
          "errors": Counter("canary_errors", "Canary questions the server failed to answer", registry=registry),
          "last_run": Gauge("canary_last_run_timestamp_seconds", "When a round last got answers", registry=registry)}
@@ -58,9 +58,12 @@ def make_metrics(registry, expected: float) -> dict:
 
 
 def record(metrics: dict, result: dict, now: float = None) -> None:
-    """A round with no answers leaves accuracy and the timestamp alone, so the canary goes stale."""
+    """A round with no answers clears accuracy (NaN) and leaves the timestamp alone, so the canary
+    goes stale; an old low score kept up through an outage would page as if every round were bad."""
     metrics["errors"].inc(result["errors"])
-    if result["accuracy"] is not None:
+    if result["accuracy"] is None:
+        metrics["accuracy"].set(float("nan"))
+    else:
         metrics["accuracy"].set(result["accuracy"])
         metrics["last_run"].set(time.time() if now is None else now)
 
