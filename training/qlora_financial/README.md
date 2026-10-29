@@ -624,10 +624,11 @@ compares against its own normal, so that's fine.
   i.e. two 5-minute rounds in a row (one bad round doesn't fire). 50
   questions can catch a broken model, not a slightly worse one: on 5 random
   sets of 50, v2 scored only 4-8 points below v3.
-- **CanaryStale**: no round got answers for 15 min (the model server isn't
-  answering), or Prometheus can't reach the canary. A round with no answers
-  counts as errors, never as a score of 0, so a server outage doesn't look
-  like a bad model.
+- **CanaryStale**: no complete round for 15 min (the model server isn't
+  answering every question), or Prometheus can't reach the canary. A round
+  is scored only if all 50 questions were answered, since normal is measured
+  on all 50. Unanswered questions count as errors, never as wrong answers, so
+  a server outage doesn't look like a bad model.
 
 The alert rules are tested with made-up metrics (`monitoring/alerts_test.yml`,
 promtool).

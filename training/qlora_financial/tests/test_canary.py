@@ -40,7 +40,12 @@ def server():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             srv.models.add(body["model"])
-            out = json.dumps({"choices": [{"message": {"content": srv.reply(body["messages"][-1]["content"])}}]})
+            answer = srv.reply(body["messages"][-1]["content"])
+            if answer is None:  # reply None = a server error for this question
+                self.send_response(500)
+                self.end_headers()
+                return
+            out = json.dumps({"choices": [{"message": {"content": answer}}]})
             self.send_response(200)
             self.end_headers()
             self.wfile.write(out.encode())
@@ -67,6 +72,12 @@ def test_run_once_right_and_wrong_answers(server):
     assert server.models == {"v3"}
 
 
+def test_run_once_some_questions_failing_gives_no_score(server):
+    """Graded on 9 of 10 it would be 1.0, but "normal" is measured on all 10: no fair comparison."""
+    server.reply = lambda prompt: None if prompt == "q0" else "Answer: " + prompt[1:]
+    assert run_once(server.url, "v3", questions(10)) == {"accuracy": None, "answered": 9, "errors": 1}
+
+
 def test_run_once_server_down_counts_errors_without_crashing():
     assert run_once("http://127.0.0.1:9", "v3", questions(3)) == {"accuracy": None, "answered": 0, "errors": 3}
 
@@ -91,12 +102,12 @@ def test_record_sets_the_metrics():
     assert math.isnan(registry.get_sample_value("canary_accuracy"))  # no round yet: not 0, which would look broken
     # the 15-min stale wait starts at launch: 0 (1970) would make CanaryStale fire 2 min after every start
     assert registry.get_sample_value("canary_last_run_timestamp_seconds") == 500.0
-    record(metrics, {"accuracy": 0.7, "answered": 48, "errors": 2}, now=1000.0)
+    record(metrics, {"accuracy": 0.7, "answered": 50, "errors": 0}, now=1000.0)
     value = registry.get_sample_value
     assert value("canary_accuracy") == 0.7
     record(metrics, {"accuracy": None, "answered": 0, "errors": 50}, now=1300.0)  # server down
     assert value("canary_expected_accuracy") == 0.8
     # no score, not the last one: a bad round followed by an outage mustn't keep "low" up
     assert math.isnan(value("canary_accuracy"))
-    assert value("canary_errors_total") == 52
+    assert value("canary_errors_total") == 50
     assert value("canary_last_run_timestamp_seconds") == 1000.0  # so the canary goes stale

@@ -25,8 +25,9 @@ won't trigger it: 50 questions can't tell a few points apart.
 
 ## CanaryStale
 
-**What it means:** no canary round got answers for over 15 min, or Prometheus can't read
-the canary at all. Either the model server isn't answering, or the canary isn't running.
+**What it means:** no complete canary round (every question answered) for over 15 min, or
+Prometheus can't read the canary at all. Either the model server isn't answering (or
+fails some questions, e.g. timeouts over 60 s), or the canary isn't running.
 
 **Check:**
 1. **Is the canary running?** `curl -s localhost:9101/metrics | grep canary_` should answer.
@@ -39,4 +40,4 @@ the canary at all. Either the model server isn't answering, or the canary isn't 
    `python -m training.qlora_financial.canary --url http://localhost:8000 --model v3`
    (from the repo root, in `mlops/.venv`).
 2. **Confirm the alert clears:** a `[RESOLVED]` email follows a few minutes after the next
-   round with answers.
+   complete round.

@@ -57,7 +57,7 @@ tests:
         exp_alerts:
           - exp_labels: {job: canary, instance: "c:9101", severity: ticket}
             exp_annotations:
-              summary: "No canary round with answers for over 15 min, or the canary isn't running"
+              summary: "No complete canary round for over 15 min, or the canary isn't running"
               runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/canary.md"
 
   - name: the canary itself is down fires CanaryStale
@@ -71,5 +71,5 @@ tests:
         exp_alerts:
           - exp_labels: {job: canary, instance: "c:9101", severity: ticket}
             exp_annotations:
-              summary: "No canary round with answers for over 15 min, or the canary isn't running"
+              summary: "No complete canary round for over 15 min, or the canary isn't running"
               runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/canary.md"

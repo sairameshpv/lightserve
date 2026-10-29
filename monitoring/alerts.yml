@@ -19,10 +19,10 @@ groups:
           summary: "Canary accuracy {{ $value | printf \"%.2f\" }} is more than 10 points below normal {{ with query \"canary_expected_accuracy\" }}{{ . | first | value | printf \"%.2f\" }}{{ end }}"
           runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/canary.md"
       - alert: CanaryStale
-        # no round with answers for 15 min (model server not answering), or the canary is down
+        # no complete round (all questions answered) for 15 min (model server failing), or the canary is down
         expr: time() - canary_last_run_timestamp_seconds > 900 or on(job, instance) up{job="canary"} == 0
         for: 2m
         labels: {severity: ticket}
         annotations:
-          summary: "No canary round with answers for over 15 min, or the canary isn't running"
+          summary: "No complete canary round for over 15 min, or the canary isn't running"
           runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/canary.md"

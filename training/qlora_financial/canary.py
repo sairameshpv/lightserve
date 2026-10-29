@@ -28,8 +28,10 @@ def grade(questions: list, answers: list) -> float:
 def run_once(url: str, model: str, questions: list, workers: int = 8, timeout: float = 60) -> dict:
     """Ask every canary question once (greedy, as the saved answers were made) and grade the
     answers. A question the server fails to answer counts as an error, not as wrong, so a
-    server that's down shows up as errors (and a stale canary), not as a bad model. `timeout`
-    (seconds per question) keeps a hung server from stretching a round past the next one."""
+    server that's down shows up as errors (and a stale canary), not as a bad model. A round is
+    scored only if every question was answered: "normal" is measured on all of them, and a score
+    from the few that got through would be noise. `timeout` (seconds per question) keeps a hung
+    server from stretching a round past the next one."""
     def ask(q):
         try:
             return chat(url, q["messages"], 1, 0.0, model=model, timeout=timeout)[0]
@@ -37,9 +39,9 @@ def run_once(url: str, model: str, questions: list, workers: int = 8, timeout: f
             return None
     with ThreadPoolExecutor(workers) as pool:
         answers = list(pool.map(ask, questions))
-    done = [(q, a) for q, a in zip(questions, answers) if a is not None]
-    return {"accuracy": grade(*zip(*done)) if done else None, "answered": len(done),
-            "errors": len(questions) - len(done)}
+    errors = sum(a is None for a in answers)
+    return {"accuracy": grade(questions, answers) if errors == 0 else None,
+            "answered": len(questions) - errors, "errors": errors}
 
 
 def expected_accuracy(saved_rows: list, questions: list) -> float:
@@ -49,10 +51,10 @@ def expected_accuracy(saved_rows: list, questions: list) -> float:
 
 
 def make_metrics(registry, expected: float, now: float = None) -> dict:
-    m = {"accuracy": Gauge("canary_accuracy", "Share of canary questions answered right (last round; NaN = it got no answers, or none yet)",
+    m = {"accuracy": Gauge("canary_accuracy", "Share of canary questions answered right (last round; NaN = not every question was answered, or none yet)",
                            registry=registry),
          "errors": Counter("canary_errors", "Canary questions the server failed to answer", registry=registry),
-         "last_run": Gauge("canary_last_run_timestamp_seconds", "When a round last got answers (at launch: the start time)", registry=registry)}
+         "last_run": Gauge("canary_last_run_timestamp_seconds", "When a round last had every question answered (at launch: the start time)", registry=registry)}
     Gauge("canary_expected_accuracy", "The champion's saved score on the same questions", registry=registry).set(expected)
     m["accuracy"].set(float("nan"))  # not 0 before the first answers: 0 would look like a broken model
     m["last_run"].set(time.time() if now is None else now)  # stale wait starts at launch, not in 1970
@@ -60,7 +62,7 @@ def make_metrics(registry, expected: float, now: float = None) -> dict:
 
 
 def record(metrics: dict, result: dict, now: float = None) -> None:
-    """A round with no answers clears accuracy (NaN) and leaves the timestamp alone, so the canary
+    """A round without a score (some questions unanswered) clears accuracy (NaN) and leaves the timestamp alone, so the canary
     goes stale; an old low score kept up through an outage would page as if every round were bad."""
     metrics["errors"].inc(result["errors"])
     if result["accuracy"] is None:
