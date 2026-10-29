@@ -68,6 +68,13 @@
      "targets": [{"expr": "DCGM_FI_DEV_GPU_TEMP", "legendFormat": "GPU {{gpu}}"}]},
     {"type": "timeseries", "title": "Clock held back (bitmask; 0 = full speed)", "gridPos": {"x": 16, "y": 41, "w": 8, "h": 8},
      "datasource": {"type": "prometheus", "uid": "prometheus"},
-     "targets": [{"expr": "DCGM_FI_DEV_CLOCKS_EVENT_REASONS", "legendFormat": "GPU {{gpu}}"}]}
+     "targets": [{"expr": "DCGM_FI_DEV_CLOCKS_EVENT_REASONS", "legendFormat": "GPU {{gpu}}"}]},
+    {"type": "row", "title": "Model quality (canary: the same 50 questions every ~5 min)", "gridPos": {"x": 0, "y": 49, "w": 24, "h": 1}, "panels": []},
+    {"type": "timeseries", "title": "Canary accuracy vs normal", "gridPos": {"x": 0, "y": 50, "w": 12, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "prometheus"},
+     "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"lineInterpolation": "stepAfter"}}},
+     "targets": [{"expr": "canary_accuracy", "legendFormat": "canary accuracy"},
+                 {"expr": "canary_expected_accuracy", "legendFormat": "normal (champion's saved score)"},
+                 {"expr": "canary_expected_accuracy - 0.10", "legendFormat": "alarm line (CanaryAccuracyLow)"}]}
   ]
 }
