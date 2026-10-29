@@ -604,6 +604,51 @@ for a pipeline and `report.html`, Evidently's page with a chart per
 measurement. Evidently 0.7.23 breaks on pandas 3, so pandas is pinned to
 2.3.3 (`mlops/requirements.txt`).
 
+## Canary: is the served model still answering right?
+
+Speed dashboards can't tell a good model from a broken one: a wrong adapter,
+a bad merge or a garbled chat template answers just as fast. `canary.py` asks
+the served model the same 50 test questions every few minutes (greedy, as
+the saved answers were made), grades them as the registry does (calculator +
+fair checker) and publishes the score on its own `/metrics` page for
+Prometheus.
+
+**What's normal**: the champion's own saved answers to the same 50
+questions, graded the same way, read from the registry at start-up, so it
+follows a new champion after a restart. For v3 it is **0.66**: this random
+50 happens to be harder than the full test set (81.2%). The canary only ever
+compares against its own normal, so that's fine.
+
+**When it alarms** (`monitoring/alerts.yml`, runbook `monitoring/runbooks/canary.md`):
+- **CanaryAccuracyLow**: more than **10 points** below normal for 7 min,
+  i.e. two 5-minute rounds in a row (one bad round doesn't fire). 50
+  questions can catch a broken model, not a slightly worse one: on 5 random
+  sets of 50, v2 scored only 4-8 points below v3.
+- **CanaryStale**: no round got answers for 15 min (the model server isn't
+  answering), or Prometheus can't reach the canary. A round with no answers
+  counts as errors, never as a score of 0, so a server outage doesn't look
+  like a bad model.
+
+The alert rules are tested with made-up metrics (`monitoring/alerts_test.yml`,
+promtool).
+
+**Checked on the Mac** with a scratch fake vLLM that replays v3's saved
+answers, and the local monitoring stack (`--every 60`):
+
+| Step | Canary | Alert |
+|---|---|---|
+| v3's answers | 0.66 (= normal), 0 errors; dashboard shows 0.66 / normal 0.66 / alarm line 0.56 | none |
+| Switched to wrong answers | 0.00 from the next round | pending after 24 s, firing 7 min later; email in MailHog |
+| Switched back | 0.66 | `[RESOLVED]` email within 30 s |
+
+Not yet measured: how much a live model's greedy answers differ from its
+saved ones (GPU, the end-to-end run). That may move the 10-point margin.
+
+```
+mlops/.venv/bin/python -m training.qlora_financial.canary --url http://localhost:8000 --model v3 --every 300 --port 9101
+```
+`--expected-from <samples.jsonl>` sets normal instead of the registry's champion.
+
 ## What's next
 
 - **Throughput**: *done for 1 GPU*. Batching + length grouping, bf16 base and
@@ -664,6 +709,7 @@ measurement. Evidently 0.7.23 breaks on pandas 3, so pandas is pinned to
   MLflow, and the quality gate (see *Model registry and quality gate*).
 - `drift.py`, `make_traffic.py`: the query-drift check and synthetic query
   windows with a known change (see *Query drift*).
+- `canary.py`: the served-model canary and its metrics (see *Canary*).
 - `openrlhf_patches.patch`: our two OpenRLHF 0.11.2 fixes (LoRA weight
   sync to vLLM; `--train.critic_own_gpu`). `rl_node/`: the node scripts.
 - `tests/`: the scoring and calculator logic, Mac-only
