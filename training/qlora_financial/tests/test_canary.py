@@ -78,6 +78,11 @@ def test_run_once_some_questions_failing_gives_no_score(server):
     assert run_once(server.url, "v3", questions(10)) == {"accuracy": None, "answered": 9, "errors": 1}
 
 
+def test_run_once_a_reply_that_isnt_text_is_an_error_not_a_crash(server):
+    server.reply = lambda prompt: ["not", "text"] if prompt == "q0" else "Answer: " + prompt[1:]
+    assert run_once(server.url, "v3", questions(2)) == {"accuracy": None, "answered": 1, "errors": 1}
+
+
 def test_run_once_server_down_counts_errors_without_crashing():
     assert run_once("http://127.0.0.1:9", "v3", questions(3)) == {"accuracy": None, "answered": 0, "errors": 3}
 

@@ -34,9 +34,10 @@ def run_once(url: str, model: str, questions: list, workers: int = 8, timeout: f
     server from stretching a round past the next one."""
     def ask(q):
         try:
-            return chat(url, q["messages"], 1, 0.0, model=model, timeout=timeout)[0]
+            answer = chat(url, q["messages"], 1, 0.0, model=model, timeout=timeout)[0]
         except Exception:
             return None
+        return answer if isinstance(answer, str) else None  # garbage would crash the grader and the loop
     with ThreadPoolExecutor(workers) as pool:
         answers = list(pool.map(ask, questions))
     errors = sum(a is None for a in answers)
