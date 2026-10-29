@@ -1,0 +1,75 @@
+# Unit tests for alerts.yml's canary alerts, on made-up metrics (no canary needed):
+#   docker run --rm -v "$PWD/monitoring:/m" -w /m --entrypoint promtool prom/prometheus:v3.5.0 test rules alerts_test.yml
+# The canary runs a round every ~5 min and its accuracy holds until the next round, so one bad
+# round is ~5 min low; "normal" here is 0.66, so the alarm line is 0.56.
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+
+tests:
+  - name: two bad rounds in a row (10 min at 0.40) fire CanaryAccuracyLow
+    interval: 1m
+    input_series:
+      - series: 'canary_expected_accuracy{job="canary", instance="c:9101"}'
+        values: '0.66x30'
+      - series: 'canary_accuracy{job="canary", instance="c:9101"}'
+        values: '0.66x4 0.40x9 0.66x16'
+    alert_rule_test:
+      - eval_time: 13m
+        alertname: CanaryAccuracyLow
+        exp_alerts:
+          - exp_labels: {job: canary, instance: "c:9101", severity: page}
+            exp_annotations:
+              summary: "Canary accuracy 0.40 is more than 10 points below normal 0.66"
+              runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/canary.md"
+
+  - name: one bad round (5 min), a small dip (0.58), or no round yet (NaN) don't fire
+    interval: 1m
+    input_series:
+      - series: 'canary_expected_accuracy{job="canary", instance="c:9101"}'
+        values: '0.66x30'
+      - series: 'canary_accuracy{job="canary", instance="c:9101"}'
+        values: 'NaN NaN NaN NaN NaN 0.40x4 0.66x4 0.58x16'
+    alert_rule_test:
+      - {eval_time: 9m, alertname: CanaryAccuracyLow, exp_alerts: []}
+      - {eval_time: 29m, alertname: CanaryAccuracyLow, exp_alerts: []}
+
+  - name: rounds keep finishing, so not stale
+    interval: 1m
+    input_series:
+      - series: 'up{job="canary", instance="c:9101"}'
+        values: '1x40'
+      - series: 'canary_last_run_timestamp_seconds{job="canary", instance="c:9101"}'
+        values: '0+60x40'   # a fresh timestamp every minute
+    alert_rule_test:
+      - {eval_time: 40m, alertname: CanaryStale, exp_alerts: []}
+
+  - name: no good round for over 15 min (server not answering) fires CanaryStale
+    interval: 1m
+    input_series:
+      - series: 'up{job="canary", instance="c:9101"}'
+        values: '1x40'
+      - series: 'canary_last_run_timestamp_seconds{job="canary", instance="c:9101"}'
+        values: '300x40'    # last good round at 5 min, then none
+    alert_rule_test:
+      - {eval_time: 20m, alertname: CanaryStale, exp_alerts: []}   # 15 min ago: not yet
+      - eval_time: 25m
+        alertname: CanaryStale
+        exp_alerts:
+          - exp_labels: {job: canary, instance: "c:9101", severity: ticket}
+            exp_annotations:
+              summary: "No canary round with answers for over 15 min, or the canary isn't running"
+              runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/canary.md"
+
+  - name: the canary itself is down fires CanaryStale
+    interval: 1m
+    input_series:
+      - series: 'up{job="canary", instance="c:9101"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: CanaryStale
+        exp_alerts:
+          - exp_labels: {job: canary, instance: "c:9101", severity: ticket}
+            exp_annotations:
+              summary: "No canary round with answers for over 15 min, or the canary isn't running"
+              runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/canary.md"
