@@ -6,10 +6,11 @@ own saved score on those 50 questions (0.66 for v3).
 
 ## CanaryAccuracyLow
 
-**What it means:** two canary rounds in a row scored more than 10 points below normal. The
-server answers, but the answers are wrong: a wrong or broken model is probably being
-served. Speed dashboards look fine in this case. A model only slightly worse than normal
-won't trigger it: 50 questions can't tell a few points apart.
+**What it means:** two canary rounds in a row scored more than 10 points below normal (the
+alert waits 7 min, longer than one 5-min round, so a single bad round doesn't fire). The
+server answers every question, but the answers are wrong: a wrong or broken model is
+probably being served. Speed dashboards look fine in this case. A model only slightly
+worse than normal won't trigger it: 50 questions can't tell a few points apart.
 
 **Check:**
 1. **Which model is served?** `curl -s localhost:8000/v1/models` should list the
@@ -21,7 +22,8 @@ won't trigger it: 50 questions can't tell a few points apart.
 **Do:**
 1. **Roll back** to the previous champion (the registry's `champion` label says which).
 2. **If "normal" itself is wrong** (a new champion registered, but the canary started
-   before it), restart the canary so it reads the new champion's saved answers.
+   before it), restart the canary (command below) with the new champion's `--model` and
+   `--data-dir`, so it reads the new champion's saved answers.
 
 ## CanaryStale
 
@@ -31,13 +33,14 @@ fails some questions, e.g. timeouts over 60 s), or the canary isn't running.
 
 **Check:**
 1. **Is the canary running?** `curl -s localhost:9101/metrics | grep canary_` should answer.
-   If not, read the end of its output for a traceback.
+   If not, read the end of its output for a traceback. "saved answers are for other
+   questions" at start-up means `--data-dir` isn't the champion's own test data.
 2. **Is the model server answering?** `curl -s localhost:8000/v1/models`. A rising
    `canary_errors_total` means the canary runs but the server doesn't answer.
 
 **Do:**
-1. **Restart** whichever is down: the model server, or the canary with
-   `python -m training.qlora_financial.canary --url http://localhost:8000 --model v3`
-   (from the repo root, in `mlops/.venv`).
+1. **Restart** whichever is down: the model server, or the canary (from the repo root, in
+   `mlops/.venv`), naming the champion's served name and its data folder; for v3:
+   `python -m training.qlora_financial.canary --url http://localhost:8000 --model v3 --data-dir training/qlora_financial/data/v3`
 2. **Confirm the alert clears:** a `[RESOLVED]` email follows a few minutes after the next
    complete round.
