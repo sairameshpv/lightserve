@@ -48,13 +48,14 @@ def expected_accuracy(saved_rows: list, questions: list) -> float:
     return grade(questions, [saved[q["id"]] for q in questions])
 
 
-def make_metrics(registry, expected: float) -> dict:
+def make_metrics(registry, expected: float, now: float = None) -> dict:
     m = {"accuracy": Gauge("canary_accuracy", "Share of canary questions answered right (last round; NaN = it got no answers, or none yet)",
                            registry=registry),
          "errors": Counter("canary_errors", "Canary questions the server failed to answer", registry=registry),
-         "last_run": Gauge("canary_last_run_timestamp_seconds", "When a round last got answers", registry=registry)}
+         "last_run": Gauge("canary_last_run_timestamp_seconds", "When a round last got answers (at launch: the start time)", registry=registry)}
     Gauge("canary_expected_accuracy", "The champion's saved score on the same questions", registry=registry).set(expected)
     m["accuracy"].set(float("nan"))  # not 0 before the first answers: 0 would look like a broken model
+    m["last_run"].set(time.time() if now is None else now)  # stale wait starts at launch, not in 1970
     return m
 
 

@@ -87,8 +87,10 @@ def test_expected_accuracy_is_the_champions_saved_score_on_the_same_questions():
 
 def test_record_sets_the_metrics():
     registry = CollectorRegistry()
-    metrics = make_metrics(registry, expected=0.8)
+    metrics = make_metrics(registry, expected=0.8, now=500.0)
     assert math.isnan(registry.get_sample_value("canary_accuracy"))  # no round yet: not 0, which would look broken
+    # the 15-min stale wait starts at launch: 0 (1970) would make CanaryStale fire 2 min after every start
+    assert registry.get_sample_value("canary_last_run_timestamp_seconds") == 500.0
     record(metrics, {"accuracy": 0.7, "answered": 48, "errors": 2}, now=1000.0)
     value = registry.get_sample_value
     assert value("canary_accuracy") == 0.7
