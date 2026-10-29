@@ -96,9 +96,18 @@ def test_run_once_too_slow_answers_count_as_errors(server):
 
 
 def test_expected_accuracy_is_the_champions_saved_score_on_the_same_questions():
-    saved = [{"id": i, "greedy": "Answer: 0" if i < 5 else f"Answer: {i}"} for i in range(10)]  # wrong on 1-4
+    saved = [{"id": i, "gold": f"Answer: {i}", "greedy": "Answer: 0" if i < 5 else f"Answer: {i}"}
+             for i in range(10)]  # wrong on 1-4
     assert expected_accuracy(saved, questions(10)) == 0.6
     assert expected_accuracy(saved, questions(10)[5:]) == 1.0  # only the canary's questions count
+
+
+def test_expected_accuracy_refuses_saved_answers_for_other_questions():
+    """Ids are line numbers: another champion's test file could give the same id another question."""
+    saved = [{"id": i, "gold": f"Answer: {i}", "greedy": f"Answer: {i}"} for i in range(10)]
+    saved[3]["gold"] = "Answer: 42"
+    with pytest.raises(ValueError, match="1 of 10"):
+        expected_accuracy(saved, questions(10))
 
 
 def test_record_sets_the_metrics():

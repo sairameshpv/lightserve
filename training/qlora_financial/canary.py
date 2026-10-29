@@ -46,9 +46,15 @@ def run_once(url: str, model: str, questions: list, workers: int = 8, timeout: f
 
 
 def expected_accuracy(saved_rows: list, questions: list) -> float:
-    """"Normal": the champion's saved greedy answers to the same questions, graded the same way."""
-    saved = {r["id"]: r["greedy"] for r in saved_rows}
-    return grade(questions, [saved[q["id"]] for q in questions])
+    """"Normal": the champion's saved greedy answers to the same questions, graded the same way.
+    Refuses if the saved right answers differ from the questions' (ids are line numbers, so a
+    champion scored on another test file would match by id but not by question)."""
+    saved = {r["id"]: r for r in saved_rows}
+    other = sum(saved[q["id"]]["gold"] != q["gold"] for q in questions)
+    if other:
+        raise ValueError(f"saved answers are for other questions: right answer differs on {other} of "
+                         f"{len(questions)}; use the champion's own --data-dir")
+    return grade(questions, [saved[q["id"]]["greedy"] for q in questions])
 
 
 def make_metrics(registry, expected: float, now: float = None) -> dict:
