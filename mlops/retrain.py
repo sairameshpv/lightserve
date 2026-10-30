@@ -1,14 +1,18 @@
 """The retraining pipeline's logic (the Airflow DAG in mlops/dags/ only calls these): fine-tune
-data that looks like the drifted traffic."""
+data that looks like the drifted traffic, scoring the fine-tuned candidate, the gate."""
 import bisect
 import json
 import random
 import shutil
 import statistics
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from training.qlora_financial.canary import pick
 from training.qlora_financial.drift import features
+from training.qlora_financial.promote import decide
+from training.qlora_financial.sample_eval import chat, load_questions
 
 
 def select_like(train_rows: list, window_prompts: list, drifted_columns: list, n: int, seed: int = 0) -> list:
@@ -54,3 +58,32 @@ def build_data(train_dir, window_prompts: list, drifted_columns: list, out_dir, 
     for split in ("val", "test"):
         shutil.copyfile(train_dir / f"{split}.jsonl", out_dir / f"{split}.jsonl")
     return {"like": len(like), "replay": len(replay), "train": len(mixed)}
+
+
+def score(url: str, model: str, data_dir, n: int = 300, seed: int = 0, workers: int = 8, timeout: float = 120) -> list:
+    """The served candidate's greedy answers to a fixed random n test questions (picked as the
+    canary picks), as rows the gate reads. n, not all 1,404: the GPU session stays under an hour.
+    Any unanswered question raises (the task fails and retries): a gate on part of them would
+    compare unlike with like."""
+    questions = pick(load_questions(str(data_dir)), n, seed)
+    def ask(q):
+        answer = chat(url, q["messages"], 1, 0.0, model=model, timeout=timeout)[0]
+        if not isinstance(answer, str):
+            raise ValueError(f"question {q['id']}: the answer isn't text")
+        return answer
+    with ThreadPoolExecutor(workers) as pool:
+        answers = list(pool.map(ask, questions))
+    return [{"id": q["id"], "source": q["source"], "gold": q["gold"], "greedy": a, "samples": []}
+            for q, a in zip(questions, answers)]
+
+
+def gate(candidate_rows: list, champion_rows: list) -> dict:
+    """promote.decide on the candidate's questions only: the champion's saved answers cover the
+    whole test set, the candidate's only a sample. Refuses saved answers to other questions (ids
+    are line numbers, so another test file would match by id but not by question)."""
+    saved = {r["id"]: r for r in champion_rows}
+    if missing := [r["id"] for r in candidate_rows if r["id"] not in saved]:
+        raise ValueError(f"the champion has no saved answer to {len(missing)} of the candidate's questions")
+    if other := sum(saved[r["id"]]["gold"] != r["gold"] for r in candidate_rows):
+        raise ValueError(f"saved answers are for other questions: right answer differs on {other}")
+    return decide(candidate_rows, [saved[r["id"]] for r in candidate_rows])
