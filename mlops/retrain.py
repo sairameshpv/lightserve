@@ -5,6 +5,7 @@ import json
 import random
 import shutil
 import statistics
+import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -87,3 +88,26 @@ def gate(candidate_rows: list, champion_rows: list) -> dict:
     if other := sum(saved[r["id"]]["gold"] != r["gold"] for r in candidate_rows):
         raise ValueError(f"saved answers are for other questions: right answer differs on {other}")
     return decide(candidate_rows, [saved[r["id"]] for r in candidate_rows])
+
+
+def loaded(url: str, timeout: float = 30) -> set:
+    """The names vLLM answers to: the base model and every loaded adapter."""
+    with urllib.request.urlopen(f"{url}/v1/models", timeout=timeout) as resp:
+        return {m["id"] for m in json.load(resp)["data"]}
+
+
+def _post(url: str, body: dict, timeout: float) -> None:
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    urllib.request.urlopen(req, timeout=timeout).close()  # a refusal (4xx/5xx) raises HTTPError
+
+
+def load_adapter(url: str, name: str, path, timeout: float = 300) -> None:
+    """Load an adapter into the running vLLM under `name` (needs VLLM_ALLOW_RUNTIME_LORA_UPDATING=True;
+    `path` as vLLM sees it). Already loaded = nothing to do, so a retried task doesn't fail on
+    vLLM's "already loaded" refusal."""
+    if name not in loaded(url):
+        _post(f"{url}/v1/load_lora_adapter", {"lora_name": name, "lora_path": str(path)}, timeout)
+
+
+def unload_adapter(url: str, name: str, timeout: float = 60) -> None:
+    _post(f"{url}/v1/unload_lora_adapter", {"lora_name": name}, timeout)

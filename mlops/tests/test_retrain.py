@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from mlops.retrain import build_data, gate, score, select_like
+from mlops.retrain import build_data, gate, load_adapter, loaded, score, select_like, unload_adapter
 from training.qlora_financial.canary import pick
 from training.qlora_financial.sample_eval import load_questions
 
@@ -61,10 +61,27 @@ def test_build_data_mixes_like_the_traffic_with_an_equal_replay(tmp_path):
 
 @pytest.fixture
 def server():
-    """A fake chat server: replies server.reply(prompt) (None = a server error); records the settings asked with."""
+    """A fake vLLM: chat replies server.reply(prompt) (None = a server error) and records the settings
+    asked with; adapters load/unload by name (server.refuse = load fails, as for a bad path)."""
     class Handler(BaseHTTPRequestHandler):
+        def send(self, code, body):
+            self.send_response(code)
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode())
+
+        def do_GET(self):  # /v1/models: the base model and every loaded adapter
+            self.send(200, {"data": [{"id": m} for m in ["base", *srv.adapters]]})
+
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path == "/v1/load_lora_adapter":
+                if srv.refuse or body["lora_name"] in srv.adapters:  # vLLM refuses a name twice
+                    return self.send(400, {"error": "refused"})
+                srv.adapters[body["lora_name"]] = body["lora_path"]
+                srv.loads += 1
+                return self.send(200, {})
+            if self.path == "/v1/unload_lora_adapter":
+                return self.send(200, {}) if srv.adapters.pop(body["lora_name"], None) else self.send(404, {})
             srv.asked.add((body["model"], body["n"], body["temperature"], body["max_tokens"]))
             answer = srv.reply(body["messages"][-1]["content"])
             self.send_response(500 if answer is None else 200)
@@ -80,6 +97,7 @@ def server():
 
     srv = Server(("127.0.0.1", 0), Handler)
     srv.asked, srv.url = set(), f"http://127.0.0.1:{srv.server_address[1]}"
+    srv.adapters, srv.loads, srv.refuse = {"v3": "/adapters/v3"}, 0, False
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield srv
     srv.shutdown()
@@ -131,3 +149,23 @@ def test_gate_refuses_champion_answers_to_other_questions():
         gate(answers(range(100, 400)), champion)
     with pytest.raises(ValueError, match="no saved answer"):
         gate(answers(range(300, 500)), answers(range(400)))
+
+
+def test_load_adapter_once_even_when_retried(server):
+    assert loaded(server.url) == {"base", "v3"}
+    load_adapter(server.url, "run1", "/runs/run1/adapter")
+    load_adapter(server.url, "run1", "/runs/run1/adapter")  # an Airflow retry: already there, no second load
+    assert server.adapters["run1"] == "/runs/run1/adapter" and server.loads == 1
+    assert loaded(server.url) == {"base", "v3", "run1"}
+
+
+def test_unload_adapter_removes_it(server):
+    load_adapter(server.url, "run1", "/runs/run1/adapter")
+    unload_adapter(server.url, "run1")
+    assert loaded(server.url) == {"base", "v3"}
+
+
+def test_a_refused_load_raises(server):
+    server.refuse = True
+    with pytest.raises(Exception):
+        load_adapter(server.url, "run1", "/no/such/adapter")
