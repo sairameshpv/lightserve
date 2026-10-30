@@ -1,4 +1,4 @@
-# MLOps tools (registry, promotion gate, query drift; Airflow later), in their own venv:
+# MLOps tools (registry, promotion gate, query drift, canary, the Airflow pipeline), in their own venv:
 #   python3.11 -m venv mlops/.venv && mlops/.venv/bin/pip install -r mlops/requirements.txt
 # mlflow is pinned to 3.16.1 because training/qlora_financial/outputs/mlflow.db was written
 # at schema b7e2c1a4d9f3, the newest schema in 3.16.x. 3.17 would need `mlflow db upgrade`
@@ -7,4 +7,5 @@ mlflow==3.16.1
 evidently==0.7.23  # query drift (training/qlora_financial/drift.py)
 pandas==2.3.3  # evidently 0.7.23 breaks on pandas 3 (imports a function pandas 3 removed)
 prometheus_client==0.26.0  # canary metrics (training/qlora_financial/canary.py), as the server uses
+apache-airflow==3.3.2  # the retraining pipeline (mlops/dags/); its tested set wants pandas 3, ours stays 2.3.3 (checked: pip check clean)
 pytest==9.1.1
