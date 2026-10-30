@@ -45,7 +45,22 @@ def parse_args():
     ap.add_argument("--flash-attn", action="store_true",
                     help="FlashAttention-2 (hub kernel, pip install kernels) + padding-free batches")
     ap.add_argument("--run-name", default="full", help="output subfolder + MLflow run name (v1 = full)")
+    ap.add_argument("--init-adapter", help="start from this trained adapter (the champion's) instead of a fresh one")
+    ap.add_argument("--max-steps", type=int, default=-1, help="stop after N optimizer steps (-1 = one full epoch)")
     return ap.parse_args()
+
+
+def load_init_adapter(model, adapter_dir) -> None:
+    """Copy a trained adapter's weights into the fresh one TRL just made, so the QLoRA set-up
+    (4-bit base, casts) stays exactly as in a normal run; only the starting values change.
+    Refuses an adapter on other layers (a different rank fails in torch's own size check)."""
+    from peft import set_peft_model_state_dict
+    from peft.utils import load_peft_weights
+    result = set_peft_model_state_dict(model, load_peft_weights(str(adapter_dir), device="cpu"))
+    missing = [k for k in result.missing_keys if "lora_" in k]
+    if missing or result.unexpected_keys:
+        raise ValueError(f"{adapter_dir} is not the same layers: {len(missing)} missing, "
+                         f"{len(result.unexpected_keys)} unexpected adapter weights")
 
 
 def load_split(data_dir: str, name: str, longest: int = None):
@@ -127,7 +142,7 @@ def sft_config(args):
         # TRL's default 1024 would cut answers off. Padding-free: TRL requires None (it can't truncate there);
         # nothing changes, since the longest example (3,197 tokens) is under 3,200 anyway.
         max_length=None if flash else args.max_length,
-        num_train_epochs=1, max_steps=2 if args.smoke else -1,
+        num_train_epochs=1, max_steps=2 if args.smoke else getattr(args, "max_steps", -1),
         per_device_train_batch_size=getattr(args, "batch_size", 1),
         gradient_accumulation_steps=getattr(args, "grad_accum", 16),
         train_sampling_strategy="group_by_length" if grouped else "random",
@@ -177,6 +192,9 @@ def main():
     callbacks = [make_ckpt_skip_callback(args.ckpt_skip_layers)] if args.ckpt_skip_layers else []
     trainer = SFTTrainer(model=args.model, args=config, train_dataset=train_ds, eval_dataset=val_ds,
                          quantization_config=quant, peft_config=lora, callbacks=callbacks)
+    if args.init_adapter:  # e.g. the retraining pipeline's mini fine-tune from the champion
+        load_init_adapter(trainer.model, args.init_adapter)
+        print(f"init adapter={args.init_adapter}")
     if args.bf16_adapters:  # TRL's own QLoRA-path cast, before train() builds the optimizer
         for p in trainer.model.parameters():
             if p.requires_grad:
