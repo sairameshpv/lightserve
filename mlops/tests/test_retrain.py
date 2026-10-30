@@ -7,7 +7,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from mlops.retrain import build_data, gate, load_adapter, loaded, score, select_like, unload_adapter
+from mlops.retrain import (build_data, gate, load_adapter, loaded, read_current, score, select_like, set_current,
+                           unload_adapter)
 from training.qlora_financial.canary import pick
 from training.qlora_financial.sample_eval import load_questions
 
@@ -169,3 +170,20 @@ def test_a_refused_load_raises(server):
     server.refuse = True
     with pytest.raises(Exception):
         load_adapter(server.url, "run1", "/no/such/adapter")
+
+
+CHAMPION = {"model": "v3", "samples": "outputs/v3/samples.jsonl"}
+
+
+def test_current_model_is_the_champion_until_one_is_deployed(tmp_path):
+    assert read_current(tmp_path / "current.json", CHAMPION) == CHAMPION
+
+
+def test_set_current_switches_and_keeps_the_one_before(tmp_path):
+    path = tmp_path / "current.json"
+    run1, run2 = {"model": "run1", "samples": "runs/run1/answers.jsonl"}, {"model": "run2", "samples": "x"}
+    set_current(path, run1, CHAMPION)
+    assert read_current(path, CHAMPION) == {**run1, "previous": CHAMPION}  # rollback target
+    set_current(path, run2, CHAMPION)
+    assert read_current(path, CHAMPION) == {**run2, "previous": run1}  # one step back, not a growing chain
+    assert [f.name for f in tmp_path.iterdir()] == ["current.json"]  # no temp file left behind

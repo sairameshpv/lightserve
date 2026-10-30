@@ -2,6 +2,7 @@
 data that looks like the drifted traffic, scoring the fine-tuned candidate, the gate."""
 import bisect
 import json
+import os
 import random
 import shutil
 import statistics
@@ -111,3 +112,21 @@ def load_adapter(url: str, name: str, path, timeout: float = 300) -> None:
 
 def unload_adapter(url: str, name: str, timeout: float = 60) -> None:
     _post(f"{url}/v1/unload_lora_adapter", {"lora_name": name}, timeout)
+
+
+def read_current(path, champion: dict) -> dict:
+    """Which model is current: {"model": served name, "samples": its saved answers[, "previous": ...]}.
+    No pointer file yet = the registry's champion."""
+    path = Path(path)
+    return json.loads(path.read_text()) if path.exists() else champion
+
+
+def set_current(path, new: dict, champion: dict) -> None:
+    """Point at `new`, keeping the model before it as `previous` (the rollback target; one step
+    back only). Written to a temp file and renamed over the old one, so a reader (the canary)
+    sees either the old pointer or the new one, never half a file."""
+    path = Path(path)
+    before = {k: v for k, v in read_current(path, champion).items() if k != "previous"}
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({**new, "previous": before}, indent=2) + "\n")
+    os.replace(tmp, path)
