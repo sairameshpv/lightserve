@@ -650,6 +650,71 @@ mlops/.venv/bin/python -m training.qlora_financial.canary --url http://localhost
 ```
 `--expected-from <samples.jsonl>` sets normal instead of the registry's champion.
 
+## Retraining pipeline: from changed questions to a gated candidate
+
+Drift check, fine-tune, scoring and gate used to be separate commands run by
+hand. `mlops/dags/drift_retrain.py` chains them as one Airflow pipeline
+("DAG": boxes and arrows, with retries and a history of every run); the
+logic lives in `mlops/retrain.py`, tested on its own.
+
+```
+drift_sensor -> build_data -> finetune -> score -> gate -> deploy | reject
+```
+
+1. **Wait for drift** (`drift_sensor`): compares the latest query window
+   with the champion's training data (*Query drift*). No alarm: checks again
+   every 5 min; after an hour (`MLOPS_SENSOR_TIMEOUT`) it gives up quietly,
+   so the run shows as skipped, not failed.
+2. **Build data** (`build_data`): training examples **of the kinds the
+   traffic has more of**, plus as many random others ("replay", so the model
+   doesn't forget the rest), shuffled. Each changed measurement is cut into
+   fifths of training's spread; a combination of fifths that makes up a
+   bigger share of the traffic than of training is picked, the more the
+   bigger the excess. On a TAT-QA-heavy window: 95% of the picked examples
+   are TAT-QA (training: 35%); on a long-documents window, the picked
+   documents' median length is 821 words. Val and test are copied unchanged.
+3. **Fine-tune from the champion** (`finetune`): `train.py --init-adapter
+   <champion's adapter> --max-steps N` copies the champion's adapter weights
+   into the fresh one TRL builds, so the QLoRA set-up is exactly that of a
+   normal run. Not yet run on the GPU.
+4. **Score on 300** (`score`): greedy answers to a fixed random 300 test
+   questions (picked as the canary picks), not all 1,404, so a GPU session
+   stays under an hour. Any unanswered question fails the task (it retries)
+   instead of scoring fewer questions.
+5. **Gate on the same 300** (`gate`): the champion's saved answers cut to
+   the candidate's questions (refused if they belong to other questions),
+   then `promote.decide`. Passes → `deploy` (for now it only records the
+   approval; loading the adapter into vLLM comes next); fails → `reject`
+   logs the reasons.
+
+Every run keeps its files in `mlops/runs/<run id>/`: `drift.json`, `data/`,
+`adapter/`, `answers.jsonl`, `gate.json`, and `APPROVED` if it passed.
+
+**Checked on the Mac** (dry run: no GPU; the fine-tune writes a stand-in,
+scoring copies a saved answers file made from v3's real answers to the 300;
+v3 gets 246 of them right, 82.0%, vs 81.2% on all 1,404):
+
+| Query window | Stand-in candidate | Result |
+|---|---|---|
+| TAT-QA-heavy | v3's own answers | drift 75% → 1,600 examples → **reject**: 0 vs 0 (a copy isn't better) |
+| TAT-QA-heavy | 40 wrong answers fixed (286 right) | **deploy**: 40 vs 0, p = 1.8e-12 |
+| TAT-QA-heavy | 40 right answers broken (206 right) | **reject**: 0 vs 40; every source drops 12-22 points (limit 2) |
+| normal | — | drift 0% → sensor gives up, every box skipped, nothing trained |
+
+Each run took about 20 s. The registry was only read.
+
+```
+export PATH=$PWD/mlops/.venv/bin:$PATH PYTHONPATH=$PWD AIRFLOW_HOME=$PWD/mlops/airflow_home \
+       AIRFLOW__CORE__DAGS_FOLDER=$PWD/mlops/dags AIRFLOW__CORE__LOAD_EXAMPLES=False
+airflow db migrate   # once: Airflow's own bookkeeping database
+MLOPS_DRY_RUN=1 MLOPS_WINDOW=<window.jsonl> MLOPS_DRY_ANSWERS=<answers.jsonl> \
+  python -c "import sys; sys.path.insert(0, 'mlops/dags'); from drift_retrain import drift_retrain; drift_retrain().test()"
+airflow standalone   # the web page on http://localhost:8080 (needs the venv on PATH)
+```
+All settings (`MLOPS_*`) are listed at the top of the DAG file. A real run
+sets `MLOPS_FINETUNE_CMD` (`{data}`, `{init}`, `{out}` filled in) and
+`MLOPS_VLLM_URL`.
+
 ## What's next
 
 - **Throughput**: *done for 1 GPU*. Batching + length grouping, bf16 base and
@@ -690,7 +755,8 @@ mlops/.venv/bin/python -m training.qlora_financial.canary --url http://localhost
 
 - `prepare_dataset.py`: loads the four sources, formats, deduplicates, links
   documents, splits by group, runs the length audit, writes `data/*.jsonl`.
-- `train.py`: QLoRA training (`--smoke`, `--resume`), MLflow tracking,
+- `train.py`: QLoRA training (`--smoke`, `--resume`, `--init-adapter`,
+  `--max-steps`), MLflow tracking,
   saves the adapter and prints peak memory.
 - `verify_finetune.py`: original vs fine-tuned on `test.jsonl`, readable
   side-by-side plus number-scored, writes `verify_results.jsonl`.
@@ -711,6 +777,8 @@ mlops/.venv/bin/python -m training.qlora_financial.canary --url http://localhost
 - `drift.py`, `make_traffic.py`: the query-drift check and synthetic query
   windows with a known change (see *Query drift*).
 - `canary.py`: the served-model canary and its metrics (see *Canary*).
+- `../../mlops/retrain.py`, `../../mlops/dags/drift_retrain.py`: the retraining
+  pipeline's logic and its Airflow DAG (see *Retraining pipeline*).
 - `openrlhf_patches.patch`: our two OpenRLHF 0.11.2 fixes (LoRA weight
   sync to vLLM; `--train.critic_own_gpu`). `rl_node/`: the node scripts.
 - `tests/`: the scoring and calculator logic, Mac-only
