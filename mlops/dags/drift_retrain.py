@@ -2,7 +2,11 @@
 build fine-tune data like them, fine-tune from the champion, score the candidate, and let the
 gate decide. The logic lives in mlops/retrain.py; this file only wires it up.
 
-  drift_sensor -> build_data -> finetune -> score -> gate -> deploy | reject
+  drift_sensor -> build_data -> finetune -> load_candidate -> score -> gate -> deploy | reject
+
+The candidate is loaded into the running vLLM (under its run folder's name) before it's scored;
+deploy moves the "current model" pointer to it (the canary follows with --current-file), the old
+adapter stays loaded for a switch back; reject unloads it.
 
 Settings (environment variables, read when a task runs):
   MLOPS_WINDOW          the latest query window, one {"prompt": ...} per line (make_traffic.py)
@@ -11,9 +15,11 @@ Settings (environment variables, read when a task runs):
   MLOPS_N_LIKE          training rows like the traffic (+ as many replayed; default 800)
   MLOPS_SENSOR_TIMEOUT  seconds the sensor waits for drift before giving up quietly (default 3600)
   MLOPS_DRY_RUN=1       no GPU: finetune writes a stand-in adapter, score copies MLOPS_DRY_ANSWERS
+                        (the vLLM calls still happen: on the Mac, against a fake vLLM)
   MLOPS_FINETUNE_CMD    the real fine-tune, with {data} {init} {out} filled in
-  MLOPS_VLLM_URL        the real scoring server (default http://localhost:8000); the candidate is asked
-                        under the name of its run folder (step 8b loads it there)
+  MLOPS_VLLM_URL        the serving vLLM (default http://localhost:8000), started with
+                        VLLM_ALLOW_RUNTIME_LORA_UPDATING=True; it must see the run folders at the same paths
+  MLOPS_CURRENT         the "current model" pointer (default <MLOPS_RUNS>/current.json)
   MLOPS_N_SCORE         questions scored (default 300)
 Needs the repo root on PYTHONPATH (tasks import mlops.retrain and training.qlora_financial).
 """
@@ -53,6 +59,14 @@ def champion() -> dict:
     mv = mlflow.MlflowClient(tracking_uri=uri).get_model_version_by_alias("finance-qa", "champion")
     return {"version": mv.version, "name": mv.tags["version_name"], "adapter": str(REPO / mv.source),
             "data_dir": str(REPO / mv.tags["data_dir"]), "samples": str(REPO / mv.tags["samples"])}
+
+
+def vllm_url() -> str:
+    return setting("MLOPS_VLLM_URL", "http://localhost:8000")
+
+
+def current_file() -> Path:
+    return Path(setting("MLOPS_CURRENT", str(Path(setting("MLOPS_RUNS", str(REPO / "mlops/runs"))) / "current.json")))
 
 
 def window_prompts() -> list:
@@ -99,14 +113,20 @@ def drift_retrain():
         return str(out)
 
     @task
-    def score(data: str, adapter: str) -> str:
+    def load_candidate(adapter: str) -> str:
+        """Into the running vLLM, next to the current model, under the run folder's name."""
+        from mlops.retrain import load_adapter
+        load_adapter(vllm_url(), run_dir().name, adapter)
+        return run_dir().name
+
+    @task
+    def score(data: str, model: str) -> str:
         out = run_dir() / "answers.jsonl"
         if setting("MLOPS_DRY_RUN", "0") == "1":
             shutil.copyfile(setting("MLOPS_DRY_ANSWERS"), out)
         else:
             from mlops.retrain import score
-            rows = score(setting("MLOPS_VLLM_URL", "http://localhost:8000"), run_dir().name, data,
-                         n=int(setting("MLOPS_N_SCORE", "300")))
+            rows = score(vllm_url(), model, data, n=int(setting("MLOPS_N_SCORE", "300")))
             out.write_text("".join(json.dumps(r) + "\n" for r in rows))
         return str(out)
 
@@ -123,16 +143,25 @@ def drift_retrain():
 
     @task
     def deploy() -> None:
-        """Records the approval; step 8b loads the adapter into vLLM and switches traffic here."""
-        (run_dir() / "APPROVED").write_text("passed the gate; deploy comes in step 8b\n")
+        """Move the pointer to the candidate (still loaded? else fail: nothing to point at)."""
+        from mlops.retrain import loaded, set_current
+        name, champ = run_dir().name, champion()
+        if name not in loaded(vllm_url()):
+            raise RuntimeError(f"{name} is no longer loaded in vLLM; not switching")
+        set_current(current_file(), {"model": name, "samples": str(run_dir() / "answers.jsonl")},
+                    {"model": champ["name"], "samples": champ["samples"]})
+        (run_dir() / "APPROVED").write_text("passed the gate; now the current model\n")
+        print(f"deployed: {name} is the current model ({current_file()})")
 
     @task
     def reject() -> None:
+        from mlops.retrain import unload_adapter
+        unload_adapter(vllm_url(), run_dir().name)
         reasons = json.loads((run_dir() / "gate.json").read_text())["reasons"]
-        print(f"rejected, the champion stays: {'; '.join(reasons)}")
+        print(f"rejected and unloaded, the current model stays: {'; '.join(reasons)}")
 
     data = build_data(drift_sensor())
-    gate(score(data, finetune(data))) >> [deploy(), reject()]
+    gate(score(data, load_candidate(finetune(data)))) >> [deploy(), reject()]
 
 
 drift_retrain()
