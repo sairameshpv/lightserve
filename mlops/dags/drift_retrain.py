@@ -2,16 +2,22 @@
 build fine-tune data like them, fine-tune from the champion, score the candidate, and let the
 gate decide. The logic lives in mlops/retrain.py; this file only wires it up.
 
-  drift_sensor -> build_data -> finetune -> load_candidate -> score -> gate -> deploy | reject
+  drift_sensor -> build_data -> finetune -> load_candidate -> score -> gate -> deploy -> watch -> register_champion
+                                                                              \-> reject           \-> rollback
 
 The candidate is loaded into the running vLLM (under its run folder's name) before it's scored;
 deploy moves the "current model" pointer to it (the canary follows with --current-file), the old
-adapter stays loaded for a switch back; reject unloads it.
+adapter stays loaded for a switch back; reject unloads it. watch reads the canary from Prometheus:
+it holds up -> registered as the new champion, the old adapter unloaded; it doesn't -> pointer
+back, the candidate unloaded and recorded as rejected-after-deploy, an alert sent. The last boxes
+are safe to retry: each step checks whether it already happened.
 
 Settings (environment variables, read when a task runs):
   MLOPS_WINDOW          the latest query window, one {"prompt": ...} per line (make_traffic.py)
   MLOPS_RUNS            where each run's folder goes (default mlops/runs)
-  MLOPS_TRACKING_URI    the registry, only read here (default: training/qlora_financial/outputs/mlflow.db)
+  MLOPS_TRACKING_URI    the registry (default: training/qlora_financial/outputs/mlflow.db); written only by
+                        register_champion / rollback
+  MLOPS_ARTIFACT_ROOT   where the registry keeps its files (default training/qlora_financial/outputs/mlruns)
   MLOPS_N_LIKE          training rows like the traffic (+ as many replayed; default 800)
   MLOPS_SENSOR_TIMEOUT  seconds the sensor waits for drift before giving up quietly (default 3600)
   MLOPS_DRY_RUN=1       no GPU: finetune writes a stand-in adapter, score copies MLOPS_DRY_ANSWERS
@@ -21,6 +27,11 @@ Settings (environment variables, read when a task runs):
                         VLLM_ALLOW_RUNTIME_LORA_UPDATING=True; it must see the run folders at the same paths
   MLOPS_CURRENT         the "current model" pointer (default <MLOPS_RUNS>/current.json)
   MLOPS_N_SCORE         questions scored (default 300)
+  MLOPS_PROMETHEUS_URL  where the canary's numbers are (default http://localhost:9090)
+  MLOPS_ALERTMANAGER_URL  where the rollback alert goes (default http://localhost:9093)
+  MLOPS_WATCH_MINUTES   how long the new model is watched (default 10)
+  MLOPS_WATCH_POLL      seconds between looks; keep it under the canary's round time (default 30)
+  MLOPS_WATCH_STALE     seconds without a complete round before rolling back (default 900, as CanaryStale)
 Needs the repo root on PYTHONPATH (tasks import mlops.retrain and training.qlora_financial).
 """
 import json
@@ -29,6 +40,8 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
+import urllib.request
 from pathlib import Path
 
 import pendulum
@@ -52,13 +65,30 @@ def run_dir() -> Path:
     return path
 
 
+def tracking_uri() -> str:
+    return setting("MLOPS_TRACKING_URI", f"sqlite:///{REPO}/training/qlora_financial/outputs/mlflow.db")
+
+
 def champion() -> dict:
-    """The registry's champion: its adapter, training data folder and saved test answers."""
+    """The registry's champion (mlops.retrain.champion_info): adapter, data, saved answers, pool."""
+    from mlops.retrain import champion_info
+    return champion_info(tracking_uri())
+
+
+def register_once(champion_alias: bool, tags: dict) -> None:
+    """Register this run's candidate (a retry finds it already registered: nothing to do)."""
     import mlflow
-    uri = setting("MLOPS_TRACKING_URI", f"sqlite:///{REPO}/training/qlora_financial/outputs/mlflow.db")
-    mv = mlflow.MlflowClient(tracking_uri=uri).get_model_version_by_alias("finance-qa", "champion")
-    return {"version": mv.version, "name": mv.tags["version_name"], "adapter": str(REPO / mv.source),
-            "data_dir": str(REPO / mv.tags["data_dir"]), "samples": str(REPO / mv.tags["samples"])}
+    from training.qlora_financial.registry import register
+    mlflow.set_tracking_uri(tracking_uri())
+    commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    try:
+        register(run_dir().name, run_dir() / "adapter", run_dir() / "answers.jsonl", run_dir() / "data",
+                 commit or "unknown", setting("MLOPS_ARTIFACT_ROOT", str(REPO / "training/qlora_financial/outputs/mlruns")),
+                 champion=champion_alias, tags=tags)
+    except ValueError as e:
+        if "is already" not in str(e):
+            raise
+        print(f"already registered: {e}")
 
 
 def vllm_url() -> str:
@@ -82,7 +112,7 @@ def drift_retrain():
     def drift_sensor() -> PokeReturnValue:
         """Done when the drift alarm is on; no drift until the timeout = skipped, not failed."""
         from training.qlora_financial.drift import drift
-        with open(Path(champion()["data_dir"]) / "train.jsonl") as f:
+        with open(Path(champion()["pool_data_dir"]) / "train.jsonl") as f:
             reference = [json.loads(line)["messages"][1]["content"] for line in f]
         summary, _ = drift(reference, window_prompts())
         print(f"drift: {summary}")
@@ -94,7 +124,7 @@ def drift_retrain():
     def build_data(summary: dict) -> str:
         from mlops.retrain import build_data
         out = run_dir() / "data"
-        counts = build_data(champion()["data_dir"], window_prompts(), summary["drifted_columns"], out,
+        counts = build_data(champion()["pool_data_dir"], window_prompts(), summary["drifted_columns"], out,
                             n_like=int(setting("MLOPS_N_LIKE", "800")))
         print(f"fine-tune data: {counts}")
         return str(out)
@@ -161,7 +191,59 @@ def drift_retrain():
         print(f"rejected and unloaded, the current model stays: {'; '.join(reasons)}")
 
     data = build_data(drift_sensor())
-    gate(score(data, load_candidate(finetune(data)))) >> [deploy(), reject()]
+    @task.branch
+    def watch() -> str:
+        """Read the canary every MLOPS_WATCH_POLL s until watch_verdict says pass or rollback."""
+        from mlops.retrain import add_round, canary_reading, watch_verdict
+        name, started, rounds = run_dir().name, time.time(), []
+        window, poll = float(setting("MLOPS_WATCH_MINUTES", "10")) * 60, float(setting("MLOPS_WATCH_POLL", "30"))
+        while True:
+            r = canary_reading(setting("MLOPS_PROMETHEUS_URL", "http://localhost:9090"), name)
+            rounds = add_round(rounds, r)
+            verdict, why = watch_verdict(rounds, r["expected"] or 0.0, started, r["switched_at"], time.time(),
+                                         window, float(setting("MLOPS_WATCH_STALE", "900")))
+            print(f"watch: {verdict} ({why}); last reading {r}")
+            if verdict != "wait":
+                break
+            time.sleep(poll)
+        (run_dir() / "watch.json").write_text(json.dumps({"verdict": verdict, "why": why, "rounds": rounds}, indent=2) + "\n")
+        return "register_champion" if verdict == "pass" else "rollback"
+
+    @task
+    def register_champion() -> None:
+        """The new champion (its pool stays the full data), then the old adapter out of vLLM."""
+        from mlops.retrain import loaded, read_current, unload_adapter
+        before = champion()
+        pool = before["pool_data_dir"]
+        register_once(champion_alias=True, tags={"pool_data_dir": pool})
+        previous = read_current(current_file(), {})["previous"]["model"]
+        if previous != run_dir().name and previous in loaded(vllm_url()):
+            unload_adapter(vllm_url(), previous)
+        print(f"{run_dir().name} is the champion; unloaded {previous}")
+
+    @task
+    def rollback() -> None:
+        """Pointer back to the model before, the candidate out of vLLM, recorded, alert sent."""
+        from mlops.retrain import loaded, read_current, set_current, unload_adapter
+        name, champ = run_dir().name, champion()
+        why = json.loads((run_dir() / "watch.json").read_text())["why"]
+        current = read_current(current_file(), {"model": champ["name"], "samples": champ["samples"]})
+        if current["model"] == name:  # a retry after the switch must not switch back to it
+            set_current(current_file(), current["previous"], {"model": champ["name"], "samples": champ["samples"]})
+        if name in loaded(vllm_url()):
+            unload_adapter(vllm_url(), name)
+        register_once(champion_alias=False, tags={"pool_data_dir": champ["pool_data_dir"],
+                                                  "status": "rejected-after-deploy", "rollback_reason": why})
+        alert = [{"labels": {"alertname": "ModelRolledBack", "severity": "page", "model": name},
+                  "annotations": {"summary": f"{name} rolled back after deploy: {why}"}}]
+        req = urllib.request.Request(f"{setting('MLOPS_ALERTMANAGER_URL', 'http://localhost:9093')}/api/v2/alerts",
+                                     data=json.dumps(alert).encode(), headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=30).close()
+        print(f"rolled back {name}: {why}")
+
+    deployed = deploy()
+    gate(score(data, load_candidate(finetune(data)))) >> [deployed, reject()]
+    deployed >> watch() >> [register_champion(), rollback()]
 
 
 drift_retrain()
