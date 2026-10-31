@@ -2,10 +2,12 @@
 data that looks like the drifted traffic, scoring the fine-tuned candidate, the gate."""
 import bisect
 import json
+import math
 import os
 import random
 import shutil
 import statistics
+import urllib.parse
 import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -152,3 +154,30 @@ def watch_verdict(rounds: list, expected: float, started: float, switched_at, no
             return "rollback", f"only {len(rounds)} complete round(s) in the watch (needs {min_rounds})"
         return "pass", f"{len(rounds)} rounds, none low twice in a row"
     return "wait", f"{len(rounds)} round(s) so far"
+
+
+def _prom_value(prom_url: str, query: str, timeout: float):
+    """One number from Prometheus (first series), or None: no series, or NaN (a round without a score)."""
+    url = f"{prom_url}/api/v1/query?" + urllib.parse.urlencode({"query": query})
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        result = json.load(resp)["data"]["result"]
+    value = float(result[0]["value"][1]) if result else None
+    return None if value is None or math.isnan(value) else value
+
+
+def canary_reading(prom_url: str, model: str, timeout: float = 30) -> dict:
+    """The canary as Prometheus last scraped it: since when it asks `model` (None = not yet), its
+    last score and normal, and when its last complete round finished."""
+    return {"switched_at": _prom_value(prom_url, f'canary_model_info{{model="{model}"}}', timeout),
+            "accuracy": _prom_value(prom_url, "canary_accuracy", timeout),
+            "expected": _prom_value(prom_url, "canary_expected_accuracy", timeout),
+            "last_run": _prom_value(prom_url, "canary_last_run_timestamp_seconds", timeout)}
+
+
+def add_round(rounds: list, reading: dict) -> list:
+    """`rounds` plus the reading's round if it's a new, scored round of the new model (finished
+    after the canary switched to it). Poll at least once per canary round, or rounds are missed."""
+    r = reading
+    new = (r["switched_at"] is not None and r["accuracy"] is not None and r["last_run"] is not None
+           and r["last_run"] > r["switched_at"] and (not rounds or r["last_run"] > rounds[-1][0]))
+    return rounds + [(r["last_run"], r["accuracy"])] if new else rounds

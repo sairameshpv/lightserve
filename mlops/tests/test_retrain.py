@@ -4,11 +4,12 @@ import json
 import threading
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from mlops.retrain import (build_data, gate, load_adapter, loaded, read_current, score, select_like, set_current,
-                           unload_adapter, watch_verdict)
+from mlops.retrain import (add_round, build_data, canary_reading, gate, load_adapter, loaded, read_current, score,
+                           select_like, set_current, unload_adapter, watch_verdict)
 from training.qlora_financial.canary import pick
 from training.qlora_financial.sample_eval import load_questions
 
@@ -223,3 +224,49 @@ def test_watch_without_enough_rounds_rolls_back_to_be_safe():
 
 def test_watch_waits_inside_the_window():
     assert verdict([(60, 0.80)], now=120)[0] == "wait"
+
+
+@pytest.fixture
+def prometheus():
+    """A fake Prometheus query API: prometheus.series = {query: [(labels, value as text)]}."""
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            query = parse_qs(urlparse(self.path).query)["query"][0]
+            result = [{"metric": labels, "value": [1000.0, value]} for labels, value in prom.series.get(query, [])]
+            out = json.dumps({"status": "success", "data": {"resultType": "vector", "result": result}}).encode()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(out)
+
+        def log_message(self, *args):
+            pass
+
+    prom = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    prom.series, prom.url = {}, f"http://127.0.0.1:{prom.server_address[1]}"
+    threading.Thread(target=prom.serve_forever, daemon=True).start()
+    yield prom
+    prom.shutdown()
+
+
+def test_canary_reading_from_prometheus(prometheus):
+    prometheus.series = {'canary_model_info{model="run1"}': [({"model": "run1"}, "900")],
+                         "canary_accuracy": [({}, "0.84")], "canary_expected_accuracy": [({}, "0.8")],
+                         "canary_last_run_timestamp_seconds": [({}, "960")]}
+    assert canary_reading(prometheus.url, "run1") == {"switched_at": 900.0, "accuracy": 0.84, "expected": 0.8,
+                                                      "last_run": 960.0}
+
+
+def test_canary_reading_missing_or_unscored_is_none(prometheus):
+    prometheus.series = {"canary_accuracy": [({}, "NaN")]}  # not switched yet; a round without a score
+    assert canary_reading(prometheus.url, "run1") == {"switched_at": None, "accuracy": None, "expected": None,
+                                                      "last_run": None}
+
+
+def test_add_round_counts_each_of_the_new_models_rounds_once():
+    reading = {"switched_at": 900.0, "accuracy": 0.84, "expected": 0.8, "last_run": 960.0}
+    rounds = add_round([], reading)
+    assert rounds == [(960.0, 0.84)]
+    assert add_round(rounds, reading) == rounds  # polled again before the next round: same round
+    assert add_round([], {**reading, "last_run": 880.0}) == []  # finished before the switch: the old model's
+    assert add_round([], {**reading, "switched_at": None}) == []  # the canary hasn't switched yet
+    assert add_round([], {**reading, "accuracy": None}) == []
