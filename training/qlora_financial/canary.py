@@ -80,9 +80,18 @@ def make_metrics(registry, expected: float, now: float = None) -> dict:
     m["expected"] = Gauge("canary_expected_accuracy", "The current model's saved score on the same questions",
                           registry=registry)
     m["expected"].set(expected)
+    m["model"] = Gauge("canary_model_info", "The model the canary asks (label), value = when it started asking it",
+                       ["model"], registry=registry)
     m["accuracy"].set(float("nan"))  # not 0 before the first answers: 0 would look like a broken model
     m["last_run"].set(time.time() if now is None else now)  # stale wait starts at launch, not in 1970
     return m
+
+
+def set_model(metrics: dict, model: str, now: float = None) -> None:
+    """Publish which model the canary asks from now on, and since when: a round that finished
+    after that time asked this model (rounds run one after another)."""
+    metrics["model"].clear()
+    metrics["model"].labels(model).set(time.time() if now is None else now)
 
 
 def record(metrics: dict, result: dict, now: float = None) -> None:
@@ -116,6 +125,7 @@ def main():
     expected = expected_accuracy(load_rows(args.expected_from), questions)
     registry = CollectorRegistry()
     metrics = make_metrics(registry, expected)
+    set_model(metrics, args.model)
     start_http_server(args.port, registry=registry)
     print(f"{len(questions)} canary questions, normal {expected:.2f} ({args.expected_from}); "
           f"/metrics on :{args.port}, a round every {args.every:g} s", flush=True)
@@ -127,6 +137,7 @@ def main():
                 print(f"switched to {model}, normal {normal:.2f} (was {args.model}, {expected:.2f})", flush=True)
                 args.model, expected = model, normal
                 metrics["expected"].set(expected)
+                set_model(metrics, model)
         result = run_once(args.url, args.model, questions)
         record(metrics, result)
         acc = "none" if result["accuracy"] is None else f"{result['accuracy']:.2f}"

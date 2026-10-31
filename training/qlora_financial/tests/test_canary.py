@@ -9,7 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from prometheus_client import CollectorRegistry
 
-from training.qlora_financial.canary import expected_accuracy, follow, grade, make_metrics, pick, record, run_once
+from training.qlora_financial.canary import (expected_accuracy, follow, grade, make_metrics, pick, record, run_once,
+                                            set_model)
 
 
 def questions(n):
@@ -141,3 +142,14 @@ def test_follow_switches_to_the_pointed_model_and_its_own_normal(tmp_path):
     assert follow(pointer, "v3", 0.66, questions(10)) == ("run1", 0.8)
     saved.unlink()  # same model as before: nothing is re-read
     assert follow(pointer, "run1", 0.8, questions(10)) == ("run1", 0.8)
+
+
+def test_model_info_says_which_model_is_asked_and_since_when():
+    """The pipeline's watch counts only rounds that finished after the canary switched to the new model."""
+    registry = CollectorRegistry()
+    metrics = make_metrics(registry, expected=0.8, now=500.0)
+    set_model(metrics, "v3", now=500.0)
+    assert registry.get_sample_value("canary_model_info", {"model": "v3"}) == 500.0
+    set_model(metrics, "run1", now=900.0)
+    assert registry.get_sample_value("canary_model_info", {"model": "run1"}) == 900.0
+    assert registry.get_sample_value("canary_model_info", {"model": "v3"}) is None  # one model at a time
