@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from mlops.retrain import (build_data, gate, load_adapter, loaded, read_current, score, select_like, set_current,
-                           unload_adapter)
+                           unload_adapter, watch_verdict)
 from training.qlora_financial.canary import pick
 from training.qlora_financial.sample_eval import load_questions
 
@@ -187,3 +187,39 @@ def test_set_current_switches_and_keeps_the_one_before(tmp_path):
     set_current(path, run2, CHAMPION)
     assert read_current(path, CHAMPION) == {**run2, "previous": run1}  # one step back, not a growing chain
     assert [f.name for f in tmp_path.iterdir()] == ["current.json"]  # no temp file left behind
+
+
+def verdict(rounds, now, switched_at=0.0):
+    """Watch from t=0 for 600 s, normal 0.80, stale after 300 s without a complete round."""
+    return watch_verdict(rounds, expected=0.80, started=0.0, switched_at=switched_at, now=now, window=600,
+                         stale_after=300)
+
+
+def test_watch_rolls_back_after_two_low_rounds_in_a_row():
+    v, why = verdict([(60, 0.60), (120, 0.62)], now=130)  # the alert's rule: two rounds > 10 points below
+    assert v == "rollback" and "2 rounds in a row" in why
+
+
+def test_watch_one_low_round_is_not_enough():
+    assert verdict([(60, 0.60), (120, 0.80)], now=130)[0] == "wait"
+    assert verdict([(60, 0.70), (120, 0.70)], now=130)[0] == "wait"  # exactly 10 points below: not "more than"
+
+
+def test_watch_rolls_back_when_the_canary_goes_quiet():
+    v, why = verdict([(60, 0.80)], now=400)  # 340 s since the last complete round
+    assert v == "rollback" and "no complete round" in why
+    v, why = verdict([], now=400, switched_at=None)  # the canary never switched to it
+    assert v == "rollback" and "no complete round" in why
+
+
+def test_watch_passes_after_the_window_with_enough_good_rounds():
+    assert verdict([(200, 0.80), (400, 0.76), (590, 0.82)], now=600) == ("pass", "3 rounds, none low twice in a row")
+
+
+def test_watch_without_enough_rounds_rolls_back_to_be_safe():
+    v, why = verdict([(500, 0.80)], now=600)
+    assert v == "rollback" and "only 1 complete round" in why
+
+
+def test_watch_waits_inside_the_window():
+    assert verdict([(60, 0.80)], now=120)[0] == "wait"

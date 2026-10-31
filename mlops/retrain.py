@@ -130,3 +130,25 @@ def set_current(path, new: dict, champion: dict) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps({**new, "previous": before}, indent=2) + "\n")
     os.replace(tmp, path)
+
+
+def watch_verdict(rounds: list, expected: float, started: float, switched_at, now: float, window: float,
+                  stale_after: float, margin: float = 0.10, min_rounds: int = 2) -> tuple:
+    """After a deploy: "wait", "pass" or "rollback", with the reason. `rounds` = the new model's
+    complete canary rounds [(finished_at, accuracy)] in order; `switched_at` = when the canary
+    started asking it (None = not yet). The alert's rules: roll back on 2 rounds in a row more
+    than `margin` below normal, or no complete round for `stale_after` s; pass when the window is
+    over with at least `min_rounds` rounds. Too few rounds = roll back (not enough evidence)."""
+    low = [round(expected - acc, 9) > margin for _, acc in rounds]  # rounded: 0.80 - 0.70 isn't 0.1 in floats
+    for i in range(1, len(rounds)):
+        if low[i - 1] and low[i]:
+            return "rollback", (f"2 rounds in a row more than {margin * 100:g} points below normal "
+                                f"({rounds[i - 1][1]:.2f}, {rounds[i][1]:.2f} vs {expected:.2f})")
+    since = rounds[-1][0] if rounds else (started if switched_at is None else max(started, switched_at))
+    if now - since > stale_after:
+        return "rollback", f"no complete round for {now - since:.0f} s (limit {stale_after:g})"
+    if now - started >= window:
+        if len(rounds) < min_rounds:
+            return "rollback", f"only {len(rounds)} complete round(s) in the watch (needs {min_rounds})"
+        return "pass", f"{len(rounds)} rounds, none low twice in a row"
+    return "wait", f"{len(rounds)} round(s) so far"
