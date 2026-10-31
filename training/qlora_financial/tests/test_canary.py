@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from prometheus_client import CollectorRegistry
 
-from training.qlora_financial.canary import expected_accuracy, grade, make_metrics, pick, record, run_once
+from training.qlora_financial.canary import expected_accuracy, follow, grade, make_metrics, pick, record, run_once
 
 
 def questions(n):
@@ -125,3 +125,19 @@ def test_record_sets_the_metrics():
     assert math.isnan(value("canary_accuracy"))
     assert value("canary_errors_total") == 50
     assert value("canary_last_run_timestamp_seconds") == 1000.0  # so the canary goes stale
+
+
+def test_follow_without_a_pointer_file_keeps_the_model_and_normal(tmp_path):
+    assert follow(tmp_path / "current.json", "v3", 0.66, questions(10)) == ("v3", 0.66)
+
+
+def test_follow_switches_to_the_pointed_model_and_its_own_normal(tmp_path):
+    """A newly deployed model's normal = its own saved answers to the canary questions (from the gate)."""
+    saved = tmp_path / "answers.jsonl"
+    saved.write_text("".join(json.dumps({"id": i, "gold": f"Answer: {i}", "greedy": f"Answer: {i if i < 8 else 0}"})
+                             + "\n" for i in range(10)))  # right on 8 of 10
+    pointer = tmp_path / "current.json"
+    pointer.write_text(json.dumps({"model": "run1", "samples": str(saved), "previous": {"model": "v3"}}))
+    assert follow(pointer, "v3", 0.66, questions(10)) == ("run1", 0.8)
+    saved.unlink()  # same model as before: nothing is re-read
+    assert follow(pointer, "run1", 0.8, questions(10)) == ("run1", 0.8)

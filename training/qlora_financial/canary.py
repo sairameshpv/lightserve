@@ -2,9 +2,11 @@
 accuracy, so a broken or swapped model shows up on the dashboard (speed metrics can't see it).
 "Normal" is the champion's own saved score on the same 50 questions."""
 import argparse
+import json
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, start_http_server
 
@@ -57,12 +59,27 @@ def expected_accuracy(saved_rows: list, questions: list) -> float:
     return grade(questions, [saved[q["id"]]["greedy"] for q in questions])
 
 
+def follow(current_file, model: str, expected: float, questions: list) -> tuple:
+    """With --current-file (the retraining pipeline's pointer, {"model", "samples", ...}): the
+    model it names and that model's own normal, from its saved answers (a new model's come from
+    the gate, which scored the canary's 50 among its 300). No file yet, or the same model: unchanged."""
+    path = Path(current_file)
+    if not path.exists():
+        return model, expected
+    current = json.loads(path.read_text())
+    if current["model"] == model:
+        return model, expected
+    return current["model"], expected_accuracy(load_rows(current["samples"]), questions)
+
+
 def make_metrics(registry, expected: float, now: float = None) -> dict:
     m = {"accuracy": Gauge("canary_accuracy", "Share of canary questions answered right (last round; NaN = not every question was answered, or none yet)",
                            registry=registry),
          "errors": Counter("canary_errors", "Canary questions the server failed to answer", registry=registry),
          "last_run": Gauge("canary_last_run_timestamp_seconds", "When a round last had every question answered (at launch: the start time)", registry=registry)}
-    Gauge("canary_expected_accuracy", "The champion's saved score on the same questions", registry=registry).set(expected)
+    m["expected"] = Gauge("canary_expected_accuracy", "The current model's saved score on the same questions",
+                          registry=registry)
+    m["expected"].set(expected)
     m["accuracy"].set(float("nan"))  # not 0 before the first answers: 0 would look like a broken model
     m["last_run"].set(time.time() if now is None else now)  # stale wait starts at launch, not in 1970
     return m
@@ -89,6 +106,8 @@ def main():
     ap.add_argument("--tracking-uri", default="sqlite:///training/qlora_financial/outputs/mlflow.db")
     ap.add_argument("--every", type=float, default=300, help="seconds between rounds")
     ap.add_argument("--port", type=int, default=9101, help="where /metrics is served")
+    ap.add_argument("--current-file", help="follow the retraining pipeline's pointer (mlops/runs/current.json): "
+                                           "each round, ask the model it names, with that model's own normal")
     args = ap.parse_args()
     if args.expected_from is None:
         from training.qlora_financial.promote import champion_samples
@@ -102,6 +121,12 @@ def main():
           f"/metrics on :{args.port}, a round every {args.every:g} s", flush=True)
     while True:
         started = time.monotonic()
+        if args.current_file:
+            model, normal = follow(args.current_file, args.model, expected, questions)
+            if model != args.model:
+                print(f"switched to {model}, normal {normal:.2f} (was {args.model}, {expected:.2f})", flush=True)
+                args.model, expected = model, normal
+                metrics["expected"].set(expected)
         result = run_once(args.url, args.model, questions)
         record(metrics, result)
         acc = "none" if result["accuracy"] is None else f"{result['accuracy']:.2f}"
