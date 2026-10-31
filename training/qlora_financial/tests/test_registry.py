@@ -72,6 +72,10 @@ def test_register_two_versions_and_move_champion(tmp_path):
     assert len(mlflow.search_runs(search_all_experiments=True)) == runs_before  # refused before writing anything
     assert len(client.search_model_versions("name='finance-qa'")) == 3
 
+    register("rolled-back", git_commit="ddd", tags={"status": "rejected-after-deploy"}, **common)
+    assert client.get_model_version("finance-qa", "4").tags["status"] == "rejected-after-deploy"
+    assert int(client.get_model_version_by_alias("finance-qa", "champion").version) == 3  # not champion
+
 
 def test_repo_path_is_relative_inside_the_repo(tmp_path):
     """Stored paths must work on any machine with the repo, not just this one."""

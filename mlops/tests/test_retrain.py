@@ -8,7 +8,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from mlops.retrain import (add_round, build_data, canary_reading, gate, load_adapter, loaded, read_current, score,
+from mlops.retrain import (add_round, build_data, canary_reading, champion_info, gate, load_adapter, loaded,
+                           read_current, score,
                            select_like, set_current, unload_adapter, watch_verdict)
 from training.qlora_financial.canary import pick
 from training.qlora_financial.sample_eval import load_questions
@@ -270,3 +271,29 @@ def test_add_round_counts_each_of_the_new_models_rounds_once():
     assert add_round([], {**reading, "last_run": 880.0}) == []  # finished before the switch: the old model's
     assert add_round([], {**reading, "switched_at": None}) == []  # the canary hasn't switched yet
     assert add_round([], {**reading, "accuracy": None}) == []
+
+
+def test_champion_info_training_pool_falls_back_to_its_data(tmp_path):
+    """A retrained champion's own data is a small, skewed fine-tune set: drift reference and the pool
+    to pick from stay the full data it was drawn from (pool_data_dir), else its data_dir (v3)."""
+    from training.qlora_financial.registry import register
+    adapter, full, small = tmp_path / "adapter", tmp_path / "full", tmp_path / "small"
+    for d in (adapter, full, small):
+        d.mkdir()
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": "b", "r": 16, "lora_alpha": 32}))
+    for d in (full, small):
+        for split in ("train", "val", "test"):
+            (d / f"{split}.jsonl").write_text("{}\n")
+    samples = tmp_path / "samples.jsonl"
+    samples.write_text("".join(json.dumps(r) + "\n" for r in answers(range(4))))
+    uri = f"sqlite:///{tmp_path / 'mlflow.db'}"  # a throwaway database, never the real one
+    import mlflow
+    mlflow.set_tracking_uri(uri)
+    common = dict(adapter_dir=adapter, samples_path=samples, git_commit="a", artifact_root=tmp_path / "art", champion=True)
+    register("v3", data_dir=full, **common)
+    info = champion_info(uri)
+    assert (info["name"], info["data_dir"], info["pool_data_dir"]) == ("v3", str(full), str(full))
+    register("run1", data_dir=small, tags={"pool_data_dir": str(full)}, **common)
+    info = champion_info(uri)
+    assert (info["name"], info["data_dir"], info["pool_data_dir"]) == ("run1", str(small), str(full))
+    assert info["adapter"] == str(adapter) and info["samples"] == str(samples)

@@ -181,3 +181,16 @@ def add_round(rounds: list, reading: dict) -> list:
     new = (r["switched_at"] is not None and r["accuracy"] is not None and r["last_run"] is not None
            and r["last_run"] > r["switched_at"] and (not rounds or r["last_run"] > rounds[-1][0]))
     return rounds + [(r["last_run"], r["accuracy"])] if new else rounds
+
+
+def champion_info(tracking_uri: str, model: str = "finance-qa") -> dict:
+    """The registry's champion: served name, adapter, training data, saved test answers, and the
+    pool the pipeline draws from and compares traffic with: `pool_data_dir` if set (a retrained
+    champion's own data is the small fine-tune set), else its data (v3)."""
+    import mlflow
+    from training.qlora_financial.registry import REPO
+    mv = mlflow.MlflowClient(tracking_uri=tracking_uri).get_model_version_by_alias(model, "champion")
+    data_dir = str(REPO / mv.tags["data_dir"])  # stored relative to the repo (absolute stays absolute)
+    return {"version": mv.version, "name": mv.tags["version_name"], "adapter": str(REPO / mv.source),
+            "data_dir": data_dir, "samples": str(REPO / mv.tags["samples"]),
+            "pool_data_dir": str(REPO / mv.tags["pool_data_dir"]) if "pool_data_dir" in mv.tags else data_dir}

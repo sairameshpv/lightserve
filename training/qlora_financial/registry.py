@@ -53,10 +53,11 @@ def lineage(adapter_dir, data_dir, git_commit: str) -> dict:
 
 
 def register(version_name: str, adapter_dir, samples_path, data_dir, git_commit: str, artifact_root,
-             champion: bool = False, model: str = "finance-qa") -> int:
+             champion: bool = False, model: str = "finance-qa", tags: dict = None) -> int:
     """Register one adapter as the next version of `model`: a small "registration" run holds
     the scores (metrics), lineage (params) and the training data (dataset input); the version
     points at the adapter folder and carries the same facts as tags. Returns the version number.
+    `tags`: extra facts for the version (e.g. the pipeline's pool_data_dir, status).
     Uses whatever MLflow tracking URI is set (the caller picks the database)."""
     import mlflow
     from mlflow.data.dataset_source_registry import resolve_dataset_source
@@ -68,7 +69,7 @@ def register(version_name: str, adapter_dir, samples_path, data_dir, git_commit:
             raise ValueError(f"'{version_name}' is already {model} version {mv.version}")
     s, lin = scores(load_rows(samples_path)), lineage(adapter_dir, data_dir, git_commit)
     facts = {"version_name": version_name, "samples": repo_path(samples_path), **lin,
-             **{f"acc.{k}": v for k, v in s.items() if k != "n"}, "n_scored": s["n"]}
+             **{f"acc.{k}": v for k, v in s.items() if k != "n"}, "n_scored": s["n"], **(tags or {})}
     if mlflow.get_experiment_by_name("finance-qa-registry") is None:
         mlflow.create_experiment("finance-qa-registry", artifact_location=Path(artifact_root).resolve().as_uri())
     mlflow.set_experiment("finance-qa-registry")
