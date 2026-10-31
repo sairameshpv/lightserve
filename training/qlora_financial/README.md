@@ -649,8 +649,12 @@ saved ones (GPU, the end-to-end run). That may move the 10-point margin.
 mlops/.venv/bin/python -m training.qlora_financial.canary --url http://localhost:8000 --model v3 --every 300 --port 9101
 ```
 `--expected-from <samples.jsonl>` sets normal instead of the registry's champion.
+`--current-file <pointer>` follows the retraining pipeline's "current model"
+pointer: each round it asks the model the pointer names, and on a switch
+normal becomes that model's own saved score on the same 50 (see *Retraining
+pipeline*).
 
-## Retraining pipeline: from changed questions to a gated candidate
+## Retraining pipeline: from changed questions to a deployed model
 
 Drift check, fine-tune, scoring and gate used to be separate commands run by
 hand. `mlops/dags/drift_retrain.py` chains them as one Airflow pipeline
@@ -658,7 +662,7 @@ hand. `mlops/dags/drift_retrain.py` chains them as one Airflow pipeline
 logic lives in `mlops/retrain.py`, tested on its own.
 
 ```
-drift_sensor -> build_data -> finetune -> score -> gate -> deploy | reject
+drift_sensor -> build_data -> finetune -> load_candidate -> score -> gate -> deploy | reject
 ```
 
 1. **Wait for drift** (`drift_sensor`): compares the latest query window
@@ -677,15 +681,23 @@ drift_sensor -> build_data -> finetune -> score -> gate -> deploy | reject
    <champion's adapter> --max-steps N` copies the champion's adapter weights
    into the fresh one TRL builds, so the QLoRA set-up is exactly that of a
    normal run. Not yet run on the GPU.
-4. **Score on 300** (`score`): greedy answers to a fixed random 300 test
+4. **Load into vLLM** (`load_candidate`): the new adapter joins the running
+   vLLM next to the current model, under the run's name (vLLM's runtime
+   LoRA loading). Already loaded = nothing to do, so a retry doesn't fail.
+5. **Score on 300** (`score`): greedy answers to a fixed random 300 test
    questions (picked as the canary picks), not all 1,404, so a GPU session
    stays under an hour. Any unanswered question fails the task (it retries)
    instead of scoring fewer questions.
-5. **Gate on the same 300** (`gate`): the champion's saved answers cut to
+6. **Gate on the same 300** (`gate`): the champion's saved answers cut to
    the candidate's questions (refused if they belong to other questions),
-   then `promote.decide`. Passes → `deploy` (for now it only records the
-   approval; loading the adapter into vLLM comes next); fails → `reject`
-   logs the reasons.
+   then `promote.decide`.
+7. **Deploy or reject.** `deploy` checks the candidate is still loaded, then
+   moves the **"current model" pointer** (`<runs>/current.json`: the model's
+   served name and its saved answers) to it, keeping the one before as
+   `previous`. The pointer is replaced in one step (temp file + rename), so a
+   reader never sees half of it. The old adapter stays loaded, so switching
+   back is instant. The canary follows the pointer (`--current-file`).
+   `reject` unloads the candidate and logs the reasons; the pointer stays.
 
 Every run keeps its files in `mlops/runs/<run id>/`: `drift.json`, `data/`,
 `adapter/`, `answers.jsonl`, `gate.json`, and `APPROVED` if it passed.
@@ -701,7 +713,18 @@ v3 gets 246 of them right, 82.0%, vs 81.2% on all 1,404):
 | TAT-QA-heavy | 40 right answers broken (206 right) | **reject**: 0 vs 40; every source drops 12-22 points (limit 2) |
 | normal | — | drift 0% → sensor gives up, every box skipped, nothing trained |
 
-Each run took about 20 s. The registry was only read.
+Each run took about 20 s. The registry was only read. (These runs were
+before the load/deploy boxes existed.)
+
+**Deploy checked on the Mac** with a scratch fake vLLM (loads and unloads
+adapters by name, each answering with its run's stand-in answers) and the
+canary following the pointer, one round a minute:
+
+| Step | Pipeline | Canary |
+|---|---|---|
+| Start | — | asks v3: 0.66, normal 0.66 |
+| Better candidate | loaded → PASS 40 vs 0 → pointer moved; v3 still loaded, `previous` = v3 | next round: "switched to <run>, normal 1.00 (was v3, 0.66)"; 1.00 every round |
+| Worse candidate | loaded → REJECT 0 vs 40 → unloaded; pointer unchanged | unaffected, 1.00 |
 
 ```
 export PATH=$PWD/mlops/.venv/bin:$PATH PYTHONPATH=$PWD AIRFLOW_HOME=$PWD/mlops/airflow_home \
@@ -711,9 +734,14 @@ MLOPS_DRY_RUN=1 MLOPS_WINDOW=<window.jsonl> MLOPS_DRY_ANSWERS=<answers.jsonl> \
   python -c "import sys; sys.path.insert(0, 'mlops/dags'); from drift_retrain import drift_retrain; drift_retrain().test()"
 airflow standalone   # the web page on http://localhost:8080 (needs the venv on PATH)
 ```
-All settings (`MLOPS_*`) are listed at the top of the DAG file. A real run
-sets `MLOPS_FINETUNE_CMD` (`{data}`, `{init}`, `{out}` filled in) and
-`MLOPS_VLLM_URL`.
+All settings (`MLOPS_*`) are listed at the top of the DAG file. A dry run
+still talks to vLLM (`MLOPS_VLLM_URL`; on the Mac, a fake one: the checks
+above used a scratch fake; the whole-loop test will bring one into the repo). A real run sets
+`MLOPS_FINETUNE_CMD` (`{data}`, `{init}`, `{out}` filled in), and vLLM must
+be started with `VLLM_ALLOW_RUNTIME_LORA_UPDATING=True`, `--max-loras 2`
+(old + new in one batch), `--max-lora-rank 16`, and the run folders mounted
+at the same paths (it loads adapters by path). Anyone who can reach that
+port can load an adapter, so it stays local.
 
 ## What's next
 
