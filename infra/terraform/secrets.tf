@@ -7,14 +7,6 @@ resource "kubernetes_namespace" "ns" {
   depends_on = [nebius_mk8s_v1_node_group.cpu]
 }
 
-resource "kubernetes_secret" "hf_token" {
-  metadata {
-    name      = "hf-token"
-    namespace = kubernetes_namespace.ns["lightserve"].metadata[0].name
-  }
-  data = { token = var.hf_token }
-}
-
 resource "kubernetes_secret" "grafana_admin" {
   metadata {
     name      = "grafana-admin"

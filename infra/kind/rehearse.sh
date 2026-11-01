@@ -29,6 +29,8 @@ extra_args() {  # what the Mac adds on top of the shared values
            "--set-file dashboards.cost=monitoring/grafana/provisioning/dashboards/cost.json" ;;
     lightserve)
       echo "--set engine=fake --set image.repository=lightserve --set image.tag=fake" ;;
+    airflow)
+      echo "--set images.airflow.repository=airflow-mlops --set images.airflow.tag=local --set images.airflow.pullPolicy=IfNotPresent" ;;
   esac
 }
 
@@ -58,6 +60,9 @@ case "${1:-}" in
     docker image inspect lightserve:fake >/dev/null 2>&1 ||
       docker build -f infra/docker/lightserve.Dockerfile --target fake -t lightserve:fake .
     kind load docker-image lightserve:fake --name "$CLUSTER"
+    docker image inspect airflow-mlops:local >/dev/null 2>&1 ||
+      docker build -f infra/docker/airflow.Dockerfile -t airflow-mlops:local .
+    kind load docker-image airflow-mlops:local --name "$CLUSTER"
     for ns in monitoring mlops lightserve chaos-mesh; do
       kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
     done

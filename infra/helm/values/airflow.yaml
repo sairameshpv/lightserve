@@ -2,8 +2,18 @@
 # DAG runs in dry-run (MLOPS_DRY_RUN=1): the real fine-tune stays on the VM (step 9).
 defaultAirflowTag: "3.3.2"
 airflowVersion: "3.3.2"
+images:
+  airflow:   # the official image + the pipeline's packages (infra/docker/airflow.Dockerfile; CI pushes it)
+    repository: ghcr.io/sairameshpv/airflow-mlops
+    tag: latest
 executor: LocalExecutor          # tasks run in the scheduler: no Celery workers, no Redis
 redis: {enabled: false}
+# The database jobs as ordinary Jobs, not Helm hooks: hooks run after the install, but helm --wait
+# (and Terraform's helm_release) wait for the pods, which wait for the database: a deadlock.
+migrateDatabaseJob: {useHelmHooks: false, applyCustomEnv: false}
+# Airflow 3 logs in with its own simple auth manager (admin password generated at start); the
+# chart's user-creation job is for the old FAB login and fails here.
+createUserJob: {enabled: false}
 statsd: {enabled: false}
 dags:
   gitSync:                       # the DAG straight from GitHub's main branch (public repo)
@@ -15,9 +25,6 @@ dags:
     period: 60s
 env:
   - {name: PYTHONPATH, value: /opt/airflow/dags/repo}   # the repo root: mlops.retrain, training.qlora_financial
-  # A test-cluster shortcut: pip installs these when each Airflow container starts (~1-2 min);
-  # a real deployment bakes them into its own image.
-  - {name: _PIP_ADDITIONAL_REQUIREMENTS, value: "mlflow==3.16.1 evidently==0.7.23 pandas==2.3.3 prometheus_client==0.26.0 pytest"}
   - {name: MLOPS_DRY_RUN, value: "1"}
   - {name: MLOPS_RUNS, value: /tmp/mlops-runs}
   - {name: MLOPS_TRACKING_URI, value: "http://mlflow.mlops:80"}

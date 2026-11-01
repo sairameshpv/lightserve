@@ -1,6 +1,6 @@
 # Copy to terraform.tfvars (gitignored). Secrets are NOT here: export them instead:
 #   export TF_VAR_nebius_token=$(nebius iam get-access-token)
-#   export TF_VAR_grafana_admin_password=...   TF_VAR_hf_token=...   (only for the real model)
+#   export TF_VAR_grafana_admin_password=...   (Grafana's admin password on the cluster)
 parent_id = "project-..."
 subnet_id = "vpcsubnet-..."
 # gpu_node_count = 0        # rehearse everything but the GPU node

@@ -3,6 +3,7 @@
 **/__pycache__
 training/
 mlops/
+!mlops/requirements.txt
 monitoring/
 terraform/
 infra/terraform/

@@ -1,5 +1,6 @@
-# One terraform apply: a Nebius managed Kubernetes cluster (one CPU node + one L40S node), a
-# container registry, and (helm.tf) everything the platform runs. terraform destroy removes it all.
+# One terraform apply: a Nebius managed Kubernetes cluster (one CPU node + one L40S node) and
+# (helm.tf) everything the platform runs. terraform destroy removes it all. lightserve's image comes
+# from ghcr.io (CI pushes it there: .github/workflows/image.yml), which outlives the cluster.
 
 resource "nebius_mk8s_v1_cluster" "this" {
   parent_id = var.parent_id
@@ -47,15 +48,4 @@ resource "nebius_mk8s_v1_node_group" "gpu" {
     preemptible        = var.preemptible ? {} : null
     follows_spot_price = var.preemptible ? {} : null # Nebius requires it on preemptible nodes
   }
-}
-
-resource "nebius_registry_v1_registry" "this" {
-  parent_id   = var.parent_id
-  name        = var.name
-  description = "lightserve images (pushed by CI)"
-}
-
-locals {
-  # images are named <registry_fqdn>/<registry id without "registry-">/<image>:<tag> (Nebius docs)
-  registry_url = "${nebius_registry_v1_registry.this.status.registry_fqdn}/${trimprefix(nebius_registry_v1_registry.this.id, "registry-")}"
 }

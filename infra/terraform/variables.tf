@@ -16,7 +16,7 @@ variable "subnet_id" {
 
 variable "name" {
   type        = string
-  description = "Cluster name; also the prefix of the node groups and the registry."
+  description = "Cluster name; also the prefix of the node groups."
   default     = "lightserve-mlops"
 }
 
@@ -65,27 +65,26 @@ variable "preemptible" {
   default     = false
 }
 
-variable "hf_token" {
-  type        = string
-  sensitive   = true
-  description = "Hugging Face token for the real Llama weights (TF_VAR_hf_token). Empty = toy model only."
-  default     = ""
-}
-
 variable "grafana_admin_password" {
   type        = string
   sensitive   = true
   description = "Grafana admin password (TF_VAR_grafana_admin_password)."
 }
 
-variable "lightserve_image" {
+variable "lightserve_image_repository" {
   type        = string
-  description = "lightserve container image (built and pushed by CI to the registry). Empty = the registry's lightserve:latest."
-  default     = ""
+  description = "Where CI pushes lightserve's image (.github/workflows/image.yml)."
+  default     = "ghcr.io/sairameshpv/lightserve"
 }
 
-variable "lightserve_real_model" {
-  type        = bool
-  description = "true = real Llama-3-8B weights (needs hf_token, ~16 GB download); false = the toy model (fast start)."
-  default     = false
+variable "lightserve_image_tag" {
+  type        = string
+  description = "gpu-<git sha> or gpu-latest (CI pushes both for the gpu target)."
+  default     = "gpu-latest"
+}
+
+variable "lightserve_n_layers" {
+  type        = number
+  description = "lightserve runs Llama-3-8B's shape with random weights (it has no weight loader): 4 layers = toy, fast start; 32 = the full 8B shape."
+  default     = 4
 }

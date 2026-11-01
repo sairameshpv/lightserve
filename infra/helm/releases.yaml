@@ -1,9 +1,10 @@
 # Everything the platform runs, in install order: Terraform (infra/terraform/helm.tf) and the
 # Mac rehearsal (infra/kind/rehearse.sh) both read this list, so they install the same versions
 # with the same settings. gpu: true = only on the real cluster (kind has no GPU); wait: false =
-# don't wait for everything to be ready (default: wait).
-- {name: gpu-operator, namespace: gpu-operator, repo: https://helm.ngc.nvidia.com/nvidia, chart: gpu-operator, version: v26.7.2, values: gpu-operator.yaml, gpu: true}
-- {name: monitoring, namespace: monitoring, repo: https://prometheus-community.github.io/helm-charts, chart: kube-prometheus-stack, version: 92.17.0, values: monitoring.yaml}
+# don't wait for everything to be ready (default: wait). stage: 1 = installed first: the others'
+# alert rules and ServiceMonitors are only created once monitoring's definitions exist.
+- {stage: 1, name: gpu-operator, namespace: gpu-operator, repo: https://helm.ngc.nvidia.com/nvidia, chart: gpu-operator, version: v26.7.2, values: gpu-operator.yaml, gpu: true}
+- {stage: 1, name: monitoring, namespace: monitoring, repo: https://prometheus-community.github.io/helm-charts, chart: kube-prometheus-stack, version: 92.17.0, values: monitoring.yaml}
 - {name: platform, namespace: monitoring, chart: ../platform, values: platform.yaml, wait: false}   # MLflow's disk binds only once MLflow uses it
 - {name: tempo, namespace: monitoring, repo: https://grafana.github.io/helm-charts, chart: tempo, version: 1.24.4, values: tempo.yaml}
 - {name: loki, namespace: monitoring, repo: https://grafana.github.io/helm-charts, chart: loki, version: 7.5.0, values: loki.yaml}
