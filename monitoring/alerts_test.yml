@@ -73,3 +73,22 @@ tests:
             exp_annotations:
               summary: "No complete canary round for over 15 min, or the canary isn't running"
               runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/canary.md"
+
+  - name: month's GPU cost over budget fires GpuBudgetExceeded; at or under it doesn't
+    interval: 1m
+    input_series:
+      - series: 'gpu_budget_month_dollars{job="cost", instance="c:9102"}'
+        values: '100x20'
+      - series: 'gpu_cost_month_dollars{job="cost", instance="c:9102"}'
+        values: '90x4 100x4 101x12'   # at the budget isn't over it
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: GpuBudgetExceeded
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: GpuBudgetExceeded
+        exp_alerts:
+          - exp_labels: {job: cost, instance: "c:9102", severity: ticket}
+            exp_annotations:
+              summary: "GPU cost this month is $101, over the $100 budget"
+              runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/gpu-budget.md"

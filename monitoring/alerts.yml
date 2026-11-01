@@ -26,3 +26,14 @@ groups:
         annotations:
           summary: "No complete canary round for over 15 min, or the canary isn't running"
           runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/canary.md"
+
+  - name: cost   # mlops/cost.py serve: the GPU-job ledger's numbers
+    rules:
+      - alert: GpuBudgetExceeded
+        # sessions (the node's billed time) this calendar month, at the hourly rate
+        expr: gpu_cost_month_dollars > on(job, instance) gpu_budget_month_dollars
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: "GPU cost this month is ${{ $value | printf \"%.0f\" }}, over the ${{ with query \"gpu_budget_month_dollars\" }}{{ . | first | value | printf \"%.0f\" }}{{ end }} budget"
+          runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/gpu-budget.md"

@@ -54,7 +54,9 @@ def stop_session(ledger, name: str, at: float = None) -> None:
 
 def summarize(ledger, rate: float, now: float) -> dict:
     """Per job: GPU-seconds (time x GPUs) and cost; a job not ended yet counts up to `now`.
-    month_cost = jobs that ended (or are still running) in now's calendar month (UTC)."""
+    month_cost = the sessions (what the cloud bills: the node's time) that ended, or are still
+    running, in now's calendar month (UTC). Fine-tunes and scoring run inside a session, so
+    they're a breakdown of its time, not extra cost."""
     starts, ends = {}, {}
     if Path(ledger).exists():
         for e in map(json.loads, Path(ledger).read_text().splitlines()):
@@ -67,7 +69,7 @@ def summarize(ledger, rate: float, now: float) -> dict:
         cost = gpu_seconds / 3600 * rate
         jobs.append({"kind": s["kind"], "name": s["name"], "gpu_seconds": gpu_seconds, "cost": cost,
                      "open": job_id not in ends})
-        if datetime.fromtimestamp(end, timezone.utc).strftime("%Y-%m") == month:
+        if s["kind"] == "session" and datetime.fromtimestamp(end, timezone.utc).strftime("%Y-%m") == month:
             month_cost += cost
     return {"jobs": jobs, "month_cost": month_cost}
 
@@ -91,7 +93,8 @@ class LedgerCollector:
             cost.add_metric(list(labels), dollars)
         yield secs
         yield cost
-        yield GaugeMetricFamily("gpu_cost_month_dollars", "GPU cost this calendar month (UTC)", value=s["month_cost"])
+        yield GaugeMetricFamily("gpu_cost_month_dollars", "GPU cost this calendar month (UTC): sessions, as billed",
+                                value=s["month_cost"])
         yield GaugeMetricFamily("gpu_budget_month_dollars", "The monthly GPU budget", value=self.budget)
         yield GaugeMetricFamily("gpu_hourly_rate_dollars", "Price of one GPU-hour", value=self.rate)
 

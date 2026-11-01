@@ -27,6 +27,8 @@ Settings (environment variables, read when a task runs):
                         VLLM_ALLOW_RUNTIME_LORA_UPDATING=True; it must see the run folders at the same paths
   MLOPS_CURRENT         the "current model" pointer (default <MLOPS_RUNS>/current.json)
   MLOPS_N_SCORE         questions scored (default 300)
+  MLOPS_COST_LEDGER     the GPU-job ledger the real fine-tune and scoring write to (mlops/cost.py;
+                        default <MLOPS_RUNS>/gpu_jobs.jsonl); MLOPS_GPUS how many they use (default 1)
   MLOPS_PROMETHEUS_URL  where the canary's numbers are (default http://localhost:9090)
   MLOPS_ALERTMANAGER_URL  where the rollback alert goes (default http://localhost:9093)
   MLOPS_WATCH_MINUTES   how long the new model is watched (default 10)
@@ -99,6 +101,13 @@ def current_file() -> Path:
     return Path(setting("MLOPS_CURRENT", str(Path(setting("MLOPS_RUNS", str(REPO / "mlops/runs"))) / "current.json")))
 
 
+def gpu_job(kind: str):
+    """Record a real GPU step in the cost ledger (mlops/cost.py), under the run's name."""
+    from mlops.cost import gpu_job
+    ledger = setting("MLOPS_COST_LEDGER", str(Path(setting("MLOPS_RUNS", str(REPO / "mlops/runs"))) / "gpu_jobs.jsonl"))
+    return gpu_job(ledger, kind, run_dir().name, int(setting("MLOPS_GPUS", "1")))
+
+
 def window_prompts() -> list:
     with open(setting("MLOPS_WINDOW")) as f:
         return [json.loads(line)["prompt"] for line in f]
@@ -139,7 +148,8 @@ def drift_retrain():
             (out / "DRY_RUN").write_text("stand-in adapter: no fine-tune ran\n")
         else:
             cmd = setting("MLOPS_FINETUNE_CMD").format(data=data, init=init, out=out)
-            subprocess.run(shlex.split(cmd), check=True)
+            with gpu_job("finetune"):
+                subprocess.run(shlex.split(cmd), check=True)
         return str(out)
 
     @task
@@ -156,7 +166,8 @@ def drift_retrain():
             shutil.copyfile(setting("MLOPS_DRY_ANSWERS"), out)
         else:
             from mlops.retrain import score
-            rows = score(vllm_url(), model, data, n=int(setting("MLOPS_N_SCORE", "300")))
+            with gpu_job("score"):
+                rows = score(vllm_url(), model, data, n=int(setting("MLOPS_N_SCORE", "300")))
             out.write_text("".join(json.dumps(r) + "\n" for r in rows))
         return str(out)
 

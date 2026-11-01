@@ -779,6 +779,37 @@ running with `--current-file` and Prometheus scraping it
 `register_champion` and `rollback` are the only boxes that write to the
 registry (`MLOPS_TRACKING_URI`).
 
+## What it costs
+
+`mlops/cost.py` keeps a **ledger of GPU time** (`mlops/runs/gpu_jobs.jsonl`): every
+node or cluster session writes a start and an end line (`python -m mlops.cost start
+--name VM-1` / `stop --name VM-1`), and the pipeline's real fine-tune and scoring
+write their own (`MLOPS_COST_LEDGER`). `python -m mlops.cost serve --rate <$ per
+GPU-hour> --budget <$ a month>` serves the totals to Prometheus (job `cost`, port
+9102), read fresh on every scrape.
+
+- **This month = sessions only.** The cloud bills the node's time; a fine-tune on
+  that node is part of it, so fine-tunes and scoring are a breakdown, never added on
+  top (that would count the same hours twice). A job counts in the calendar month
+  (UTC) it ended; a session still running counts up to now, so the cost is visible
+  live during a session.
+- **The rate is a setting, not guessed:** step 9 compares a session's GPU-hours with
+  the Nebius bill and sets it.
+- **GpuBudgetExceeded** (5 min over the budget; runbook
+  `monitoring/runbooks/gpu-budget.md`), tested with promtool.
+- **Cost dashboard** (Grafana): this month vs budget, GPU-hours by kind, cost per
+  job, and serving cost per 1,000 generated tokens at the current speed
+  (rate x 1000 / 3600 / tokens per second; lightserve now, vLLM once it's scraped).
+
+**Checked on the Mac** with a made-up ledger at $1/GPU-hour: a finished 2 h
+session (with a 10 min fine-tune and 5 min scoring inside), and one still running.
+Prometheus scraped the numbers; the month total counted only the running session,
+correctly, since the check ran just after midnight UTC on 1 November and the other
+session ended on 31 October. With the budget at $0.30 the alert went pending, then
+fired 5 min later, with the email in MailHog. The fake lightserve at 13.4 tokens/s
+gave $0.021 per 1,000 tokens (= 1000 / (13.4 x 3600)). Grafana 12.1 loaded the
+dashboard (checked in a throwaway Grafana).
+
 ## What's next
 
 - **Throughput**: *done for 1 GPU*. Batching + length grouping, bf16 base and

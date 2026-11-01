@@ -1,0 +1,214 @@
+{
+  "uid": "cost",
+  "title": "Cost",
+  "schemaVersion": 41,
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "description": "GPU cost from mlops/cost.py's ledger (sessions = what the cloud bills; fine-tunes and scoring inside them are a breakdown), at the hourly rate given with --rate.",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "This month (sessions, as billed)",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "gpu_cost_month_dollars",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Monthly budget",
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "gpu_budget_month_dollars",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Price of one GPU-hour",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "gpu_hourly_rate_dollars",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      }
+    },
+    {
+      "type": "bargauge",
+      "title": "GPU-hours by kind (fine-tune and score run inside sessions)",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (kind) (gpu_job_seconds) / 3600",
+          "legendFormat": "{{kind}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "This month vs budget",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "gpu_cost_month_dollars",
+          "legendFormat": "this month"
+        },
+        {
+          "expr": "gpu_budget_month_dollars",
+          "legendFormat": "budget (GpuBudgetExceeded)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "Cost per job (sessions; pipeline runs' fine-tune and scoring)",
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "gpu_job_cost_dollars",
+          "legendFormat": "",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true
+            },
+            "renameByName": {
+              "Value": "cost"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Serving cost per 1,000 generated tokens, at the current speed (one GPU)",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "scalar(gpu_hourly_rate_dollars) * 1000 / 3600 / sum(rate(lightserve_generated_tokens_total[5m]))",
+          "legendFormat": "lightserve"
+        },
+        {
+          "expr": "scalar(gpu_hourly_rate_dollars) * 1000 / 3600 / sum(rate({__name__=\"vllm:generation_tokens_total\"}[5m]))",
+          "legendFormat": "vLLM (finance model; needs a vllm scrape job)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      }
+    }
+  ]
+}

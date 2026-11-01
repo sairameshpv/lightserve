@@ -19,3 +19,6 @@ scrape_configs:
   - job_name: canary   # training/qlora_financial/canary.py --port 9101, run on the host
     static_configs:
       - targets: ["host.docker.internal:9101"]
+  - job_name: cost   # mlops/cost.py serve --port 9102: the GPU-job ledger, run on the host
+    static_configs:
+      - targets: ["host.docker.internal:9102"]
