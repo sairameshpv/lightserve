@@ -1,0 +1,10 @@
+{{- range $name, $json := .Values.dashboards }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-{{ $name }}
+  labels: {grafana_dashboard: "1"}   # Grafana's sidecar loads every ConfigMap with this label
+data:
+  {{ $name }}.json: {{ $json | quote }}
+{{- end }}

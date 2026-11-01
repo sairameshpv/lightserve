@@ -1,0 +1,11 @@
+{{- range $name, $text := dict "alerts" .Values.alerts "slo" .Values.slo }}
+{{- if $text }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: lightserve-{{ $name }}
+  labels: {release: monitoring}   # kube-prometheus-stack picks up rules with its release label
+spec: {{- $text | fromYaml | toYaml | nindent 2 }}
+{{- end }}
+{{- end }}

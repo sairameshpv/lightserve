@@ -1,0 +1,37 @@
+# Airflow 3.3.2 (as mlops/requirements.txt) running the repo's retraining DAG. On the cluster the
+# DAG runs in dry-run (MLOPS_DRY_RUN=1): the real fine-tune stays on the VM (step 9).
+defaultAirflowTag: "3.3.2"
+airflowVersion: "3.3.2"
+executor: LocalExecutor          # tasks run in the scheduler: no Celery workers, no Redis
+redis: {enabled: false}
+statsd: {enabled: false}
+dags:
+  gitSync:                       # the DAG straight from GitHub's main branch (public repo)
+    enabled: true
+    repo: https://github.com/sairameshpv/lightserve.git
+    branch: main
+    ref: main
+    subPath: mlops/dags
+    period: 60s
+env:
+  - {name: PYTHONPATH, value: /opt/airflow/dags/repo}   # the repo root: mlops.retrain, training.qlora_financial
+  # A test-cluster shortcut: pip installs these when each Airflow container starts (~1-2 min);
+  # a real deployment bakes them into its own image.
+  - {name: _PIP_ADDITIONAL_REQUIREMENTS, value: "mlflow==3.16.1 evidently==0.7.23 pandas==2.3.3 prometheus_client==0.26.0 pytest"}
+  - {name: MLOPS_DRY_RUN, value: "1"}
+  - {name: MLOPS_RUNS, value: /tmp/mlops-runs}
+  - {name: MLOPS_TRACKING_URI, value: "http://mlflow.mlops:80"}
+  - {name: MLOPS_PROMETHEUS_URL, value: "http://monitoring-kube-prometheus-prometheus.monitoring:9090"}
+  - {name: MLOPS_ALERTMANAGER_URL, value: "http://monitoring-kube-prometheus-alertmanager.monitoring:9093"}
+  - {name: MLFLOW_DISABLE_AGENT_HINT, value: "1"}
+scheduler:
+  resources: {requests: {cpu: 200m, memory: 1Gi}, limits: {memory: 2Gi}}
+apiServer:
+  resources: {requests: {cpu: 100m, memory: 512Mi}, limits: {memory: 1536Mi}}
+dagProcessor:
+  resources: {requests: {cpu: 100m, memory: 512Mi}, limits: {memory: 1536Mi}}
+triggerer:
+  resources: {requests: {cpu: 50m, memory: 256Mi}, limits: {memory: 1Gi}}
+postgresql:
+  primary:
+    resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 512Mi}}

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: lightserve
+description: lightserve's server (fake engine for rehearsals, GPU engine on the L40S node)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

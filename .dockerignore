@@ -1,0 +1,14 @@
+# Only the server's code goes into the lightserve image (see infra/docker/lightserve.Dockerfile).
+**/.venv
+**/__pycache__
+training/
+mlops/
+monitoring/
+terraform/
+infra/terraform/
+benchmarks/
+blog/
+**/*.json
+!engine/**/*.json
+output_gemini.txt
+.git

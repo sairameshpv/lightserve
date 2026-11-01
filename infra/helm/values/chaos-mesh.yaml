@@ -1,0 +1,8 @@
+# Chaos Mesh (8j experiments). Nebius nodes and kind both run containerd.
+chaosDaemon:
+  runtime: containerd
+  socketPath: /run/containerd/containerd.sock
+  tolerations:
+    - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}   # faults on the GPU node too
+dashboard: {create: false}
+controllerManager: {replicaCount: 1}

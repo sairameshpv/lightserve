@@ -1,0 +1,13 @@
+# MLflow with its database and artifacts on a disk in the cluster (platform chart's mlflow-data):
+# no managed Postgres or bucket. Export before terraform destroy if worth keeping.
+backendStore:
+  databaseMigration: true
+  defaultSqlitePath: /mlflow/mlflow.db
+artifactRoot:
+  proxiedArtifactStorage: true
+  defaultArtifactsDestination: /mlflow/artifacts
+extraVolumes:
+  - {name: data, persistentVolumeClaim: {claimName: mlflow-data}}
+extraVolumeMounts:
+  - {name: data, mountPath: /mlflow}
+resources: {requests: {cpu: 100m, memory: 512Mi}, limits: {memory: 1Gi}}

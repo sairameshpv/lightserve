@@ -2,10 +2,12 @@ groups:
   - name: lightserve
     rules:
       - alert: LightserveDown
-        expr: up{job="lightserve"} == 0   # Prometheus's own "could I read /metrics?" signal
+        # Prometheus's own "could I read /metrics?" signal; on Kubernetes a killed pod's target
+        # vanishes instead of reading 0, hence absent()
+        expr: up{job="lightserve"} == 0 or absent(up{job="lightserve"})
         for: 30s
         annotations:
-          summary: "Prometheus can't reach lightserve's /metrics on {{ $labels.instance }}"
+          summary: "Prometheus can't reach lightserve's /metrics{{ with $labels.instance }} on {{ . }}{{ else }}: no lightserve target at all (pod gone?){{ end }}"
           runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/lightserve-down.md"
 
   - name: canary   # training/qlora_financial/canary.py: the same 50 questions every ~5 min

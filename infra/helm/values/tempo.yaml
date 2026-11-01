@@ -1,0 +1,8 @@
+# One Tempo, traces over OTLP/HTTP on :4318 (lightserve's OTEL_EXPORTER_OTLP_ENDPOINT), kept 1 day.
+tempo:
+  retention: 24h
+  receivers:
+    otlp:
+      protocols:
+        http: {endpoint: "0.0.0.0:4318"}
+  resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 512Mi}}

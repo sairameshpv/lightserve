@@ -1,4 +1,4 @@
-# Unit tests for alerts.yml's canary alerts, on made-up metrics (no canary needed):
+# Unit tests for alerts.yml, on made-up metrics (no lightserve, canary or cost exporter needed):
 #   docker run --rm -v "$PWD/monitoring:/m" -w /m --entrypoint promtool prom/prometheus:v3.5.0 test rules alerts_test.yml
 # The canary runs a round every ~5 min and its accuracy holds until the next round, so one bad
 # round is ~5 min low; "normal" here is 0.66, so the alarm line is 0.56.
@@ -92,3 +92,31 @@ tests:
             exp_annotations:
               summary: "GPU cost this month is $101, over the $100 budget"
               runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/gpu-budget.md"
+
+  - name: lightserve's target gone entirely (Kubernetes, pod killed) fires LightserveDown, as up == 0 does
+    interval: 15s
+    input_series:
+      - series: 'up{job="lightserve", instance="pod-a:8000"}'
+        values: '1x4 stale'       # the pod disappears after 1 min: Prometheus marks the series stale, no 0
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: LightserveDown
+        exp_alerts:
+          - exp_labels: {job: lightserve}
+            exp_annotations:
+              summary: "Prometheus can't reach lightserve's /metrics: no lightserve target at all (pod gone?)"
+              runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/lightserve-down.md"
+
+  - name: lightserve's target there but unreachable (up == 0) still fires, naming the instance
+    interval: 15s
+    input_series:
+      - series: 'up{job="lightserve", instance="host.docker.internal:8001"}'
+        values: '1x4 0x12'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: LightserveDown
+        exp_alerts:
+          - exp_labels: {job: lightserve, instance: "host.docker.internal:8001"}
+            exp_annotations:
+              summary: "Prometheus can't reach lightserve's /metrics on host.docker.internal:8001"
+              runbook_url: "https://github.com/sairameshpv/lightserve/blob/main/monitoring/runbooks/lightserve-down.md"

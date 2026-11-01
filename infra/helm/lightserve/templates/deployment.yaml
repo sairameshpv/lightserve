@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lightserve
+  labels: {app: lightserve}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}   # one GPU: the old pod must free it before the new one starts
+  selector:
+    matchLabels: {app: lightserve}
+  template:
+    metadata:
+      labels: {app: lightserve}
+    spec:
+      {{- if eq .Values.engine "gpu" }}
+      nodeSelector: {lightserve/pool: gpu}
+      tolerations:
+        - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}
+      {{- end }}
+      containers:
+        - name: lightserve
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --port={{ .Values.port }}
+            - --trace-sample-rate={{ .Values.traceSampleRate }}
+            {{- if .Values.requestLog }}
+            - --request-log=/dev/stdout
+            {{- end }}
+            {{- if eq .Values.engine "fake" }}
+            - --fake-engine
+            - --fake-step-ms={{ .Values.fakeStepMs }}
+            {{- else }}
+            - --n-layers={{ .Values.nLayers }}
+            - --max-model-len={{ .Values.maxModelLen }}
+            - --num-gpu-blocks={{ .Values.numGpuBlocks }}
+            {{- end }}
+          {{- with .Values.otlpEndpoint }}
+          env:
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ . | quote }}}
+          {{- end }}
+          ports:
+            - {name: http, containerPort: {{ .Values.port }}}
+          readinessProbe:   # takes traffic only once the engine answers
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+          livenessProbe:    # restarted if it stops answering for ~1 min
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          resources: {{- toYaml (index .Values.resources .Values.engine) | nindent 12 }}

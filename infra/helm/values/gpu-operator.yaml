@@ -1,0 +1,7 @@
+# Nebius's node image already has the NVIDIA driver (drivers_preset cuda12.8): don't install one.
+driver: {enabled: false}
+# Checked in Cluster-1: if the image also has the container toolkit, set toolkit.enabled=false.
+toolkit: {enabled: true}
+dcgmExporter:
+  enabled: true
+  serviceMonitor: {enabled: true, additionalLabels: {release: monitoring}}

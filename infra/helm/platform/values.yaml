@@ -1,0 +1,9 @@
+# Filled at install with --set-file (Terraform: file()), so monitoring/ stays the one copy:
+alerts: ""          # monitoring/alerts.yml
+slo: ""             # monitoring/slo.yml
+dashboards: {}      # name -> dashboard JSON (monitoring/grafana/provisioning/dashboards/*.json)
+mailhog:
+  enabled: true     # catches Alertmanager's email, as in monitoring/docker-compose.yml
+mlflowDisk:
+  size: 10Gi        # MLflow's database + artifacts (no managed Postgres/bucket); export before destroy
+  storageClass: ""  # "" = the cluster's default

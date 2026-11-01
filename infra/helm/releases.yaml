@@ -1,0 +1,14 @@
+# Everything the platform runs, in install order: Terraform (infra/terraform/helm.tf) and the
+# Mac rehearsal (infra/kind/rehearse.sh) both read this list, so they install the same versions
+# with the same settings. gpu: true = only on the real cluster (kind has no GPU); wait: false =
+# don't wait for everything to be ready (default: wait).
+- {name: gpu-operator, namespace: gpu-operator, repo: https://helm.ngc.nvidia.com/nvidia, chart: gpu-operator, version: v26.7.2, values: gpu-operator.yaml, gpu: true}
+- {name: monitoring, namespace: monitoring, repo: https://prometheus-community.github.io/helm-charts, chart: kube-prometheus-stack, version: 92.17.0, values: monitoring.yaml}
+- {name: platform, namespace: monitoring, chart: ../platform, values: platform.yaml, wait: false}   # MLflow's disk binds only once MLflow uses it
+- {name: tempo, namespace: monitoring, repo: https://grafana.github.io/helm-charts, chart: tempo, version: 1.24.4, values: tempo.yaml}
+- {name: loki, namespace: monitoring, repo: https://grafana.github.io/helm-charts, chart: loki, version: 7.5.0, values: loki.yaml}
+- {name: alloy, namespace: monitoring, repo: https://grafana.github.io/helm-charts, chart: alloy, version: 1.15.0, values: alloy.yaml}
+- {name: mlflow, namespace: mlops, repo: https://community-charts.github.io/helm-charts, chart: mlflow, version: 1.11.7, values: mlflow.yaml}
+- {name: airflow, namespace: mlops, repo: https://airflow.apache.org, chart: airflow, version: 1.22.0, values: airflow.yaml}
+- {name: chaos-mesh, namespace: chaos-mesh, repo: https://charts.chaos-mesh.org, chart: chaos-mesh, version: 2.8.7, values: chaos-mesh.yaml}
+- {name: lightserve, namespace: lightserve, chart: ../lightserve, values: lightserve.yaml}

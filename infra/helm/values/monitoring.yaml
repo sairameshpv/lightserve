@@ -1,0 +1,31 @@
+# kube-prometheus-stack: Prometheus + Alertmanager + Grafana, with the repo's rules and dashboards
+# coming from the platform chart (PrometheusRule / ConfigMaps).
+prometheus:
+  prometheusSpec:
+    scrapeInterval: 5s          # as monitoring/prometheus.yml
+    evaluationInterval: 5s
+    retention: 2d
+    resources: {requests: {cpu: 200m, memory: 512Mi}, limits: {memory: 1536Mi}}
+alertmanager:
+  config:
+    route: {receiver: mailhog, group_by: [alertname], group_wait: 10s, repeat_interval: 4h}
+    receivers:
+      - name: "null"             # the chart's own routes send its Watchdog alert here
+      - name: mailhog
+        email_configs:
+          - {to: oncall@lightserve.local, from: alertmanager@lightserve.local, smarthost: "mailhog.monitoring:1025", require_tls: false, send_resolved: true}
+  alertmanagerSpec:
+    resources: {requests: {cpu: 20m, memory: 64Mi}, limits: {memory: 256Mi}}
+grafana:
+  admin: {existingSecret: grafana-admin, userKey: admin-user, passwordKey: admin-password}
+  sidecar:
+    dashboards: {enabled: true, label: grafana_dashboard, searchNamespace: ALL}
+  additionalDataSources:
+    - {name: Tempo, uid: tempo, type: tempo, url: "http://tempo.monitoring:3200"}
+    - {name: Loki, uid: loki, type: loki, url: "http://loki.monitoring:3100"}
+  resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 512Mi}}
+# not needed for these experiments; saves memory
+kubeEtcd: {enabled: false}
+kubeControllerManager: {enabled: false}
+kubeScheduler: {enabled: false}
+kubeProxy: {enabled: false}

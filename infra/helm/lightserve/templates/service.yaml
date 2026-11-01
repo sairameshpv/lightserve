@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: lightserve   # Prometheus's job label = this name, as monitoring/alerts.yml expects (job="lightserve")
+  labels: {app: lightserve}
+spec:
+  selector: {app: lightserve}
+  ports:
+    - {name: http, port: {{ .Values.port }}, targetPort: http}
+---
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: lightserve
+  labels: {app: lightserve, release: monitoring}
+spec:
+  selector:
+    matchLabels: {app: lightserve}
+  endpoints:
+    - {port: http, path: /metrics, interval: {{ .Values.serviceMonitor.interval }}}
+{{- end }}

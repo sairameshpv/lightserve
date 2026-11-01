@@ -1,0 +1,5 @@
+apiVersion: v2
+name: platform
+description: The repo's own monitoring files (alert + SLO rules, dashboards), MailHog, MLflow's disk
+type: application
+version: 0.1.0

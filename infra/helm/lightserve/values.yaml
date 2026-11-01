@@ -1,0 +1,26 @@
+image:
+  repository: lightserve        # CI pushes <registry_url>/lightserve:<git sha> (target gpu)
+  tag: fake
+  pullPolicy: IfNotPresent
+
+# engine: fake = no GPU (real scheduler, fake tokens); gpu = the real engine on an L40S
+engine: fake
+fakeStepMs: 20
+# gpu engine: Llama-3-8B's shape with random weights (lightserve has no weight loader);
+# 4 layers = toy (fast start), 32 = the full 8B shape
+nLayers: 4
+maxModelLen: 128
+numGpuBlocks: 1024
+
+port: 8000
+traceSampleRate: 0.1
+otlpEndpoint: ""               # e.g. http://tempo.monitoring:4318 (traces to Tempo)
+requestLog: true               # one JSON line per request on stdout (Alloy ships pod logs to Loki)
+
+resources:
+  fake: {requests: {cpu: 250m, memory: 256Mi}, limits: {memory: 512Mi}}
+  gpu: {requests: {cpu: "4", memory: 16Gi}, limits: {memory: 32Gi, nvidia.com/gpu: 1}}
+
+serviceMonitor:
+  enabled: true                # needs the Prometheus operator's CRDs (kube-prometheus-stack)
+  interval: 5s
