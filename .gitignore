@@ -22,3 +22,8 @@ monitoring/.env
 monitoring/logs/
 mlops/airflow_home/
 mlops/runs/
+infra/terraform/.terraform/
+infra/terraform/terraform.tfstate
+infra/terraform/terraform.tfstate.backup
+infra/terraform/terraform.tfvars
+infra/terraform/tfplan
