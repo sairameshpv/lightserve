@@ -44,9 +44,13 @@ spec:
           readinessProbe:   # takes traffic only once the engine answers
             httpGet: {path: /health, port: http}
             periodSeconds: 5
+            timeoutSeconds: 2
           livenessProbe:    # restarted if it stops answering for ~1 min
             httpGet: {path: /health, port: http}
             initialDelaySeconds: 30
             periodSeconds: 10
+            # generous: a busy node (or a load test) slows /health; a 1 s limit (the default)
+            # restarted a healthy server in the rehearsal, which only adds load
+            timeoutSeconds: 5
             failureThreshold: 6
           resources: {{- toYaml (index .Values.resources .Values.engine) | nindent 12 }}

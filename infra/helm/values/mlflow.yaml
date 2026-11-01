@@ -11,3 +11,13 @@ extraVolumes:
 extraVolumeMounts:
   - {name: data, mountPath: /mlflow}
 resources: {requests: {cpu: 100m, memory: 512Mi}, limits: {memory: 1Gi}}
+# MLflow 3.16's server also starts a background job system (7 huey consumers + a job runner,
+# ~220 MB each: ~2 GB, OOMKilled at 1.5 GiB in the rehearsal). Nothing here uses MLflow's jobs.
+extraEnvVars:
+  MLFLOW_SERVER_ENABLE_JOB_EXECUTION: "false"
+# 4 web workers by default; 2 are plenty here.
+# Its security middleware accepts only localhost Host headers by default; Airflow calls it as
+# mlflow.mlops (cluster-internal service, not exposed outside the cluster).
+extraArgs:
+  workers: "2"
+  allowedHosts: "mlflow.mlops,mlflow.mlops:80,mlflow.mlops.svc.cluster.local,mlflow.mlops.svc.cluster.local:80,localhost,localhost:5000,127.0.0.1:5000"

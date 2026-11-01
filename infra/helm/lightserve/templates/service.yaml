@@ -8,7 +8,7 @@ spec:
   ports:
     - {name: http, port: {{ .Values.port }}, targetPort: http}
 ---
-{{- if .Values.serviceMonitor.enabled }}
+{{- if and .Values.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

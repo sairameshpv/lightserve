@@ -2,8 +2,11 @@
 # coming from the platform chart (PrometheusRule / ConfigMaps).
 prometheus:
   prometheusSpec:
-    scrapeInterval: 5s          # as monitoring/prometheus.yml
-    evaluationInterval: 5s
+    # 15 s for the cluster's many own targets and rules (5 s for everything kept Prometheus at ~90%
+    # CPU in the kind rehearsal); lightserve's ServiceMonitor still scrapes every 5 s. Every alert
+    # waits >= 30 s, so 15 s evaluation is enough.
+    scrapeInterval: 15s
+    evaluationInterval: 15s
     retention: 2d
     resources: {requests: {cpu: 200m, memory: 512Mi}, limits: {memory: 1536Mi}}
 alertmanager:
