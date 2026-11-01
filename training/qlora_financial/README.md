@@ -654,7 +654,7 @@ pointer: each round it asks the model the pointer names, and on a switch
 normal becomes that model's own saved score on the same 50 (see *Retraining
 pipeline*).
 
-## Retraining pipeline: from changed questions to a deployed model
+## Retraining pipeline: from changed questions to a new champion (or a rollback)
 
 Drift check, fine-tune, scoring and gate used to be separate commands run by
 hand. `mlops/dags/drift_retrain.py` chains them as one Airflow pipeline
@@ -662,7 +662,8 @@ hand. `mlops/dags/drift_retrain.py` chains them as one Airflow pipeline
 logic lives in `mlops/retrain.py`, tested on its own.
 
 ```
-drift_sensor -> build_data -> finetune -> load_candidate -> score -> gate -> deploy | reject
+drift_sensor -> build_data -> finetune -> load_candidate -> score -> gate -> deploy -> watch -> register_champion
+                                                                              \-> reject           \-> rollback
 ```
 
 1. **Wait for drift** (`drift_sensor`): compares the latest query window
@@ -698,6 +699,27 @@ drift_sensor -> build_data -> finetune -> load_candidate -> score -> gate -> dep
    reader never sees half of it. The old adapter stays loaded, so switching
    back is instant. The canary follows the pointer (`--current-file`).
    `reject` unloads the candidate and logs the reasons; the pointer stays.
+8. **Watch** (`watch`): the gate judged saved answers; now the model answers
+   live. Every 30 s it reads the canary from Prometheus, counting only rounds
+   that finished after the canary switched to the new model (the canary
+   publishes which model it asks and since when, `canary_model_info`). Same
+   rule as the alert: **2 rounds in a row more than 10 points below** the
+   model's own normal, or no complete round for 15 min → roll back. Watch time
+   over (10 min) with at least 2 rounds → pass; fewer → roll back (not enough
+   evidence).
+9. **Register or roll back.** Pass → `register_champion`: registered with the
+   champion alias, then the old adapter is unloaded. Fail → `rollback`:
+   pointer back to the model before, the candidate unloaded, registered with
+   `status=rejected-after-deploy` and the reason (never champion), and a
+   **ModelRolledBack** alert to Alertmanager (email). Both are safe to retry:
+   each step first checks whether it already happened (so a retried rollback
+   can't switch back to the bad model).
+
+**The training pool doesn't shrink.** A retrained champion's own training
+data is the 1,600-example fine-tune set, mostly of the drifted kind. Used as
+the drift reference and the pool to pick from, every retrain would narrow it.
+So a new version also records `pool_data_dir` (the full data its examples came
+from, `data/v3`), and the pipeline uses that, falling back to `data_dir` (v3).
 
 Every run keeps its files in `mlops/runs/<run id>/`: `drift.json`, `data/`,
 `adapter/`, `answers.jsonl`, `gate.json`, and `APPROVED` if it passed.
@@ -726,6 +748,16 @@ canary following the pointer, one round a minute:
 | Better candidate | loaded → PASS 40 vs 0 → pointer moved; v3 still loaded, `previous` = v3 | next round: "switched to <run>, normal 1.00 (was v3, 0.66)"; 1.00 every round |
 | Worse candidate | loaded → REJECT 0 vs 40 → unloaded; pointer unchanged | unaffected, 1.00 |
 
+**Watch and rollback checked on the Mac** (same fake vLLM, canary every
+30 s, local Prometheus + Alertmanager + MailHog, watch 3 min; the registry a
+**scratch copy** of `mlflow.db`; the real one untouched):
+
+| Scenario | What happened |
+|---|---|
+| **Secretly bad** (good saved answers, so the gate passes 40 vs 0; wrong live) | deployed → canary switched, normal 1.00 → 0.00, 0.00 → **rollback**: pointer back to v3, canary back to v3 (0.66), candidate unloaded, version 3 `rejected-after-deploy` with the reason, champion still v3, **ModelRolledBack** email in MailHog |
+| **Good** | deployed → 6 rounds at 1.00 → **pass**: version 4 registered as **champion** (`pool_data_dir` = `data/v3`, scored on 300), v3 unloaded |
+| **Next round** (worse candidate vs the new champion) | drift still measured against the full pool (75%), 800 + 800 picked from it; gate on the champion's 300: **reject**, 0 vs 80 |
+
 ```
 export PATH=$PWD/mlops/.venv/bin:$PATH PYTHONPATH=$PWD AIRFLOW_HOME=$PWD/mlops/airflow_home \
        AIRFLOW__CORE__DAGS_FOLDER=$PWD/mlops/dags AIRFLOW__CORE__LOAD_EXAMPLES=False
@@ -741,7 +773,11 @@ above used a scratch fake; the whole-loop test will bring one into the repo). A 
 be started with `VLLM_ALLOW_RUNTIME_LORA_UPDATING=True`, `--max-loras 2`
 (old + new in one batch), `--max-lora-rank 16`, and the run folders mounted
 at the same paths (it loads adapters by path). Anyone who can reach that
-port can load an adapter, so it stays local.
+port can load an adapter, so it stays local. The watch needs the canary
+running with `--current-file` and Prometheus scraping it
+(`MLOPS_PROMETHEUS_URL`); a rollback alert goes to `MLOPS_ALERTMANAGER_URL`.
+`register_champion` and `rollback` are the only boxes that write to the
+registry (`MLOPS_TRACKING_URI`).
 
 ## What's next
 
