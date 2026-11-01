@@ -23,6 +23,7 @@ jobs:
       contents: read
       packages: write   # push to ghcr.io with the run's own token: no stored secret
     strategy:
+      fail-fast: false   # independent images: one failing mustn't cancel the others
       matrix:
         include:
           - {image: lightserve, file: infra/docker/lightserve.Dockerfile, target: fake, tag: fake-}
