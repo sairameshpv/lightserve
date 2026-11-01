@@ -1,0 +1,14 @@
+# Kill the lightserve pod once (Phase 4 chaos experiment "pod kill").
+# Prediction: clean errors for requests in flight, no hang; LightserveDown fires within ~1 min
+# (the target vanishes: absent()); the Deployment starts a new pod, Ready and serving again.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lightserve-pod-kill
+  namespace: lightserve
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [lightserve]
+    labelSelectors: {app: lightserve}
