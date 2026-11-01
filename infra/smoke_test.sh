@@ -24,10 +24,10 @@ check() {  # check <name> <description> <command...>: PASS if the command exits 
   if out=$("$@" 2>&1); then echo "PASS  $name: $desc ${out:+($out)}"
   else echo "FAIL  $name: $desc"; echo "$out" | tail -5 | sed 's/^/        /'; FAILS=$((FAILS + 1)); fi
 }
-py() {  # py <namespace> <workload> <python code>: run Python inside that pod
-  kubectl -n "$1" exec "$2" -c "${CONTAINER:-${2#*/}}" -- python -c "$3"
+py() {  # py <namespace> <workload> <python code>: run Python inside that pod (-i: stdin goes along)
+  kubectl -n "$1" exec -i "$2" -c "${CONTAINER:-${2#*/}}" -- python -c "$3"
 }
-ls_py() { CONTAINER=lightserve py lightserve deploy/lightserve "$1"; }
+ls_py() { CONTAINER=lightserve py lightserve deploy/lightserve "$1"; }  # stdin: the caller's (grafana passes the login)
 
 gpu_node() {
   kubectl get nodes -l lightserve/pool=gpu -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status} {.status.allocatable.nvidia\.com/gpu}{"\n"}{end}' |
