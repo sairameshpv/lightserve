@@ -10,6 +10,7 @@ on:
       - "engine/**"
       - "benchmarks/**"
       - "training/**"
+      - "mlops/**"
       - ".github/workflows/kernels-ci.yml"
   pull_request:
     paths:
@@ -19,6 +20,7 @@ on:
       - "engine/**"
       - "benchmarks/**"
       - "training/**"
+      - "mlops/**"
       - ".github/workflows/kernels-ci.yml"
 
 # The run's GitHub token can only read the repo; a job that needs more asks for it.
