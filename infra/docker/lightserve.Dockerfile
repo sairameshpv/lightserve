@@ -12,7 +12,7 @@ COPY engine/ engine/
 COPY server/ server/
 COPY model/ model/
 COPY kernels/ kernels/
-RUN useradd --uid 1000 lightserve
+RUN useradd --uid 1000 --create-home lightserve   # a home: Triton keeps compiled GPU kernels in ~/.triton
 USER 1000
 EXPOSE 8000
 ENTRYPOINT ["python", "-m", "server"]
@@ -20,6 +20,10 @@ CMD ["--fake-engine"]
 
 FROM fake AS gpu
 USER root
+# Triton compiles a small C helper the first time it talks to the GPU: without a C compiler the
+# engine died on its first request (found on the real L40S, 2026-11-03).
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128 \
     && pip install --no-cache-dir safetensors==0.8.0 numpy
 USER 1000
