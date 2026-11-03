@@ -199,3 +199,46 @@ class TestPinning:
         finally:
             worker.stop()
         assert os.sched_getaffinity(0) == before
+
+
+class TestEngineDeath:
+    """The engine thread dying (on the real GPU: Triton couldn't build its helper on the first
+    request, 2026-11-03) used to leave every request waiting forever and /health saying "ok".
+    Now: it records why, ends every request as aborted, and reports itself dead."""
+
+    @staticmethod
+    def crashing_worker():
+        engine = FakeEngine()
+
+        def boom():
+            raise RuntimeError("Failed to find C compiler")
+        engine.step = boom
+        worker = EngineWorker(engine, idle_poll_s=0.005)
+        worker.start()
+        return worker
+
+    def test_requests_in_flight_end_as_aborted_not_hang(self):
+        worker = self.crashing_worker()
+        try:
+            items = drain(worker.submit([1, 2, 3], SamplingParams(max_tokens=4)))
+        finally:
+            worker.stop()
+        assert items == [StreamEnd(finish_reason="FINISHED_ABORTED")]
+        assert worker.alive is False and "Failed to find C compiler" in worker.error
+
+    def test_requests_after_death_end_at_once(self):
+        worker = self.crashing_worker()
+        try:
+            drain(worker.submit([1], SamplingParams(max_tokens=2)))   # this one kills it
+            items = drain(worker.submit([4, 5], SamplingParams(max_tokens=2)))
+        finally:
+            worker.stop()
+        assert items[-1] == StreamEnd(finish_reason="FINISHED_ABORTED")
+
+    def test_alive_while_healthy(self):
+        worker = make_worker()
+        try:
+            drain(worker.submit([1], SamplingParams(max_tokens=2)))
+            assert worker.alive is True and worker.error is None
+        finally:
+            worker.stop()

@@ -17,7 +17,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request as FastAPIRequest
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from opentelemetry import trace
 from opentelemetry.trace import StatusCode
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -85,6 +85,8 @@ def create_app(worker: EngineWorker, model_name: str = "lightserve", tracer_prov
 
     @app.get("/health")
     def health():
+        if not worker.alive:  # 503: a liveness check restarts us (requests can't finish anyway)
+            return JSONResponse({"status": "engine dead", "error": worker.error}, status_code=503)
         return {"status": "ok"}
 
     @app.get("/metrics")

@@ -41,6 +41,7 @@ import os
 import queue
 import threading
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
 from typing import Optional
@@ -138,6 +139,7 @@ class EngineWorker:
         self.cpus = cpus
         self._pin = pin or _pin_calling_thread
         self.engine_tid = None  # the engine thread's Linux thread id, once started (for checks)
+        self.error = None  # why the engine thread died, if it did (see `alive`)
         self.idle_poll_s = idle_poll_s
         self.default_timeout_s = default_timeout_s
         self._incoming: "queue.SimpleQueue" = queue.SimpleQueue()
@@ -189,7 +191,15 @@ class EngineWorker:
             timeout_s=timeout_s if timeout_s is not None else self.default_timeout_s,
             handle=handle,
         ))
+        if self.error is not None:  # dead engine: nobody will ever pick this up (checked after
+            handle.queue.put(StreamEnd(finish_reason="FINISHED_ABORTED"))  # the put: no gap)
         return handle
+
+    @property
+    def alive(self) -> bool:
+        """False once the engine thread has died: /health then says so (503), so a liveness check
+        restarts the server instead of trusting one whose requests can never finish."""
+        return self.error is None and (self._thread.ident is None or self._thread.is_alive())
 
     def abort(self, request_id: str) -> None:
         """Called from any thread -- e.g. server/app.py noticing its client
@@ -202,6 +212,28 @@ class EngineWorker:
     # -- Engine thread ------------------------------------------------------
 
     def _run(self) -> None:
+        try:
+            self._loop()
+        except Exception as e:  # e.g. the GPU kernels can't compile: record it, end every request
+            self.error = f"{type(e).__name__}: {e}"
+            traceback.print_exc()
+            self._abort_everything()
+
+    def _abort_everything(self) -> None:
+        """The engine is gone: every request it held, and every one still queued, ends as aborted."""
+        handles = list(self._streams.values())
+        while True:
+            try:
+                item = self._incoming.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(item, _Submission):
+                handles.append(item.handle)
+        for handle in handles:
+            handle.queue.put(StreamEnd(finish_reason="FINISHED_ABORTED"))
+        self._streams.clear()
+
+    def _loop(self) -> None:
         if self.cpus:
             self._pin(self.cpus)
         self.engine_tid = threading.get_native_id()

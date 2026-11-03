@@ -44,6 +44,25 @@ def parse_sse(text: str) -> list:
     return chunks
 
 
+class TestEngineDead:
+    def test_health_says_503_when_the_engine_thread_died(self):
+        """So Kubernetes's liveness check restarts the container instead of trusting a server
+        whose requests can never finish."""
+        engine = FakeEngine()
+
+        def boom():
+            raise RuntimeError("Failed to find C compiler")
+        engine.step = boom
+        worker = EngineWorker(engine, idle_poll_s=0.005, default_timeout_s=5.0)
+        with TestClient(create_app(worker, model_name="lightserve-test")) as client:
+            assert client.get("/health").status_code == 200
+            resp = client.post("/v1/completions", json={"prompt": [1], "max_tokens": 3})
+            assert resp.json()["choices"][0]["finish_reason"] == "abort"
+            health = client.get("/health")
+        assert health.status_code == 503
+        assert health.json()["status"] == "engine dead" and "C compiler" in health.json()["error"]
+
+
 class TestHealth:
     def test_health(self):
         client, _ = make_client()
