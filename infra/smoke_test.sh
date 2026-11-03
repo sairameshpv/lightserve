@@ -131,7 +131,20 @@ chaos() {
   kubectl -n chaos-mesh get pods --no-headers | awk '$3 == "Running" {n++} END {print n " Chaos Mesh pods running"; exit !(n >= 2)}'
 }
 
+warmup() {  # the real engine compiles its GPU kernels on the first request (~14 s on the L40S):
+  # do that once, untimed by the checks, and report how long it took
+  ls_py 'import json, time, urllib.request as u
+t = time.time()
+req = u.Request("http://localhost:8000/v1/completions", data=json.dumps({"prompt": [1], "max_tokens": 1}).encode(),
+                headers={"Content-Type": "application/json"})
+u.urlopen(req, timeout=300).read()
+print("first completion %.1f s (incl. compiling the GPU kernels)" % (time.time() - t))'
+}
+
 [[ $GPU == 1 ]] && check gpu "GPU node Ready with a GPU Kubernetes can schedule" gpu_node
+if want lightserve || want traces || want logs; then
+  echo "warm-up: $(warmup 2>&1 | tail -1)"
+fi
 check lightserve "lightserve answers /health and a completion" lightserve
 check prometheus "Prometheus scrapes lightserve; the repo's alert rules are loaded" prometheus
 check grafana "Grafana serves the lightserve and Cost dashboards" grafana

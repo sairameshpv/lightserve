@@ -115,8 +115,36 @@ $(terraform output -raw kubeconfig_command)
 time terraform destroy                                   # record how long
 ```
 
-**Only the real cluster can tell** (the smoke test's first lines check them): whether Nebius's node
-image also has the NVIDIA container toolkit (then `toolkit.enabled=false` in
-`values/gpu-operator.yaml`); that the default storage class binds MLflow's and Loki's disks; that
-the CLI token works as the providers' `exec` login; how long apply and destroy take (over ~35 min
-together and the chaos sessions need re-planning).
+Then check **nothing is left behind** (a forgotten disk or cluster keeps billing):
+```
+nebius mk8s cluster list --parent-id <project>          # no clusters
+nebius compute disk list --parent-id <project>          # only the VMs' own boot disks
+```
+
+## What the real cluster showed (Cluster-1, 3 Nov, one node, 40.5 min, all destroyed)
+
+| Part | Time |
+|---|---|
+| apply: cluster 4m42s, GPU node 1m55s (9m16s on the first attempt), the installs ~6.5 min | **13.3 min** |
+| smoke test | 4.8 min |
+| destroy: the installs ~2.3 min, GPU node 6m42s (1m11s on the first attempt), cluster 4m24s | **13.7 min** |
+
+- **7 of 10 checks passed at once:** the GPU (with the GPU operator's own container toolkit
+  on, which works with Nebius's driver), Prometheus with the repo's rules, both dashboards, an
+  alert as email, MLflow (its disk bound by the default storage class), **Airflow's whole-loop
+  test, 4 of 4**, Chaos Mesh. The CLI token worked as the providers' login.
+- **lightserve's GPU image had never run on a GPU, and its engine died on the first request:**
+  Triton compiles a small C helper and caches kernels in `~/.triton` on first use; the image had
+  no C compiler and the user no home folder. Proven in the session (run as root with `gcc`
+  installed: first request 13.5 s, compiling the kernels; then 0.06 s; lightserve, traces and
+  logs PASS: all 10) and fixed in the image (c8ff342).
+- **Worse: the dead engine was silent:** `/health` kept saying ok and requests waited forever,
+  so nothing restarted it and no alert fired. Fixed: `/health` now answers 503 "engine dead" and
+  every request ends as aborted (0738dd7).
+- **The smoke test warms lightserve up** with one request before the checks (the first one
+  compiles the GPU kernels, ~14 s) and reports how long it took.
+- **Teardown stays as it is.** Skipping the uninstalls would save ~2.3 min, but they're what
+  deletes the cloud disks behind MLflow's and Loki's storage; the slow parts (node and cluster,
+  ~11 min) are Nebius's own. Checked after the session: no disks or clusters left.
+- One network-controller pod (`cilium-operator`'s second copy) stays Pending: it wants a second
+  node for its backup copy. Harmless on one node.
