@@ -184,27 +184,41 @@ async def _sse_stream(handle, stream, raw_request: FastAPIRequest, worker: Engin
     the OpenAI-convention `data: [DONE]` sentinel.
 
     Polls both the stream and `raw_request.is_disconnected()` on the same
-    cadence (wrapping the stream's own `__anext__()` in `asyncio.wait_for`)
-    rather than only checking between yields -- a naive "check once per
+    cadence (waiting up to 50 ms on one pending `__anext__()` task, kept
+    across checks) rather than only checking between yields -- a naive "check once per
     token" would leave a disconnect undetected for however long the *next*
     token takes to generate, which is exactly the case (a client that gave
     up, still holding a decode slot/KV-cache blocks) this check exists to
     catch quickly. On disconnect, aborts the request so its resources free
     immediately instead of running to completion (or its timeout) with
     nobody listening.
+
+    Not `asyncio.wait_for(__anext__(), 0.05)`: its timeout cancels the
+    `__anext__()`, which kills the async generator itself -- the next read
+    says "stream over" and the client got only [DONE]. `asyncio.wait` never
+    cancels; the pending read is cancelled only when we stop.
     """
     stream_iter = stream.__aiter__()
+
+    async def read_next():
+        return await stream_iter.__anext__()
+
+    pending = None
     try:
         while True:
             if await raw_request.is_disconnected():
                 worker.abort(handle.request_id)
                 return
-            try:
-                item = await asyncio.wait_for(stream_iter.__anext__(), timeout=0.05)
-            except asyncio.TimeoutError:
+            if pending is None:
+                pending = asyncio.create_task(read_next())
+            done, _ = await asyncio.wait({pending}, timeout=0.05)
+            if not done:
                 continue
+            try:
+                item = pending.result()
             except StopAsyncIteration:
                 break
+            pending = None
 
             if isinstance(item, StreamToken):
                 chunk = CompletionStreamChunk(
@@ -231,3 +245,6 @@ async def _sse_stream(handle, stream, raw_request: FastAPIRequest, worker: Engin
         # disconnect, then re-raise so the server finishes its own teardown.
         worker.abort(handle.request_id)
         raise
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()  # we're stopping (disconnect/teardown): close the token stream too

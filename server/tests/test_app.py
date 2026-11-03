@@ -115,6 +115,20 @@ class TestStreaming:
         assert finish_chunk["choices"][0]["finish_reason"] == "length"
         assert finish_chunk["choices"][0]["token_ids"] == []
 
+    def test_slow_tokens_still_all_arrive(self):
+        """Tokens slower than _sse_stream's 50 ms disconnect-check cadence (a busy GPU, a long
+        prefill): every token and the finish chunk still arrive. The check's timeout used to
+        cancel the token stream itself, which then ended with only [DONE]."""
+        engine = FakeEngine()
+        step = engine.step
+        engine.step = lambda: (time.sleep(0.12), step())[1]
+        worker = EngineWorker(engine, idle_poll_s=0.005, default_timeout_s=5.0)
+        with TestClient(create_app(worker, model_name="lightserve-test")) as client:
+            resp = client.post("/v1/completions", json={"prompt": [1], "max_tokens": 3, "stream": True})
+        chunks = parse_sse(resp.text)[:-1]
+        assert [c["choices"][0]["token_ids"][0] for c in chunks if c["choices"][0]["token_ids"]] == [0, 1, 2]
+        assert chunks[-1]["choices"][0]["finish_reason"] == "length"
+
 
 class _RealServer:
     """A real uvicorn server on a real loopback socket, in a background
