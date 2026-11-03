@@ -5,7 +5,7 @@ runs; `terraform destroy` removes it. The single-VM setup in `../terraform/` sta
 
 ```
 infra/
-  terraform/        the cluster (1 CPU node + 1 L40S node) and every Helm release
+  terraform/        the cluster (one L40S node runs everything) and every Helm release
   helm/
     releases.yaml   the one list of charts, versions and settings files (Terraform and the
                     kind rehearsal both install from it)
@@ -29,6 +29,27 @@ infra/
 | airflow | the retraining DAG, straight from GitHub (gitSync), in dry-run (the real fine-tune stays on the VM) |
 | chaos-mesh | the failure experiments (Phase 4) |
 | lightserve | the server on the L40S: Llama-3-8B's shape with random weights |
+
+## One node, not two
+
+The plan had a small CPU node for the platform and an L40S node for lightserve. The first real
+apply (1 Nov) never got the CPU node: Nebius caps regular (non-GPU) vCPUs at **3** in eu-north1,
+the only region with L40S GPUs, and declined a raise (3 Nov). GPU machines count against the GPU
+quota instead, so **the one L40S node (24 vCPUs, 96 GB) runs everything**, with no taint fencing
+it off (every pod, Kubernetes's own included, must land there).
+
+- **It fits easily:** all pods ask for ~5.6 vCPUs and ~21 GB (lightserve alone 4 vCPUs, 16 GB);
+  even every container at its memory limit is ~53 GB. (Added up from `helm template` of every
+  release with the real settings.)
+- **Same GPU as the VM sessions**, one machine instead of two (slightly cheaper).
+- **Chaos changes:** "GPU node drain" becomes **evict lightserve only and cordon the node**:
+  draining the only node would also evict the monitoring that's meant to see it. The noisy
+  neighbour gets more realistic: the platform's pods really share lightserve's node.
+- **On-demand only:** with `preemptible = true`, one reclaim would take the whole platform down.
+
+First attempt's timings (cluster and GPU node built, CPU node stuck, all destroyed): cluster
+5m10s, GPU node group 9m16s, destroy 6m11s. So a session is ~25 min of build + teardown plus the
+installs (not yet measured), and the tests are kept to ≤ 10 min.
 
 ## Two changes from the plan
 
@@ -87,7 +108,7 @@ pod Ready 5 s later. CI built and pushed all three images.
 cd infra/terraform
 cp terraform.tfvars.example terraform.tfvars            # parent_id, subnet_id
 export TF_VAR_nebius_token=$(nebius iam get-access-token) TF_VAR_grafana_admin_password=...
-terraform plan                                           # 19 to add
+terraform plan                                           # 18 to add
 time terraform apply                                     # record how long
 $(terraform output -raw kubeconfig_command)
 ../smoke_test.sh                                         # all PASS

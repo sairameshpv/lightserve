@@ -4,7 +4,7 @@
 resource "kubernetes_namespace" "ns" {
   for_each = toset(["lightserve", "monitoring", "mlops", "chaos-mesh", "gpu-operator"])
   metadata { name = each.key }
-  depends_on = [nebius_mk8s_v1_node_group.cpu]
+  depends_on = [nebius_mk8s_v1_node_group.gpu]
 }
 
 resource "kubernetes_secret" "grafana_admin" {

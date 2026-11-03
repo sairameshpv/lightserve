@@ -1,4 +1,4 @@
-# One terraform apply: a Nebius managed Kubernetes cluster (one CPU node + one L40S node) and
+# One terraform apply: a Nebius managed Kubernetes cluster with one L40S node, which runs everything, and
 # (helm.tf) everything the platform runs. terraform destroy removes it all. lightserve's image comes
 # from ghcr.io (CI pushes it there: .github/workflows/image.yml), which outlives the cluster.
 
@@ -15,21 +15,9 @@ resource "nebius_mk8s_v1_cluster" "this" {
   }
 }
 
-resource "nebius_mk8s_v1_node_group" "cpu" {
-  parent_id        = nebius_mk8s_v1_cluster.this.id
-  name             = "${var.name}-cpu"
-  fixed_node_count = 1
-  template = {
-    resources = { platform = var.cpu_platform, preset = var.cpu_preset }
-    boot_disk = { type = "NETWORK_SSD", size_gibibytes = 96 }
-    network_interfaces = [{
-      subnet_id         = var.subnet_id
-      public_ip_address = {} # to pull public images
-    }]
-    metadata = { labels = { "lightserve/pool" = "cpu" } }
-  }
-}
-
+# No CPU node group: Nebius caps regular (non-GPU) vCPUs at 3 in eu-north1, the only region with
+# L40S GPUs, and declined a raise (2026-11-03). GPU nodes count against the GPU quota instead, so the
+# one L40S node (24 vCPUs, 96 GB) runs everything: lightserve and the whole platform.
 resource "nebius_mk8s_v1_node_group" "gpu" {
   parent_id        = nebius_mk8s_v1_cluster.this.id
   name             = "${var.name}-gpu"
@@ -43,8 +31,7 @@ resource "nebius_mk8s_v1_node_group" "gpu" {
       public_ip_address = {}
     }]
     metadata = { labels = { "lightserve/pool" = "gpu" } }
-    # only pods that ask for a GPU (and tolerate this) land here
-    taints             = [{ key = "nvidia.com/gpu", value = "present", effect = "NO_SCHEDULE" }]
+    # No taint: it's the only node, so every pod (Kubernetes's own included) must be able to land here.
     preemptible        = var.preemptible ? {} : null
     follows_spot_price = var.preemptible ? {} : null # Nebius requires it on preemptible nodes
   }

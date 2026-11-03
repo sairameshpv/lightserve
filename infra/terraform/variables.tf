@@ -26,17 +26,6 @@ variable "k8s_version" {
   default     = "1.32"
 }
 
-variable "cpu_platform" {
-  type    = string
-  default = "cpu-d3"
-}
-
-variable "cpu_preset" {
-  type        = string
-  description = "One CPU node runs monitoring, MLflow, Airflow, Tempo, Loki, Chaos Mesh."
-  default     = "8vcpu-32gb"
-}
-
 variable "gpu_platform" {
   type    = string
   default = "gpu-l40s-a"
