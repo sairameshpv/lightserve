@@ -38,7 +38,7 @@ def build_worker(args: argparse.Namespace) -> EngineWorker:
             time.sleep(args.fake_step_ms / 1000)
             return step()
         engine.step = slow_step
-        return EngineWorker(engine, default_timeout_s=args.default_timeout_s)
+        return EngineWorker(engine, default_timeout_s=args.default_timeout_s, cpus=args.engine_cpus)
 
     from model.llm_engine import LLMEngine  # imported here: CUDA/Triton-only
     from model.minimal_llama import llama3_8b_shape
@@ -47,7 +47,16 @@ def build_worker(args: argparse.Namespace) -> EngineWorker:
         cache_config, scheduler_config, model_config,
         max_model_len=args.max_model_len, device=args.device, seed=args.seed,
     )
-    return EngineWorker(engine, default_timeout_s=args.default_timeout_s)
+    return EngineWorker(engine, default_timeout_s=args.default_timeout_s, cpus=args.engine_cpus)
+
+
+def cpulist(text: str) -> set:
+    """Linux's core-list format: "2,14" or "0-3,8" -> a set of core numbers."""
+    cpus = set()
+    for part in text.split(","):
+        lo, _, hi = part.partition("-")
+        cpus.update(range(int(lo), int(hi or lo) + 1))
+    return cpus
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -72,6 +81,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--trace-sample-rate", type=float, default=0.1, help="share of ordinary requests traced")
     parser.add_argument("--trace-slow-s", type=float, default=1.0, help="always trace requests at least this slow")
     parser.add_argument("--request-log", help="append one JSON line per request to this file (for Loki)")
+    parser.add_argument("--server-cpus", type=cpulist, help='cores for the whole process, e.g. "2,14" (every '
+                        "thread inherits them; Linux)")
+    parser.add_argument("--engine-cpus", type=cpulist, help='cores for the engine thread alone, e.g. "1": it '
+                        "moves itself there when it starts (Linux)")
     return parser.parse_args(argv)
 
 
@@ -97,6 +110,8 @@ def main(argv=None) -> None:
         request_log = logging.getLogger("lightserve.requests")
         request_log.addHandler(handler)
         request_log.setLevel(logging.INFO)
+    if args.server_cpus:
+        os.sched_setaffinity(0, args.server_cpus)  # before any thread starts: they all inherit it
     worker = build_worker(args)
     app = create_app(worker, tracer_provider=build_tracer_provider(),
                      trace_sample_rate=args.trace_sample_rate, trace_slow_s=args.trace_slow_s)

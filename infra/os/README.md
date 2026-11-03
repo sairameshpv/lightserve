@@ -62,3 +62,81 @@ answer: ARM Linux has no x86 CPU flags, so "virtual machine" is now "unknown" th
 
 **Not checked yet:** the real `nvidia-smi` and the real VM; that's the first two minutes of
 session VM-2. If a query field were wrong for the driver, the report shows NVIDIA's error.
+
+## CPU isolation and the noisy-neighbour experiment (8h)
+
+lightserve is "launch-bound": the GPU often waits for Python on the CPU to send the next piece of
+work, so a busy neighbour on the same machine should hurt it, mostly in the slowest requests.
+**Isolation** gives it its own cores from the topology report's layout and keeps the neighbour
+and hardware interrupts off them.
+
+**lightserve pins itself** (one process, many threads; only the engine thread must be alone):
+`python -m server --server-cpus 2,14 --engine-cpus 1`. The whole process starts on the server
+cores (every thread inherits them); the engine thread (the one feeding the GPU) then moves
+itself onto its own core. Checked on Linux: the engine thread alone on core 1, every other
+thread on the server cores.
+
+**`isolate.py` puts the machine in one state**, fresh each time (both containers recreated), so
+it is the A/B tool's per-round setup:
+
+| State | lightserve | neighbour (a CPU burn: one spinning Python per core) | interrupts |
+|---|---|---|---|
+| quiet | unpinned | none | put back |
+| noisy | unpinned | every core **but housekeeping** | put back |
+| isolated-quiet | engine core + server cores; engine thread alone; its twin idle | none | moved to housekeeping, irqbalance stopped |
+| isolated-noisy | same | only the "rest" cores | moved to housekeeping |
+| restore | stopped | stopped | put back, irqbalance restarted if it ran |
+
+- **Housekeeping is never burned**, not even in "noisy": the OS and the load generator (Locust,
+  run under `taskset` on those cores) live there in every state. Otherwise the neighbour would slow
+  the thing *measuring* lightserve, and the A/B would mix the two up.
+- **Interrupts:** the originals are saved to a file on the first move (a second move keeps them);
+  every non-isolated state puts them back, so alternating A/B rounds don't leak into each other;
+  interrupts Linux refuses to move (kernel-managed) are listed, not fatal.
+- **Every isolated state checks itself:** it reads each lightserve thread's allowed cores from
+  `/proc` (through `docker exec`) and exits with an error ("PINNING WRONG") unless exactly one thread
+  sits alone on the engine core and the rest on the server cores. An error stops the A/B tool, so
+  a round is never measured with isolation silently not working.
+
+```
+sudo python3 infra/os/isolate.py isolated-noisy --topology runs/topology/topology.json [--dry-run]
+```
+(`--server-args` takes `=`: `--server-args=--fake-engine`.)
+
+**Mac rehearsal** (Docker's 8-core Linux VM, the fake engine built from this code, interrupts
+printed only): every state ran for real: containers on the right cores; "pinning OK: engine thread
+alone on core 1; 2 others on 2-3"; the neighbour at 402% CPU on its 4 cores. One short A/B,
+noisy vs isolated-noisy, through the A/B tool: every round set up and checked, 292 requests, 0
+failed. (The fake engine sleeps instead of computing, so that proves the plumbing, not the
+effect.) **One hint:** the isolated side was ~7% slower on typical latency (background measure, 2
+short rounds): pinning gives lightserve 3 cores instead of sharing all of them, and its engine and
+web-server threads hand Python's global lock (GIL) across cores. Hence a third A/B on the GPU:
+quiet vs isolated-quiet (does pinning help or hurt *without* a neighbour?).
+
+## Session VM-2 runbook (< 1 h, needs a go-ahead)
+
+**Prediction, written before:** noisy raises latency p99 by tens of %; isolated-noisy is within a
+few % of quiet. **Deciding measure for every A/B: latency p99** (the prediction is about the
+slowest requests). Toy 4-layer model with `--max-model-len 512` (the prompts need it): little GPU
+work, so CPU interference shows most. Agree a hard stop time (start + 55 min) before starting.
+
+| Min | Step |
+|---|---|
+| before | CI built `lightserve:gpu-latest` from this code (the `image` workflow green) |
+| 0-5 | `nebius compute instance start --id <node 0>` (a spot VM: may need a retry); ssh in; `sudo docker stop vllm-server` (it holds the GPU); start pulling `ghcr.io/sairameshpv/lightserve:gpu-latest` (~6 GB) and `python:3.11-slim` in the background; `git pull` the repo; `python3 -m venv ~/ab && ~/ab/bin/pip install locust==2.46.4` |
+| 5-8 | `python3 infra/os/topology.py --out runs/topology`: the first real `nvidia-smi` read; note the layout |
+| 8-12 | `sudo python3 infra/os/isolate.py isolated-quiet --topology runs/topology/topology.json` + one completion: **the GPU image's first run on the GPU**. If it fails: restore, stop the node, report |
+| 12-21 | **A/B 1, quiet vs noisy:** how much the neighbour hurts |
+| 21-30 | **A/B 2, noisy vs isolated-noisy:** how much isolation gives back |
+| 30-39 | **A/B 3, quiet vs isolated-quiet:** what pinning costs or gives without a neighbour |
+| 39-45 | `isolate.py restore`; copy `runs/` to the Mac; restart `vllm-server` only if wanted; `nebius compute instance stop` |
+
+Each A/B (3 rounds a side, 15 s warm-up + 60 s, ~9 min), with the load generator on housekeeping:
+```
+ISO="python3 infra/os/isolate.py --topology runs/topology/topology.json"
+sudo taskset -c <housekeeping> ~/ab/bin/python benchmarks/ab/ab_run.py --host http://localhost:8000 \
+    --out runs/vm2/ab1 --a-setup "$ISO quiet" --b-setup "$ISO noisy" \
+    --warmup-s 15 --round-s 60 --primary "latency p99 (s)"
+```
+If a first round has < 1,000 requests, p99 rests on too few slow requests: noted in the results,
+not hidden.

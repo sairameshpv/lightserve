@@ -11,7 +11,9 @@ rather than the async `stream()` generator -- these tests don't run inside
 an event loop; server/tests/test_app.py exercises `stream()`'s async path
 via FastAPI's own request handling.
 """
+import os
 import queue as queue_mod
+import time
 
 import pytest
 
@@ -151,3 +153,49 @@ class TestConcurrency:
         # so both start at 0 independently of scheduling interleaving.
         assert tokens1 == [0, 1, 2, 3, 4]
         assert tokens2 == [0, 1, 2]
+
+
+class TestPinning:
+    """--engine-cpus: the engine thread (the one feeding the GPU) moves itself onto its own cores,
+    so a busy neighbour can't take them (Phase 4, 8h). Only that thread: the caller keeps its own."""
+
+    def test_engine_thread_pins_itself(self):
+        import threading
+        seen = []
+        worker = EngineWorker(FakeEngine(), idle_poll_s=0.005, cpus={1},
+                              pin=lambda cpus: seen.append((threading.get_ident(), cpus)))
+        worker.start()
+        try:
+            deadline = time.time() + 5
+            while not seen and time.time() < deadline:
+                time.sleep(0.01)
+        finally:
+            worker.stop()
+        assert seen == [(worker._thread.ident, {1})]
+        assert seen[0][0] != threading.get_ident()
+
+    def test_no_cpus_no_pinning(self):
+        calls = []
+        worker = EngineWorker(FakeEngine(), idle_poll_s=0.005, pin=calls.append)
+        worker.start()
+        time.sleep(0.05)
+        worker.stop()
+        assert calls == []
+
+    @pytest.mark.skipif(not hasattr(os, "sched_setaffinity"), reason="Linux only")
+    def test_real_affinity_on_linux(self):
+        """The real call: the engine thread's allowed cores are exactly the engine's, the caller's
+        are untouched. Runs in CI (Ubuntu) and Docker; skipped on macOS."""
+        before = os.sched_getaffinity(0)
+        mine = {min(before)}
+        worker = EngineWorker(FakeEngine(), idle_poll_s=0.005, cpus=mine)
+        worker.start()
+        try:
+            deadline = time.time() + 5
+            while worker.engine_tid is None and time.time() < deadline:
+                time.sleep(0.01)
+            time.sleep(0.05)
+            assert os.sched_getaffinity(worker.engine_tid) == mine
+        finally:
+            worker.stop()
+        assert os.sched_getaffinity(0) == before

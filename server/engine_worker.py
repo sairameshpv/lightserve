@@ -37,6 +37,7 @@ class owns. `engine`'s own state (Scheduler's waiting/running lists,
 BlockManager's free list) is therefore only ever touched from this one
 thread, so none of it needs its own locking.
 """
+import os
 import queue
 import threading
 import time
@@ -98,6 +99,10 @@ class StreamHandle:
                 return
 
 
+def _pin_calling_thread(cpus) -> None:
+    os.sched_setaffinity(0, cpus)  # 0 = the calling thread (Linux)
+
+
 @dataclass
 class _Submission:
     prompt_token_ids: list
@@ -124,8 +129,15 @@ class EngineWorker:
     default) opts a request out of the backstop entirely.
     """
 
-    def __init__(self, engine, idle_poll_s: float = 0.005, default_timeout_s: Optional[float] = 60.0):
+    def __init__(self, engine, idle_poll_s: float = 0.005, default_timeout_s: Optional[float] = 60.0,
+                 cpus: Optional[set] = None, pin=None):
+        """`cpus`: the engine thread moves itself onto these cores when it starts (`python -m
+        server --engine-cpus`), so a busy neighbour can't take them; only this thread, the
+        caller keeps its own. `pin`: how (default: Linux's sched_setaffinity on the calling thread)."""
         self.engine = engine
+        self.cpus = cpus
+        self._pin = pin or _pin_calling_thread
+        self.engine_tid = None  # the engine thread's Linux thread id, once started (for checks)
         self.idle_poll_s = idle_poll_s
         self.default_timeout_s = default_timeout_s
         self._incoming: "queue.SimpleQueue" = queue.SimpleQueue()
@@ -190,6 +202,9 @@ class EngineWorker:
     # -- Engine thread ------------------------------------------------------
 
     def _run(self) -> None:
+        if self.cpus:
+            self._pin(self.cpus)
+        self.engine_tid = threading.get_native_id()
         while not self._stop.is_set():
             self._drain_incoming()
             self._sweep_timeouts()
