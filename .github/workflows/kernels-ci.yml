@@ -11,6 +11,7 @@ on:
       - "benchmarks/**"
       - "training/**"
       - "mlops/**"
+      - "infra/os/**"
       - ".github/workflows/kernels-ci.yml"
   pull_request:
     paths:
@@ -21,6 +22,7 @@ on:
       - "benchmarks/**"
       - "training/**"
       - "mlops/**"
+      - "infra/os/**"
       - ".github/workflows/kernels-ci.yml"
 
 # The run's GitHub token can only read the repo; a job that needs more asks for it.
@@ -71,7 +73,7 @@ jobs:
         # errors. Style rules stay off so old code isn't churned.
         run: |
           pip install ruff==0.14.0
-          ruff check kernels model server engine benchmarks --select F,E9
+          ruff check kernels model server engine benchmarks infra/os --select F,E9
 
       - name: Run kernel, model, server, engine, and benchmarks tests
         # `python -m pytest`, not the bare `pytest` console script: this repo
@@ -80,7 +82,7 @@ jobs:
         # import ...` to resolve -- `-m` does that by inserting CWD, `pytest`
         # alone doesn't (see git history for the ModuleNotFoundError this
         # was hit by).
-        run: python -m pytest kernels/tests/ model/tests/ server/tests/ engine/tests/ benchmarks/tests/ -v
+        run: python -m pytest kernels/tests/ model/tests/ server/tests/ engine/tests/ benchmarks/tests/ infra/os/tests/ -v
 
   training:
     # training/ tests are CPU-only: they cover data prep, scoring, the
