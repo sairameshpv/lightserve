@@ -42,6 +42,7 @@ identical between the two, which is the point.
 """
 import json
 import random
+import time
 from pathlib import Path
 
 from locust import HttpUser, between, events, task
@@ -66,9 +67,32 @@ def _add_args(parser):
     )
     parser.add_argument(
         "--stream", action="store_true",
-        help="Send stream:true and read the SSE body to completion, so a request's measured latency is "
-             "time-to-last-token rather than time-to-first-byte.",
+        help="Send stream:true and read the SSE body to completion. Locust's own latency numbers then stop "
+             "at the response headers; use --samples-out for time to first and last token.",
     )
+    parser.add_argument(
+        "--samples-out",
+        help="Append one JSON line per request (t_start, ttft_s, total_s, tokens, ok) to this file, for "
+             "benchmarks/ab/: every request's own timings, not just Locust's percentiles. Needs --stream.",
+    )
+    parser.add_argument(
+        "--seed", type=int,
+        help="Each simulated user picks prompts from its own random generator (seed + its number), so every "
+             "run sends the same prompts in the same order -- for benchmarks/ab/'s rounds. Default: unseeded.",
+    )
+
+
+_samples = None  # the --samples-out file, opened at test start
+
+
+@events.test_start.add_listener
+def _open_samples(environment, **_):
+    global _samples
+    path = environment.parsed_options.samples_out
+    if path:
+        if not environment.parsed_options.stream:
+            raise SystemExit("--samples-out needs --stream (time to first token comes from the stream)")
+        _samples = open(path, "a", buffering=1)
 
 
 class CompletionsUser(HttpUser):
@@ -80,7 +104,12 @@ class CompletionsUser(HttpUser):
     # pacing themselves.
     wait_time = between(0, 0)
 
+    _started = 0  # users started so far: each seeded user's own number
+
     def on_start(self):
+        seed = self.environment.parsed_options.seed
+        self.rng = random if seed is None else random.Random(seed + CompletionsUser._started)
+        CompletionsUser._started += 1
         target = self.environment.parsed_options.target
         prompts_file = "token_prompts.jsonl" if target == "lightserve" else "baseline_prompts.jsonl"
         self.records = _load_jsonl(_DIR / prompts_file)
@@ -89,24 +118,42 @@ class CompletionsUser(HttpUser):
 
     @task
     def completion(self):
-        record = random.choice(self.records)
+        record = self.rng.choice(self.records)
         payload = {
             "model": self.model,
             "prompt": record["prompt"],
             "max_tokens": record["max_tokens"],
             "stream": self.stream,
         }
+        t_start, t0 = time.time(), time.perf_counter()
+        ttft, tokens, finished = None, 0, False
         with self.client.post(
             "/v1/completions", json=payload, stream=self.stream, catch_response=True,
             name="/v1/completions [stream]" if self.stream else "/v1/completions",
         ) as resp:
-            if resp.status_code != 200:
+            ok = resp.status_code == 200
+            if not ok:
                 resp.failure(f"HTTP {resp.status_code}: {resp.text[:200]}")
-                return
-            if self.stream:
-                # Drain the SSE body so Locust's own per-request timer (and
-                # therefore the reported latency) covers the whole
-                # generation, not just the time to the response headers.
-                for _ in resp.iter_lines():
-                    pass
-            resp.success()
+            else:
+                if self.stream:
+                    # Drain the SSE body (the request isn't over until it ends).
+                    # Locust's own timer still stops at the response headers
+                    # with stream=True (measured: ~4 ms vs 2-4 s here), so its
+                    # percentiles are time-to-headers; --samples-out has the
+                    # full times.
+                    # Each non-empty text chunk is one token (lightserve and vLLM
+                    # both stream one per chunk); the first one's arrival is TTFT.
+                    # Complete only with a finish_reason: a "200 OK" stream can
+                    # still end early (empty or cut off) without one.
+                    for line in resp.iter_lines():
+                        if line.startswith(b"data: {"):
+                            choice = json.loads(line[6:])["choices"][0]
+                            if choice.get("text"):
+                                tokens += 1
+                                if ttft is None:
+                                    ttft = time.perf_counter() - t0
+                            finished = finished or bool(choice.get("finish_reason"))
+                resp.success()
+        if _samples:
+            _samples.write(json.dumps({"t_start": t_start, "ttft_s": ttft, "total_s": time.perf_counter() - t0,
+                                       "tokens": tokens, "ok": ok and finished and ttft is not None}) + "\n")
