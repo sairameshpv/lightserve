@@ -61,6 +61,23 @@ def test_mac_rehearsal_config_has_no_gpu():
     assert "--gpus" not in ls and ls.endswith("lightserve:fake --fake-engine")
 
 
+
+def test_every_lightserve_keeps_its_kernel_tuning_on_the_nodes_disk():
+    """Each state recreates the container; without a shared folder every round re-ran the GPU
+    kernels' tuning searches (VM-2 attempt 1). Pinned or not, same folder, created first."""
+    for mode in ("quiet", "noisy", "isolated-quiet", "isolated-noisy"):
+        p = plan(mode, LAYOUT, ALL, CFG)
+        [ls] = runs(p, "lightserve")
+        assert " -v /var/tmp/lightserve_triton:/home/lightserve/.triton -e TRITON_CACHE_AUTOTUNING=1 " in ls
+        assert "mkdir -p /var/tmp/lightserve_triton && chown 1000:1000 /var/tmp/lightserve_triton" in p["commands"]
+        assert p["commands"].index(ls) > 1
+
+
+def test_tuning_cache_can_be_turned_off():
+    p = plan("isolated-quiet", LAYOUT, ALL, Config(tuning_cache=None))
+    [ls] = runs(p, "lightserve")
+    assert "lightserve_triton" not in " ".join(p["commands"]) and "TRITON_CACHE_AUTOTUNING" not in ls
+
 # --- moving interrupts ---
 
 def test_steer_moves_interrupts_off_reserved_cores_and_restore_puts_them_back(tmp_path):

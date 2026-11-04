@@ -39,6 +39,9 @@ class Config:
     server_args: str = "--n-layers 4 --max-model-len 512"
     port: int = 8000
     noise_image: str = "python:3.11-slim"
+    # The GPU kernels' tuning results (Triton's ~/.triton), kept on the node across the fresh
+    # containers: without it every A/B round re-ran the tuning searches (VM-2 attempt 1). None = off.
+    tuning_cache: str | None = "/var/tmp/lightserve_triton"
 
 
 def _noise(cpus, cfg):
@@ -48,11 +51,13 @@ def _noise(cpus, cfg):
 
 
 def _lightserve(cfg, layout=None):
-    gpus = " --gpus all" if cfg.gpus else ""
+    opts = " --gpus all" if cfg.gpus else ""
+    if cfg.tuning_cache:
+        opts += f" -v {cfg.tuning_cache}:/home/lightserve/.triton -e TRITON_CACHE_AUTOTUNING=1"
     if layout is None:
-        return f"docker run -d --name lightserve{gpus} -p {cfg.port}:8000 {cfg.image} {cfg.server_args}"
+        return f"docker run -d --name lightserve{opts} -p {cfg.port}:8000 {cfg.image} {cfg.server_args}"
     cores = [layout["engine"], *layout["server"]]  # the engine's twin is in neither set: it stays idle
-    return (f"docker run -d --name lightserve{gpus} -p {cfg.port}:8000 --cpuset-cpus {_cpulist(cores)} "
+    return (f"docker run -d --name lightserve{opts} -p {cfg.port}:8000 --cpuset-cpus {_cpulist(cores)} "
             f"{cfg.image} {cfg.server_args} --engine-cpus {layout['engine']} --server-cpus {_cpulist(layout['server'])}")
 
 
@@ -66,6 +71,8 @@ def plan(mode, layout, all_cpus, cfg):
         cmds.append(_noise([c for c in all_cpus if c not in layout["housekeeping"]], cfg))
     if mode == "isolated-noisy":
         cmds.append(_noise(layout["rest"], cfg))
+    if mode != "restore" and cfg.tuning_cache:  # the container runs as uid 1000
+        cmds.append(f"mkdir -p {cfg.tuning_cache} && chown 1000:1000 {cfg.tuning_cache}")
     if mode != "restore":
         cmds.append(_lightserve(cfg, layout if isolated else None))
     return {"commands": cmds, "irqs": "steer" if isolated else "restore"}

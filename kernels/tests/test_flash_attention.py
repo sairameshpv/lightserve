@@ -120,3 +120,26 @@ def test_rejects_head_dim_mismatch():
     v = torch.randn(1, 2, 16, 64)  # wrong: D must match q/k
     with pytest.raises(AssertionError):
         flash_attention_forward(q, k, v)
+
+def test_tunes_once_per_size_group_not_per_exact_length():
+    """The serving engine calls this with N = a request's whole length so far, one longer every
+    generated token; tuning per exact N re-ran the autotune search on almost every step (VM-2,
+    2026-11-03). The key is N rounded up to a power of two; the kernel still masks at the real N."""
+    from kernels.flash_attention import _flash_attn_fwd_kernel
+    assert _flash_attn_fwd_kernel.keys == ["N_BUCKET", "D"]
+
+
+@requires_cuda
+def test_one_tuning_per_size_group_on_the_gpu():
+    """The real behaviour: lengths 17 and 30 share one autotune result (group 32), still each
+    correct at its own length; 33 starts group 64."""
+    from kernels.flash_attention import _flash_attn_fwd_kernel
+    _flash_attn_fwd_kernel.cache.clear()
+    for N in (17, 30):
+        q, k, v = (torch.randn(1, 4, N, 64, device="cuda", dtype=torch.bfloat16) for _ in range(3))
+        expected = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        torch.testing.assert_close(flash_attention_forward(q, k, v, causal=True), expected, atol=2e-2, rtol=2e-2)
+    assert len(_flash_attn_fwd_kernel.cache) == 1
+    q = torch.randn(1, 4, 33, 64, device="cuda", dtype=torch.bfloat16)
+    flash_attention_forward(q, q, q, causal=True)
+    assert len(_flash_attn_fwd_kernel.cache) == 2

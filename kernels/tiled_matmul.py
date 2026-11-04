@@ -52,11 +52,14 @@ _CONFIGS = [
 ]
 
 
-@triton.autotune(configs=_CONFIGS, key=["M", "N", "K"])
+# Keyed on M's size group (next power of two), not M itself: serving changes M (tokens in this
+# step) almost every step, and a fresh search per exact M left the GPU busy tuning instead of
+# serving (VM-2, 2026-11-03: ~1 token/s). The kernel still computes and masks at the real M.
+@triton.autotune(configs=_CONFIGS, key=["M_BUCKET", "N", "K"])
 @triton.jit
 def _matmul_kernel(
     a_ptr, b_ptr, c_ptr,
-    M, N, K,
+    M, N, K, M_BUCKET,
     stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn,
     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, GROUP_M: tl.constexpr,
 ):
@@ -146,7 +149,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]) * triton.cdiv(N, meta["BLOCK_N"]),)
     _matmul_kernel[grid](
         a, b, c,
-        M, N, K,
+        M, N, K, triton.next_power_of_2(M),
         a.stride(0), a.stride(1), b.stride(0), b.stride(1), c.stride(0), c.stride(1),
     )
     return c

@@ -113,6 +113,21 @@ short rounds): pinning gives lightserve 3 cores instead of sharing all of them, 
 web-server threads hand Python's global lock (GIL) across cores. Hence a third A/B on the GPU:
 quiet vs isolated-quiet (does pinning help or hurt *without* a neighbour?).
 
+## Session VM-2, attempt 1 (2026-11-03, 20 min, stopped early)
+
+- **Topology report, first real run:** Xeon Gold 6338, 24 vCPUs = 12 cores x 2, twins numbered
+  **next to each other** (0+1, 2+3, ...; the test machine had 0+12), 1 NUMA node. Layout:
+  housekeeping 0-1, engine 2 (twin 3 idle), server 4-5, rest 6-23. 9 disk-queue interrupts are
+  kernel-managed and can't be moved (listed, as designed).
+- **The GPU image's first real run:** first completion 13.1 s (kernel compile), then 0.062 s;
+  pinning OK (engine thread alone on core 2).
+- **A/Bs aborted:** under 10 users lightserve crawled at ~1 token/s with the GPU 98% busy, ~20
+  requests per 60 s round. Cause: the GPU kernels re-ran their tuning search for almost every new
+  size (see `kernels/README.md`, "Tuning once per size group"), and every round's fresh container
+  started from scratch. A GPU-bound server can't show CPU interference, and 20 requests can't give
+  a p99. Fixed: tuning per size group, and the results kept on disk across containers
+  (`isolate.py`'s `tuning_cache`).
+
 ## Session VM-2 runbook (< 1 h, needs a go-ahead)
 
 **Prediction, written before:** noisy raises latency p99 by tens of %; isolated-noisy is within a
@@ -123,20 +138,23 @@ work, so CPU interference shows most. Agree a hard stop time (start + 55 min) be
 | Min | Step |
 |---|---|
 | before | CI built `lightserve:gpu-latest` from this code (the `image` workflow green) |
-| 0-5 | `nebius compute instance start --id <node 0>` (a spot VM: may need a retry); ssh in; `sudo docker stop vllm-server` (it holds the GPU); start pulling `ghcr.io/sairameshpv/lightserve:gpu-latest` (~6 GB) and `python:3.11-slim` in the background; `git pull` the repo; `python3 -m venv ~/ab && ~/ab/bin/pip install locust==2.46.4` |
-| 5-8 | `python3 infra/os/topology.py --out runs/topology`: the first real `nvidia-smi` read; note the layout |
-| 8-12 | `sudo python3 infra/os/isolate.py isolated-quiet --topology runs/topology/topology.json` + one completion: **the GPU image's first run on the GPU**. If it fails: restore, stop the node, report |
-| 12-21 | **A/B 1, quiet vs noisy:** how much the neighbour hurts |
-| 21-30 | **A/B 2, noisy vs isolated-noisy:** how much isolation gives back |
-| 30-39 | **A/B 3, quiet vs isolated-quiet:** what pinning costs or gives without a neighbour |
-| 39-45 | `isolate.py restore`; copy `runs/` to the Mac; restart `vllm-server` only if wanted; `nebius compute instance stop` |
+| 0-5 | `nebius compute instance start --id <node 0>` (a spot VM: may need a retry); ssh in; `sudo docker stop vllm-server` (it holds the GPU); pull `ghcr.io/sairameshpv/lightserve:gpu-latest` (~7 GB) and `python:3.11-slim` in the background; a **fresh clone** (`~/lightserve` on node 0 has old uncommitted work); `python3 -m venv ~/ab && ~/ab/bin/pip install locust==2.46.4` |
+| 5-7 | `python3 infra/os/topology.py --out runs/topology` |
+| 7-11 | **GPU kernel tests in the new image:** `sudo docker run --rm --gpus all --user root --entrypoint sh <image> -c "pip install -q pytest && python -m pytest -q kernels/tests/test_tiled_matmul.py kernels/tests/test_flash_attention.py"`, all pass incl. `test_one_tuning_per_size_group_on_the_gpu`. Then `isolate.py isolated-quiet` + one completion. If anything fails: restore, stop the node, report |
+| 11-14 | **Fill the tuning cache** (not measured): 2 min of the A/B load on housekeeping, `taskset -c <housekeeping> ~/ab/bin/locust -f benchmarks/locustfile.py --headless -u 10 -r 10 -t 120s --host http://localhost:8000 --target lightserve`. Must show **hundreds of requests per minute**, and `/var/tmp/lightserve_triton` must hold tuning files; if not, stop and report |
+| 14-25 | **A/B 1, quiet vs noisy:** how much the neighbour hurts |
+| 25-36 | **A/B 2, noisy vs isolated-noisy:** how much isolation gives back |
+| 36-47 | **A/B 3, quiet vs isolated-quiet:** what pinning costs or gives without a neighbour (dropped if the hard stop gets close) |
+| 47-50 | `isolate.py restore`; copy `runs/` to the Mac; `nebius compute instance stop` |
 
-Each A/B (3 rounds a side, 15 s warm-up + 60 s, ~9 min), with the load generator on housekeeping:
+Each A/B (3 rounds a side, 30 s warm-up + 60 s, ~11 min), with the load generator on housekeeping.
+Run all three as one background script on the node (`sudo nohup`), with **absolute paths**:
+under `sudo`, `~` is `/root` (attempt 1 lost a minute to that).
 ```
 ISO="python3 infra/os/isolate.py --topology runs/topology/topology.json"
 sudo taskset -c <housekeeping> ~/ab/bin/python benchmarks/ab/ab_run.py --host http://localhost:8000 \
     --out runs/vm2/ab1 --a-setup "$ISO quiet" --b-setup "$ISO noisy" \
-    --warmup-s 15 --round-s 60 --primary "latency p99 (s)"
+    --warmup-s 30 --round-s 60 --primary "latency p99 (s)"
 ```
 If a first round has < 1,000 requests, p99 rests on too few slow requests: noted in the results,
 not hidden.

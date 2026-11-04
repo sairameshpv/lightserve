@@ -74,3 +74,25 @@ def test_rejects_dtype_mismatch():
     b = torch.randn(8, 4, dtype=torch.float16)
     with pytest.raises(AssertionError):
         matmul(a, b)
+
+def test_tunes_once_per_size_group_not_per_exact_size():
+    """Serving changes M (tokens in this step) almost every step; tuning per exact M re-ran the
+    autotune search on nearly every step (VM-2, 2026-11-03: ~1 token/s, GPU 98% busy tuning).
+    The key is M rounded up to a power of two instead; the kernel still computes on the real M."""
+    from kernels.tiled_matmul import _matmul_kernel
+    assert _matmul_kernel.keys == ["M_BUCKET", "N", "K"]
+
+
+@requires_cuda
+def test_one_tuning_per_size_group_on_the_gpu():
+    """The real behaviour: two M's in the same group share one autotune result; the next group
+    gets its own. (The autotuner's in-memory cache holds one entry per key.)"""
+    from kernels.tiled_matmul import _matmul_kernel
+    _matmul_kernel.cache.clear()
+    b = torch.randn(256, 512, device="cuda", dtype=torch.bfloat16)
+    for M in (17, 30):
+        a = torch.randn(M, 256, device="cuda", dtype=torch.bfloat16)
+        torch.testing.assert_close(matmul(a, b), torch.matmul(a, b), atol=1.5e-2, rtol=2e-2 * 2 ** 0.5)  # the bf16 rule above at K=256
+    assert len(_matmul_kernel.cache) == 1
+    matmul(torch.randn(33, 256, device="cuda", dtype=torch.bfloat16), b)
+    assert len(_matmul_kernel.cache) == 2

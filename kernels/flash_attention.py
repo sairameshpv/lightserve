@@ -79,7 +79,10 @@ def _prune_by_shared_mem(configs, named_args, **kwargs):
     return kept or configs[-1:]  # never return empty; fall back to the smallest config over crashing
 
 
-@triton.autotune(configs=_CONFIGS, key=["N", "D"], prune_configs_by={"early_config_prune": _prune_by_shared_mem})
+# Keyed on N's size group (next power of two), not N itself: the serving engine calls this with
+# N = a request's length so far, one longer every generated token, and a fresh search per exact N
+# left the GPU busy tuning instead of serving (VM-2, 2026-11-03). Masks still use the real N.
+@triton.autotune(configs=_CONFIGS, key=["N_BUCKET", "D"], prune_configs_by={"early_config_prune": _prune_by_shared_mem})
 @triton.jit
 def _flash_attn_fwd_kernel(
     q_ptr, k_ptr, v_ptr, o_ptr,
@@ -87,7 +90,7 @@ def _flash_attn_fwd_kernel(
     stride_kb, stride_kh, stride_kn, stride_kd,
     stride_vb, stride_vh, stride_vn, stride_vd,
     stride_ob, stride_oh, stride_om, stride_od,
-    H, N, D,
+    H, N, D, N_BUCKET,
     scale,
     CAUSAL: tl.constexpr,
     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_D: tl.constexpr,
@@ -214,7 +217,7 @@ def flash_attention_forward(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, c
         k.stride(0), k.stride(1), k.stride(2), k.stride(3),
         v.stride(0), v.stride(1), v.stride(2), v.stride(3),
         o.stride(0), o.stride(1), o.stride(2), o.stride(3),
-        H, N, D,
+        H, N, D, triton.next_power_of_2(N),
         scale,
         CAUSAL=causal,
         BLOCK_D=BLOCK_D,

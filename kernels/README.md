@@ -524,6 +524,34 @@ time. `terraform/variables.tf` now has a `preemptible` variable
 (`terraform.tfvars` has it set to `true` with a comment to flip back once
 capacity frees up) for next time this happens.
 
+## Tuning once per size group, not per exact size (found serving, 2026-11-03)
+
+`@triton.autotune` times every config the first time it sees a new **key** and remembers the
+winner for that key. Kernels 3 and 4 used the raw sizes as the key (`M, N, K` and `N, D`), which
+is fine for benchmarks (a few fixed shapes) but not for serving:
+
+- the serving engine (`model/model_runner.py`) calls attention once per request per layer with
+  `N` = that request's whole length so far, one longer **every generated token**;
+- every matmul's `M` is the number of tokens in this step, which changes as users come and go.
+
+So under real traffic almost every step met a new key and re-ran the search. On the L40S (VM-2
+attempt 1, toy 4-layer model, 10 users): **~1 token/s per request with the GPU 98% busy
+tuning**, ~20 requests per 60 s; the same server, once warmed for a shape, runs ~7 ms/token, and
+a new shape cost 8-33 s.
+
+**Now the key is the size group:** `M_BUCKET` / `N_BUCKET` = the size rounded up to the next
+power of two (17-32 → 32, 33-64 → 64, ...), passed by `matmul()` and `flash_attention_forward()`
+as an extra argument the kernel never reads. The kernels still compute and mask at the real size
+(results unchanged); only the choice of tile config is shared within a group: at most ~10
+attention groups up to 512 tokens and a few dozen matmul ones. The winner is picked at the first
+size seen in a group, so it may be a little slower for the group's other sizes.
+
+Tests: `test_tunes_once_per_size_group_*` (CPU, CI: the key names the group) and
+`test_one_tuning_per_size_group_on_the_gpu` (GPU: sizes 17 and 30 share one tuning entry and are
+each correct at their own size; 33 adds a second). For fresh containers (the A/B rounds),
+`infra/os/isolate.py` also keeps the results on disk (`TRITON_CACHE_AUTOTUNING=1`, a shared
+`~/.triton`).
+
 ## CI
 
 `.github/workflows/kernels-ci.yml` runs `pytest kernels/tests/ model/tests/`
