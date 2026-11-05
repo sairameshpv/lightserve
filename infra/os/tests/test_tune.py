@@ -2,6 +2,7 @@
 machine folder (test_topology.make_machine: huge pages madvise, swappiness 60, backlog 1000, like
 the real node) and a fake nvidia-smi."""
 import json
+import subprocess
 
 import pytest
 
@@ -17,12 +18,18 @@ def no_gpu(cmd):
 class FakeSmi:
     """nvidia-smi on an L40S that idles at 210 MHz (max 2520); `ignores` = a lock that doesn't hold."""
     def __init__(self, ignores=False):
-        self.clock, self.ignores, self.changes = 210, ignores, []
+        self.clock, self.ignores, self.changes, self.no_status, self.fails = 210, ignores, [], False, ()
 
     def __call__(self, cmd):
+        if cmd[1].startswith("--query-gpu=power.draw"):
+            if self.no_status:
+                raise ValueError("Field \"clocks_event_reasons.hw_slowdown\" is not a valid field to query.")
+            return "61.3, Not Active, Not Active, Not Active\n"
         if cmd[1].startswith("--query-gpu"):
             return f"{self.clock}, 2520\n"
         self.changes.append(cmd[1:])
+        if cmd[1] in self.fails:
+            raise subprocess.CalledProcessError(1, cmd, stderr="Insufficient Permissions")
         if cmd[1] == "-lgc" and not self.ignores:
             self.clock = int(cmd[2].split(",")[0])
         if cmd[1] == "-rgc":
@@ -184,3 +191,84 @@ def test_check_and_restore_from_the_command_line(tmp_path, capsys):
     main(args(tmp_path, "network", "tuned"), run=no_gpu)
     main(args(tmp_path, "restore"), run=no_gpu)
     assert "restored: network" in capsys.readouterr().out
+
+
+def test_check_shows_gpu_power_and_slowdown_reasons(tmp_path):
+    """Clock alone can't tell a lock that held from one the power limit pulled down."""
+    make_machine(tmp_path)
+    g = check(tmp_path, run=FakeSmi())["gpu"]
+    assert g["available"] and g["values"]["sm_clock_mhz"] == 210
+    assert g["status"] == {"power_w": 61.3, "power_cap": "Not Active", "hw_slowdown": "Not Active",
+                           "heat_slowdown": "Not Active"}
+
+
+def test_a_status_field_this_driver_lacks_doesnt_block_the_gpu_group(tmp_path):
+    make_machine(tmp_path)
+    smi = FakeSmi()
+    smi.no_status = True
+    g = check(tmp_path, run=smi)["gpu"]
+    assert g["available"] and "not a valid field" in g["status"]["unavailable"]
+
+
+def test_check_notes_when_there_is_no_swap(tmp_path):
+    """Without swap, swappiness has nothing to act on: the memory A/B is then huge pages alone."""
+    make_machine(tmp_path)
+    (tmp_path / "proc/meminfo").write_text("MemTotal:       98000000 kB\nSwapTotal:             0 kB\n")
+    m = check(tmp_path, run=no_gpu)["memory"]
+    assert m["values"] == {"thp": "madvise", "swappiness": "60"}      # saved/restored values unchanged
+    assert m["note"] == "no swap: swappiness has nothing to act on"
+    (tmp_path / "proc/meminfo").write_text("SwapTotal:       4194304 kB\n")
+    assert check(tmp_path, run=no_gpu)["memory"]["note"] == "swap 4096 MB"
+
+
+def test_restore_keeps_going_past_a_failure_and_keeps_the_originals(tmp_path, monkeypatch):
+    """A memory write that doesn't take must not leave the GPU clock locked."""
+    make_machine(tmp_path)
+    smi, state = FakeSmi(), tmp_path / "state.json"
+    set_group(tmp_path, "memory", "tuned", state, run=smi)
+    set_group(tmp_path, "gpu", "tuned", state, run=smi)
+    monkeypatch.setattr(tune, "_write", lambda path, text: None)
+    with pytest.raises(NotTaken, match="memory"):
+        restore(tmp_path, state, run=smi)
+    assert smi.changes[-1] == ["-rgc"] and smi.clock == 210      # the GPU was still put back
+    assert json.loads(state.read_text())["memory"] == {"thp": "madvise", "swappiness": "60"}  # kept: retry
+
+
+def test_restore_reports_a_failing_gpu_reset_after_the_other_groups(tmp_path):
+    make_machine(tmp_path)
+    smi, state = FakeSmi(), tmp_path / "state.json"
+    set_group(tmp_path, "network", "tuned", state, run=smi)
+    set_group(tmp_path, "gpu", "tuned", state, run=smi)
+    smi.fails = ("-rgc",)
+    with pytest.raises(NotTaken, match="gpu: nvidia-smi -rgc failed"):
+        restore(tmp_path, state, run=smi)
+    assert check(tmp_path, run=no_gpu)["network"]["values"] == {"netdev_max_backlog": "1000"}
+    assert state.exists()
+
+
+def test_command_line_failures_are_messages_not_tracebacks(tmp_path, monkeypatch, capsys):
+    make_machine(tmp_path)
+    smi = FakeSmi()
+    smi.fails = ("-lgc",)
+    with pytest.raises(SystemExit) as e:
+        main(args(tmp_path, "gpu", "tuned"), run=smi)
+    assert e.value.code == 1 and "nvidia-smi -lgc 2520,2520 failed" in capsys.readouterr().out
+    smi.fails = ()
+    main(args(tmp_path, "memory", "tuned"), run=smi)
+    monkeypatch.setattr(tune, "_write", lambda path, text: None)
+    with pytest.raises(SystemExit) as e:
+        main(args(tmp_path, "restore"), run=smi)
+    assert e.value.code == 1 and "DIDN'T TAKE" in capsys.readouterr().out
+
+
+def test_check_warns_about_originals_left_by_an_earlier_session(tmp_path, capsys):
+    """/var/tmp survives a node stop/start; an aborted session's saved originals mustn't be
+    reused silently (a later "tuned" keeps whatever is saved)."""
+    make_machine(tmp_path)
+    main(args(tmp_path, "check"), run=no_gpu)
+    assert "WARNING" not in capsys.readouterr().out
+    main(args(tmp_path, "memory", "tuned"), run=no_gpu)
+    capsys.readouterr()
+    main(args(tmp_path, "check"), run=no_gpu)
+    out = capsys.readouterr().out
+    assert "WARNING: originals saved" in out and "(memory)" in out and "run restore" in out

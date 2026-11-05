@@ -172,7 +172,7 @@ difference", and it's a lie), so every change is **read back** before a round is
 |---|---|---|---|
 | GPU clock | free (idles at 210 MHz, max 2,520) | locked at max (`nvidia-smi -lgc 2520,2520`); must read >= 90% of max | the GPU |
 | Memory | huge pages "madvise", swappiness 60 | huge pages "always", swappiness 10 | whole machine |
-| Network | network-card backlog 1000; connection queue 4096 | 16384; 65535 | backlog: whole machine (`tune.py`); queue: **lightserve's own container** (`isolate.py --somaxconn`) |
+| Network | network-card backlog 1000 | 16384 | whole machine |
 | CPU power | hidden by the VM | — | reported as "can't run here" |
 
 - **The originals are saved once**, to `/var/tmp/lightserve_tune_state.json`, before the first
@@ -183,8 +183,13 @@ difference", and it's a lie), so every change is **read back** before a round is
   measured on the wrong setting.
 - **The connection queue is per container (found on the Mac):** on Docker's Linux a container
   reads its own default 4096 whatever the machine's value is, and the network-card backlog isn't
-  visible inside one at all. So the queue is set when lightserve's container starts (`--sysctl`)
-  and read back inside it; setting it on the machine would have tested nothing.
+  visible inside one at all. So the queue can only be set when lightserve's container starts
+  (`isolate.py --somaxconn N`: Docker's `--sysctl`, read back inside the container).
+- **...and it isn't tested at all (found by the independent review):** Linux gives a server the
+  *smaller* of what it asks for and the queue setting. lightserve's web server (uvicorn) asks for
+  2048, below both 4096 and 65535, so its queue is 2048 on both sides: a "no difference" would be
+  guaranteed, not measured. Testing it would first need a server option for a bigger request.
+  `--somaxconn` stays in `isolate.py` (tested) for that day; VM-3 doesn't use it.
 - **Not tuned:** huge-page "defrag" (its "always" is known to cause pauses, and would mix two
   changes into one test); the open-file limit (Docker already gives containers a very high one);
   persistence mode (already on on the node).
@@ -197,19 +202,23 @@ sudo python3 infra/os/tune.py restore
 
 **How it was checked (Mac):** tests on a fake machine folder and a fake `nvidia-smi`: each change
 written and read back, a change the machine ignores caught, originals kept across rounds,
-alternating rounds + restore leave every value as found, missing settings refused. On Docker's real
-Linux: `check` and every dry run behaved, nothing changed; lightserve's container started with
-`--somaxconn 65535` read 65535 inside while the machine read 4096. **Not run yet:** `isolate.py`
-end to end with `--somaxconn` (its tuning-folder step needs root; the node has it), the real
-`nvidia-smi -lgc`.
+alternating rounds + restore leave every value as found, missing settings refused; after the
+review: `restore` tries every group past a failure and keeps the originals, `nvidia-smi` failures
+are messages, a GPU status field the driver lacks doesn't block the group, leftover originals warn.
+On Docker's real Linux: `check` and every dry run behaved, nothing changed (swap read right: 1023
+MB). For the connection-queue finding, **the `docker run` command `isolate.py --somaxconn 65535
+--dry-run` prints was run by hand** (not `isolate.py` itself): inside that container 65535, the
+machine 4096 at the same moment. **Not run yet:** `isolate.py` end to end with `--somaxconn` (its
+tuning-folder step needs root; the node has it; VM-3 doesn't use it), the real `nvidia-smi -lgc`
+and `-rgc`, the GPU status field names, a GPU A/B under load.
 
 ### Predictions and the win rule (written before any run)
 
 | A/B | Prediction | Deciding measure |
 |---|---|---|
 | GPU clock | steadier and slightly faster per token: the GPU no longer ramps its clock up between bursts | time/token p50 (ms) |
-| Memory | no difference: 96 GB machine, tiny model, nothing gets swapped | latency p99 (s) |
-| Network | no difference: 10 users never fill a queue of 4,096, and the web server (uvicorn) asks for only 2,048 | latency p99 (s) |
+| Memory | no difference: 96 GB machine, tiny model, nothing gets swapped. If `tune.py check` says "no swap" (likely on a cloud VM; the topology report didn't record it), swappiness has nothing to act on and this A/B is huge pages alone | latency p99 (s) |
+| Network (backlog) | no difference: 10 users' traffic never fills the incoming-packet queue of 1,000 per core | latency p99 (s) |
 
 **Win rule:** a setting wins only if the A/B tool's verdict on its deciding measure is "better";
 "not sure" is no win. **Only a winner gets setup code** (a start-up file for the VM, a Kubernetes
@@ -225,26 +234,53 @@ instead. Hard stop: start + 55 min.
 | Min | Step |
 |---|---|
 | 0-5 | start node 0; `sudo docker stop vllm-server`; `git pull` in the clone |
-| 5-6 | `sudo python3 infra/os/tune.py check`: GPU, memory, network available; CPU power can't run here |
+| 5-6 | `sudo python3 infra/os/tune.py check`: GPU, memory, network available; CPU power can't run here; no swap noted or not; if it prints a WARNING about saved originals (an earlier session didn't finish), `tune.py restore` first |
 | 6-9 | `isolate.py quiet` + 2 min of the A/B load to fill the tuning cache (not measured): hundreds of requests a minute, or stop and report |
 | 9-20 | **A/B 1, GPU clock** |
 | 20-31 | **A/B 2, memory** |
 | 31-42 | **A/B 3, network** |
-| 42-46 | `tune.py restore`, `isolate.py restore`, `tune.py check` (all as found); copy `runs/` to the Mac; stop the node |
+| 42-46 | the script's exit step: `tune.py restore`, `isolate.py restore`, `tune.py check`, compared with the session's first `check` (must print "AS FOUND"; GPU lines left out: idle clock and power wander on their own, the reset is proven by `-rgc` succeeding); copy `runs/` to the Mac; stop the node |
 
-Run as one background script (`sudo nohup`), **absolute paths** (under `sudo`, `~` is `/root`):
+Run as one background script (`sudo nohup bash vm3.sh`; everything inside already runs as root, so no `sudo` in it). It starts with a `cd` into the clone,
+so every relative path (`runs/...`, `benchmarks/...`) means the same thing; the rest are absolute
+(under `sudo`, `~` is `/root`). `set -e` stops at the first failure (a "DIDN'T TAKE" or "can't run
+here" stops that A/B, and the later ones must not run on a machine left half-tuned), and the
+`trap` puts everything back on the way out, whether the script finished or stopped:
 ```
+set -e
+cd /home/<user>/ls_vm2
 TUNE="python3 /home/<user>/ls_vm2/infra/os/tune.py"
 ISO="python3 /home/<user>/ls_vm2/infra/os/isolate.py --topology runs/topology/topology.json"
 AB="taskset -c <housekeeping> /home/<user>/ab/bin/python benchmarks/ab/ab_run.py --host http://localhost:8000 --warmup-s 30 --round-s 60"
-sudo $AB --out runs/vm3/gpu --primary "time/token p50 (ms)" \
+mkdir -p runs/vm3
+$TUNE check | tee runs/vm3/check_start.txt       # as found, before anything changes
+nvidia-smi --query-gpu=timestamp,clocks.sm,power.draw,clocks_event_reasons.sw_power_cap,clocks_event_reasons.hw_slowdown,clocks_event_reasons.sw_thermal_slowdown \
+    --format=csv -l 5 > runs/vm3/gpu_samples.csv &  # the GPU under load, every 5 s
+GPULOG=$!
+trap 'kill $GPULOG; $TUNE restore; $ISO restore; $TUNE check | tee runs/vm3/check_end.txt
+      if diff <(grep -v "^gpu" runs/vm3/check_start.txt) <(grep -v "^gpu" runs/vm3/check_end.txt); then
+          echo "AS FOUND: memory and network match the start"; else echo "NOT AS FOUND: see the diff above"; fi' EXIT
+$AB --out runs/vm3/gpu --primary "time/token p50 (ms)" \
     --a-setup "$TUNE gpu as-found && $ISO quiet" --b-setup "$TUNE gpu tuned && $ISO quiet"
-sudo $AB --out runs/vm3/memory --primary "latency p99 (s)" \
+$TUNE restore && $TUNE check
+$AB --out runs/vm3/memory --primary "latency p99 (s)" \
     --a-setup "$TUNE memory as-found && $ISO quiet" --b-setup "$TUNE memory tuned && $ISO quiet"
-sudo $AB --out runs/vm3/network --primary "latency p99 (s)" \
-    --a-setup "$TUNE network as-found && $ISO quiet" --b-setup "$TUNE network tuned && $ISO quiet --somaxconn 65535"
+$TUNE restore && $TUNE check
+$AB --out runs/vm3/network --primary "latency p99 (s)" \
+    --a-setup "$TUNE network as-found && $ISO quiet" --b-setup "$TUNE network tuned && $ISO quiet"
+$TUNE restore && $TUNE check
 ```
 lightserve restarts every round, so memory and network changes apply from a fresh start.
+**A `restore` after every A/B:** the rounds go A B B A A B, so each A/B ends on a tuned round;
+without it the GPU clock would stay locked through the memory and network A/Bs, and memory tuned
+through the network one (found by the independent review). The `check` after it logs the as-found
+values each A/B starts from.
+**`gpu_samples.csv`, the GPU under load:** `tune.py`'s lock check reads the clock on an idle GPU,
+which proves the lock was accepted, not that it held while serving. In the GPU A/B's tuned rounds
+the clock should sit near 2,520 MHz; if the power-cap or slowdown columns say "Active" often, the
+lock only partly held, and the result says so. (The field names are from NVIDIA's docs for this
+driver generation; checked for real only on the node: `tune.py check` shows "status unavailable"
+if one is wrong, and the GPU group still runs.)
 
 ### Results
 

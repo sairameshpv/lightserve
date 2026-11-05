@@ -199,8 +199,8 @@ def _tuning(facts, gpus):
     memory = (f"huge pages (THP) enabled={thp['enabled']} defrag={thp['defrag']}, swappiness {facts['swappiness']}; "
               "A/B: THP always vs now, swappiness 10")
     network = (f"somaxconn {facts['somaxconn']}, netdev_max_backlog {facts['netdev_max_backlog']}; "
-               "A/B: backlog raised on the machine, somaxconn raised on lightserve's container "
-               "(each container has its own)")
+               "A/B: backlog raised; somaxconn not tested (lightserve's web server asks for only 2048, "
+               "below it, and Linux uses the smaller)")
     return {"gpu": gpu, "cpu_power": cpu, "memory": memory, "network": network}
 
 

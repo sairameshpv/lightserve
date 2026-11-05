@@ -229,7 +229,7 @@ def test_what_the_tuning_ab_tests_can_change(tmp_path):
     assert "not exposed" in t["cpu_power"]                     # VM hides governor + sleep states
     assert "madvise" in t["memory"] and "60" in t["memory"]    # THP mode, swappiness
     assert "4096" in t["network"] and "1000" in t["network"]
-    assert "open-file" not in t["network"] and "lightserve's container" in t["network"]  # 8i's split
+    assert "open-file" not in t["network"] and "somaxconn not tested" in t["network"]  # server caps it at 2048
 
 
 
