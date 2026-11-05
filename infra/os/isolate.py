@@ -42,6 +42,9 @@ class Config:
     # The GPU kernels' tuning results (Triton's ~/.triton), kept on the node across the fresh
     # containers: without it every A/B round re-ran the tuning searches (VM-2 attempt 1). None = off.
     tuning_cache: str | None = "/var/tmp/lightserve_triton"
+    # The connection queue lives in each container's own network (8i's network A/B): set on
+    # lightserve's container, read back inside it. None = the container's default.
+    somaxconn: int | None = None
 
 
 def _noise(cpus, cfg):
@@ -54,6 +57,8 @@ def _lightserve(cfg, layout=None):
     opts = " --gpus all" if cfg.gpus else ""
     if cfg.tuning_cache:
         opts += f" -v {cfg.tuning_cache}:/home/lightserve/.triton -e TRITON_CACHE_AUTOTUNING=1"
+    if cfg.somaxconn:
+        opts += f" --sysctl net.core.somaxconn={cfg.somaxconn}"
     if layout is None:
         return f"docker run -d --name lightserve{opts} -p {cfg.port}:8000 {cfg.image} {cfg.server_args}"
     cores = [layout["engine"], *layout["server"]]  # the engine's twin is in neither set: it stays idle
@@ -151,6 +156,15 @@ def check_pinning(threads, layout):
             "why": f"engine thread {on_engine[0]} alone on core {engine[0]}; {len(threads) - 1} others on {_cpulist(server)}"}
 
 
+SOMAXCONN = "docker exec lightserve cat /proc/sys/net/core/somaxconn"
+
+
+def check_somaxconn(text, want):
+    """SOMAXCONN's output vs the value asked for."""
+    got = int(text.strip())
+    return {"ok": got == want, "why": f"connection queue (somaxconn) inside lightserve reads {got}, asked {want}"}
+
+
 def _sh(cmd):
     print("+ " + cmd, flush=True)
     subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL)
@@ -178,13 +192,15 @@ def main(argv=None):
     ap.add_argument("--server-args", default=Config.server_args)
     ap.add_argument("--port", type=int, default=Config.port)
     ap.add_argument("--no-irqs", action="store_true", help="print the interrupt changes instead (no root / the Mac)")
+    ap.add_argument("--somaxconn", type=int, help="connection queue for lightserve's container (8i)")
     ap.add_argument("--health-timeout-s", type=float, default=300)
     ap.add_argument("--dry-run", action="store_true", help="print everything, change nothing")
     args = ap.parse_args(argv)
 
     topo = json.loads(Path(args.topology).read_text())
     layout, all_cpus = topo["advice"]["layout"], topo["facts"]["cpus"]
-    cfg = Config(image=args.image, gpus=not args.no_gpus, server_args=args.server_args, port=args.port)
+    cfg = Config(image=args.image, gpus=not args.no_gpus, server_args=args.server_args, port=args.port,
+                 somaxconn=args.somaxconn)
     p = plan(args.mode, layout, all_cpus, cfg)
     irq_line = (f"interrupts: steer to {_cpulist(layout['housekeeping'])} (irqbalance stopped first if running)"
                 if p["irqs"] == "steer" else f"interrupts: put back from {args.state} (if saved)")
@@ -210,6 +226,12 @@ def main(argv=None):
     if args.mode == "restore":
         return
     _wait_healthy(args.port, args.health_timeout_s)
+    if args.somaxconn:
+        r = check_somaxconn(subprocess.run(SOMAXCONN, shell=True, check=True, capture_output=True,
+                                           text=True).stdout, args.somaxconn)
+        print(("" if r["ok"] else "DIDN'T TAKE: ") + r["why"])
+        if not r["ok"]:
+            sys.exit(1)
     if args.mode.startswith("isolated"):
         r = check_pinning(parse_task_status(subprocess.run(THREADS, shell=True, check=True, capture_output=True,
                                                            text=True).stdout), layout)

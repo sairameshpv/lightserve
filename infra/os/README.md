@@ -158,3 +158,98 @@ sudo taskset -c <housekeeping> ~/ab/bin/python benchmarks/ab/ab_run.py --host ht
 ```
 If a first round has < 1,000 requests, p99 rests on too few slow requests: noted in the results,
 not hidden.
+
+## OS tuning, one setting at a time (8i)
+
+**What it's for:** a careful, repeatable way to test one machine setting at a time. "No
+difference" is a good result, as long as it can be trusted. A comparison is only as good as its
+two sides (a taste test where the cook forgets the spice on half the "spiced" plates says "no
+difference", and it's a lie), so every change is **read back** before a round is measured.
+
+**`tune.py` puts one setting group in "as found" or "tuned":**
+
+| Group | As found on the node | Tuned | Where it lives |
+|---|---|---|---|
+| GPU clock | free (idles at 210 MHz, max 2,520) | locked at max (`nvidia-smi -lgc 2520,2520`); must read >= 90% of max | the GPU |
+| Memory | huge pages "madvise", swappiness 60 | huge pages "always", swappiness 10 | whole machine |
+| Network | network-card backlog 1000; connection queue 4096 | 16384; 65535 | backlog: whole machine (`tune.py`); queue: **lightserve's own container** (`isolate.py --somaxconn`) |
+| CPU power | hidden by the VM | — | reported as "can't run here" |
+
+- **The originals are saved once**, to `/var/tmp/lightserve_tune_state.json`, before the first
+  change; "as found" writes them back (nothing saved = already as found); `restore` puts every group
+  back and forgets them. A node stop/start also resets all of these (none is permanent).
+- **Exit codes:** 1 = a change didn't take ("DIDN'T TAKE", with what the machine reads), 2 = the
+  group can't run here. As the A/B tool's per-round setup, either stops the run before a round is
+  measured on the wrong setting.
+- **The connection queue is per container (found on the Mac):** on Docker's Linux a container
+  reads its own default 4096 whatever the machine's value is, and the network-card backlog isn't
+  visible inside one at all. So the queue is set when lightserve's container starts (`--sysctl`)
+  and read back inside it; setting it on the machine would have tested nothing.
+- **Not tuned:** huge-page "defrag" (its "always" is known to cause pauses, and would mix two
+  changes into one test); the open-file limit (Docker already gives containers a very high one);
+  persistence mode (already on on the node).
+
+```
+python3 infra/os/tune.py check                        # what's here, today's values
+sudo python3 infra/os/tune.py memory tuned [--dry-run]
+sudo python3 infra/os/tune.py restore
+```
+
+**How it was checked (Mac):** tests on a fake machine folder and a fake `nvidia-smi`: each change
+written and read back, a change the machine ignores caught, originals kept across rounds,
+alternating rounds + restore leave every value as found, missing settings refused. On Docker's real
+Linux: `check` and every dry run behaved, nothing changed; lightserve's container started with
+`--somaxconn 65535` read 65535 inside while the machine read 4096. **Not run yet:** `isolate.py`
+end to end with `--somaxconn` (its tuning-folder step needs root; the node has it), the real
+`nvidia-smi -lgc`.
+
+### Predictions and the win rule (written before any run)
+
+| A/B | Prediction | Deciding measure |
+|---|---|---|
+| GPU clock | steadier and slightly faster per token: the GPU no longer ramps its clock up between bursts | time/token p50 (ms) |
+| Memory | no difference: 96 GB machine, tiny model, nothing gets swapped | latency p99 (s) |
+| Network | no difference: 10 users never fill a queue of 4,096, and the web server (uvicorn) asks for only 2,048 | latency p99 (s) |
+
+**Win rule:** a setting wins only if the A/B tool's verdict on its deciding measure is "better";
+"not sure" is no win. **Only a winner gets setup code** (a start-up file for the VM, a Kubernetes
+setting), in a later step.
+
+### Session VM-3 runbook (< 1 h, needs a go-ahead; best after the VM-2 retry)
+
+Same node, same image and fresh clone as VM-2 (its tuning folder `/var/tmp/lightserve_triton`
+survives a node stop). lightserve in the plain `quiet` state (unpinned, no neighbour), so only the
+one setting differs; if VM-2 shows pinning clearly helps, use `isolated-quiet` on both sides
+instead. Hard stop: start + 55 min.
+
+| Min | Step |
+|---|---|
+| 0-5 | start node 0; `sudo docker stop vllm-server`; `git pull` in the clone |
+| 5-6 | `sudo python3 infra/os/tune.py check`: GPU, memory, network available; CPU power can't run here |
+| 6-9 | `isolate.py quiet` + 2 min of the A/B load to fill the tuning cache (not measured): hundreds of requests a minute, or stop and report |
+| 9-20 | **A/B 1, GPU clock** |
+| 20-31 | **A/B 2, memory** |
+| 31-42 | **A/B 3, network** |
+| 42-46 | `tune.py restore`, `isolate.py restore`, `tune.py check` (all as found); copy `runs/` to the Mac; stop the node |
+
+Run as one background script (`sudo nohup`), **absolute paths** (under `sudo`, `~` is `/root`):
+```
+TUNE="python3 /home/<user>/ls_vm2/infra/os/tune.py"
+ISO="python3 /home/<user>/ls_vm2/infra/os/isolate.py --topology runs/topology/topology.json"
+AB="taskset -c <housekeeping> /home/<user>/ab/bin/python benchmarks/ab/ab_run.py --host http://localhost:8000 --warmup-s 30 --round-s 60"
+sudo $AB --out runs/vm3/gpu --primary "time/token p50 (ms)" \
+    --a-setup "$TUNE gpu as-found && $ISO quiet" --b-setup "$TUNE gpu tuned && $ISO quiet"
+sudo $AB --out runs/vm3/memory --primary "latency p99 (s)" \
+    --a-setup "$TUNE memory as-found && $ISO quiet" --b-setup "$TUNE memory tuned && $ISO quiet"
+sudo $AB --out runs/vm3/network --primary "latency p99 (s)" \
+    --a-setup "$TUNE network as-found && $ISO quiet" --b-setup "$TUNE network tuned && $ISO quiet --somaxconn 65535"
+```
+lightserve restarts every round, so memory and network changes apply from a fresh start.
+
+### Results
+
+| A/B | Verdict on the deciding measure | Change | Prediction right? | Wins? |
+|---|---|---|---|---|
+| GPU clock | not run yet | | | |
+| Memory | not run yet | | | |
+| Network | not run yet | | | |

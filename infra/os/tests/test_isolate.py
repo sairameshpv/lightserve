@@ -3,7 +3,7 @@ layout (the fake L40S-shaped VM: housekeeping 0,12; engine 1, twin 13 idle; serv
 other 18), and moving interrupts on a fake machine folder, then putting them back exactly."""
 import json
 
-from infra.os.isolate import STOP, Config, check_pinning, main, parse_task_status, plan, restore_irqs, steer_irqs
+from infra.os.isolate import STOP, Config, check_pinning, check_somaxconn, main, parse_task_status, plan, restore_irqs, steer_irqs
 from test_topology import make_machine
 
 LAYOUT = {"housekeeping": [0, 12], "engine": 1, "engine_twin_idle": [13], "server": [2, 14],
@@ -59,6 +59,21 @@ def test_mac_rehearsal_config_has_no_gpu():
     p = plan("quiet", LAYOUT, ALL, Config(image="lightserve:fake", gpus=False, server_args="--fake-engine"))
     [ls] = runs(p, "lightserve")
     assert "--gpus" not in ls and ls.endswith("lightserve:fake --fake-engine")
+
+
+def test_somaxconn_goes_on_lightserves_own_container():
+    """The connection queue belongs to each container's network, not the machine (8i's network A/B)."""
+    for mode in ("quiet", "isolated-quiet"):
+        [ls] = runs(plan(mode, LAYOUT, ALL, Config(somaxconn=65535)), "lightserve")
+        assert " --sysctl net.core.somaxconn=65535 " in ls
+    [ls] = runs(plan("quiet", LAYOUT, ALL, CFG), "lightserve")
+    assert "--sysctl" not in ls                   # not asked: the container's own default
+
+
+def test_somaxconn_read_back_inside_the_container():
+    assert check_somaxconn("65535\n", 65535)["ok"]
+    r = check_somaxconn("4096\n", 65535)
+    assert not r["ok"] and "4096" in r["why"]
 
 
 
