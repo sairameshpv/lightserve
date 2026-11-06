@@ -191,7 +191,7 @@ window reliably, so the test, not experiment 6, is the proof.
 | 1 Pod kill | **PASS** | 176/176 ok before; 7 refused while the new pod came up; recovery 281/281 ok. The down alert never went pending: the pod was back before the 30 s wait, as predicted possible |
 | 2 Network | **PASS**, prediction wrong | first token 39 -> 242 ms (+203, predicted ~+100), back to 39. Probably each request opens a new connection, paying the delay on the handshake too |
 | 3 Flood | **FAIL, untrustworthy on the Mac** | run 1 (300 users): 303 in flight, batch at 256, p50 1.5 s, all ok, but the flood ran ~10 s into recovery (fixed: stopped at fault end). Run 2, same settings: 55 in flight, p50 17 s, 6 refused. The bottleneck moved outside lightserve: kind, monitoring and 300 load threads share the Mac's Docker machine |
-| 4 Noisy neighbour | **PASS**, weak baseline | p99 1.53 -> 3.52 -> 1.03 s; but its normal phase was already slow (0.72 s in an earlier run): it ran right after the flood |
+| 4 Noisy neighbour | **FAIL (not caught), as predicted for kind** | first run "PASS" (p99 1.53 -> 3.52 s) was a **false positive**: its normal phase was still slow from the flood just before. Rerun with a settle and the baseline check: 795 -> 708 ms, no effect, although the burn was real (the kind machine's CPU 30% -> 829%, all 8 cores). The fake engine mostly sleeps, so a busy CPU barely touches it: only the GPU cluster can answer this one |
 | 5 Drain | **FAIL: a real finding, open** | caught every time (firing after 40-55 s); human step logged; Ready again in seconds; **but requests hung 90 s**: 1, then 4, then 4 |
 | 6 MLflow down | **PASS** (2nd try) | 1st try: **every registration failed, fault or not** (below). After the fix: the first try waited 127.5 s (MLflow's client sat out the 90 s outage), then exactly one version, champion, all facts. The pipeline's own retry wasn't needed, so the "cut off before the label" case rests on its test |
 
@@ -227,18 +227,21 @@ or upgrade. Tried: a 10 s "keep answering before shutting down" pause (`preStop`
 4 hung, run 2's drain itself timed out, so it was **taken out again**. Kind's network layer isn't
 Nebius's (Cilium), so the race may differ there: **check it first on the real cluster.**
 
-**Known gaps, not fixed:** a run that crashes leaves its load pod behind (removed by hand once);
-experiments run back to back with no settle time, so one can slow the next one's baseline (4 after
-3 above). Fix both before trusting a full `all` run.
+**Two gaps the rehearsal showed, fixed with a test first:** a crashed run left its load pod behind
+(now every experiment, finished or crashed, deletes the runner's own pods and every fault object;
+never lightserve or MLflow); experiments ran back to back, so one slowed the next one's baseline
+(now a 30 s settle before each, `--settle-s`; a run refuses to start while `chaos-*` pods from an
+earlier one are still there; and a normal phase more than 1.5x slower than the first experiment's
+fails as "BASELINE SLOW" instead of being judged). Checked on kind: a planted leftover pod stopped the
+run; network + neighbour left only Chaos Mesh's own pods; network delay repeated its +205 ms.
 
 ### Session Cluster-2 runbook (< 1 h, needs a go-ahead)
 
 apply ~13 min -> smoke test ~5 -> `run_chaos.py drain` first (the open finding), then
 `pod-kill network-delay queue-flood mlflow-down noisy-neighbour --out runs/chaos/cluster2` ~20 ->
 destroy ~14 = ~53 min. Hard stop at start + 55 min: if behind at minute 38, skip the rest and
-destroy. On the GPU use `--ready-limit-s 300`. Before it: the two
-gaps above fixed, and `finish_champion` + the registry fix pushed (experiment 6 ships its own copy; the
-cluster's own pipeline reads its code from GitHub). On kind experiment 6 needs `--register-image airflow-mlops:local`.
+destroy. On the GPU use `--ready-limit-s 300`. `finish_champion` and the registry fix are on GitHub (the cluster's
+own pipeline reads its code from there; experiment 6 ships its own copy). On kind experiment 6 needs `--register-image airflow-mlops:local`.
 
 | # | Result on the GPU cluster |
 |---|---|

@@ -184,6 +184,7 @@ class Opts:
     ready_limit_s: float = 180   # drain: Ready again within this long of the uncordon (GPU: 300)
     batch_limit: int = 256       # lightserve's --max-num-seqs (its default; the chart doesn't set it)
     register_image: str = ""     # experiment 6's pod image; "" = Airflow's own (the real cluster)
+    settle_s: float = 30         # quiet time before each experiment (kind: the neighbour ran slow right after the flood)
     dry_run: bool = False
 
 
@@ -423,13 +424,61 @@ def run_mlflow_down(c):
     return [], None, {**facts, "probe_phase": phase, "probe_log": out[-3000:]}
 
 
+OWN_PODS = [("lightserve", "chaos-load"), ("lightserve", "chaos-flood"), ("mlops", "chaos-register")]
+BASELINE_SLACK = 1.5    # a normal phase this much slower than the first experiment's is "baseline slow"
+
+
+def cleanup(c):
+    """The runner's own pods and every fault object, whether the experiment finished or crashed
+    (kind: a crash left its load pod behind). Never lightserve or MLflow themselves."""
+    for ns, name in OWN_PODS:
+        c.sh(f"kubectl -n {ns} delete pod {name} --ignore-not-found --grace-period=0", check=False)
+    for f in FAULT.values():
+        c.sh(f"kubectl delete -f {f} --ignore-not-found", check=False)
+
+
+def run_one(c, name, runner):
+    try:
+        return runner(c)
+    finally:
+        cleanup(c)
+
+
+def check_no_leftovers(c):
+    """Refuse to start while an earlier run's pods are still around (they'd load the cluster)."""
+    left = [line.split("/", 1)[-1] for ns in ("lightserve", "mlops")
+            for line in (c.sh(f"kubectl -n {ns} get pods -o name", check=False) or "").split()
+            if line.split("/", 1)[-1].startswith("chaos-")]
+    if left:
+        raise RuntimeError(f"leftovers from an earlier run: {', '.join(left)} (delete them, then rerun)")
+
+
+def _normal_p99(records, phases):
+    a, b = phases["normal"]
+    rs = [r["total_s"] for r in records if a <= r["t_start"] < b]
+    return _pct(rs, 99) if rs else None
+
+
+def baseline_check(records, phases, ref_p99):
+    """This experiment's normal phase vs the first experiment's in the same run."""
+    p99 = _normal_p99(records, phases)
+    if ref_p99 is None:
+        return True, "first experiment: it is the reference"
+    if p99 is None:
+        return False, "no requests in the normal phase"
+    return (p99 <= BASELINE_SLACK * ref_p99,
+            f"normal p99 {_ms(p99)} vs the first experiment's {_ms(ref_p99)} (allowed {BASELINE_SLACK}x)")
+
+
 RUNNERS = {"pod-kill": run_pod_kill, "network-delay": lambda c: run_simple(c, "network-delay"),
            "queue-flood": run_queue_flood, "noisy-neighbour": run_noisy_neighbour, "drain": run_drain,
            "mlflow-down": run_mlflow_down}
 
 
 def row(name, v):
-    return f"{'PASS' if v['pass'] else 'FAIL'}  {name:16} caught: {v['caught'][1]} | healed: {v['healed'][1]}"
+    base = v.get("baseline", (True, ""))
+    note = "" if base[0] else f" | BASELINE SLOW: {base[1]}"
+    return f"{'PASS' if v['pass'] else 'FAIL'}  {name:16} caught: {v['caught'][1]} | healed: {v['healed'][1]}{note}"
 
 
 def main(argv=None):
@@ -438,12 +487,14 @@ def main(argv=None):
     ap.add_argument("--out", required=True, help="e.g. runs/chaos/kind")
     for k in ("normal_s", "fault_s", "recover_s", "ready_limit_s"):
         ap.add_argument("--" + k.replace("_", "-"), type=float, default=getattr(Opts, k))
+    ap.add_argument("--settle-s", type=float, default=Opts.settle_s, help="quiet time before each experiment")
     ap.add_argument("--register-image", default="", help="experiment 6's image (kind: airflow-mlops:local)")
     ap.add_argument("--dry-run", action="store_true", help="print every command, change nothing, judge nothing")
     a = ap.parse_args(argv)
     opts = Opts(out=Path(a.out), normal_s=a.normal_s, fault_s=a.fault_s, recover_s=a.recover_s,
-                ready_limit_s=a.ready_limit_s, register_image=a.register_image, dry_run=a.dry_run)
-    rows = []
+                ready_limit_s=a.ready_limit_s, register_image=a.register_image, settle_s=a.settle_s,
+                dry_run=a.dry_run)
+    rows, ref = [], None
     for name in (list(RUNNERS) if "all" in a.experiments else a.experiments):
         out = opts.out / name
         if not opts.dry_run:
@@ -451,10 +502,18 @@ def main(argv=None):
         log = io.StringIO() if opts.dry_run else open(out / "commands.log", "w")
         c = Cluster(opts, log)
         c.note(f"=== {name}")
-        records, phases, facts = RUNNERS[name](c)
+        c.note(f"settle {opts.settle_s:g} s")
+        c.sleep(opts.settle_s)
+        check_no_leftovers(c)
+        records, phases, facts = run_one(c, name, RUNNERS[name])
         if opts.dry_run:
             continue
         verdict = JUDGES[name](records, phases, facts)
+        if phases is not None:   # experiments with traffic: is "normal" really normal?
+            verdict["baseline"] = baseline_check(records, phases, ref)
+            ref = ref if ref is not None else _normal_p99(records, phases)
+            if not verdict["baseline"][0]:
+                verdict["pass"] = False
         (out / "records.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
         (out / "facts.json").write_text(json.dumps({"phases": phases, **facts}, indent=2, default=str))
         (out / "verdict.json").write_text(json.dumps(verdict, indent=2))

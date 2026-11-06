@@ -250,9 +250,12 @@ def test_a_crash_in_one_experiment_doesnt_hide_the_rows_already_judged(capsys, m
     monkeypatch.setitem(rc.RUNNERS, "network-delay", judged)
     monkeypatch.setitem(rc.JUDGES, "network-delay", lambda r, p, f: {"caught": (True, "x"), "healed": (True, "y"), "pass": True})
     monkeypatch.setitem(rc.RUNNERS, "queue-flood", crashes)
+    sent = []
+    monkeypatch.setattr(rc.Cluster, "sh", lambda self, cmd, check=True: sent.append(cmd) or "")  # never a real cluster
     with pytest.raises(RuntimeError):
-        rc.main(["network-delay", "queue-flood", "--out", str(tmp_path)])
+        rc.main(["network-delay", "queue-flood", "--out", str(tmp_path), "--settle-s", "0"])
     assert "PASS  network-delay" in capsys.readouterr().out
+    assert any("delete pod chaos-load" in cmd for cmd in sent)   # the crash still cleaned up
 
 
 def test_the_registration_image_can_be_given_instead_of_asking_airflow(capsys):
@@ -302,3 +305,46 @@ def test_mlflow_down_keeps_the_probes_log_when_it_gives_no_answer(tmp_path):
     records, phases, facts = run_chaos.run_mlflow_down(c)
     assert facts["versions"] == 0 and "INVALID_PARAMETER_VALUE" in facts["probe_log"]
     assert facts["probe_phase"] == "Failed"
+
+
+# --- gaps found on kind: a crash left its load pod behind; one experiment slowed the next one's baseline ---
+
+def test_a_crashed_experiment_still_cleans_up_only_the_runners_own_things():
+    from infra.chaos.run_chaos import run_one
+    c = Scripted([])
+    def crashes(c):
+        c.sh("kubectl -n lightserve run chaos-load ...")
+        raise RuntimeError("kubectl drain timed out")
+    import pytest
+    with pytest.raises(RuntimeError):
+        run_one(c, "drain", crashes)
+    done = " ".join(c.cmds)
+    for pod in ("chaos-load", "chaos-flood"):
+        assert f"-n lightserve delete pod {pod} --ignore-not-found" in done
+    assert "-n mlops delete pod chaos-register --ignore-not-found" in done
+    for f in ("pod-kill", "network-delay", "noisy-neighbour", "mlflow-down"):
+        assert f"delete -f infra/chaos/{f}.yaml --ignore-not-found" in done
+    assert not any("delete deploy" in x or "delete pod lightserve" in x for x in c.cmds)   # never lightserve itself
+
+
+def test_each_experiment_settles_and_refuses_leftovers_before_it_starts(capsys):
+    lines = dry("pod-kill", capsys)
+    order(lines, "settle 30 s", "get pods -o name", "run chaos-load")
+
+
+def test_leftover_chaos_pods_stop_the_run():
+    import pytest
+    from infra.chaos.run_chaos import check_no_leftovers
+    c = Scripted([("-n lightserve get pods -o name", "pod/lightserve-abc\npod/chaos-load\n"), ("-n mlops get pods", "")])
+    with pytest.raises(RuntimeError, match="chaos-load"):
+        check_no_leftovers(c)
+    check_no_leftovers(Scripted([("get pods -o name", "pod/lightserve-abc\n")]))   # only lightserve: fine
+
+
+def test_a_slow_baseline_is_not_judged_as_if_it_were_normal():
+    from infra.chaos.run_chaos import baseline_check
+    fast, slow = steady("normal", total=0.72), steady("normal", total=1.53)   # kind: neighbour right after the flood
+    assert baseline_check(fast, PHASES, None) == (True, "first experiment: it is the reference")
+    ok, why = baseline_check(slow, PHASES, 0.72)
+    assert not ok and "1530 ms" in why and "720 ms" in why
+    assert baseline_check(fast, PHASES, 0.70)[0]
