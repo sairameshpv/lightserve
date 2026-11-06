@@ -331,10 +331,35 @@ lock only partly held, and the result says so. (The field names are from NVIDIA'
 driver generation; checked for real only on the node: `tune.py check` shows "status unavailable"
 if one is wrong, and the GPU group still runs.)
 
-### Results
+### Results (session VM-3, 2026-11-06, 14:24-14:59 UTC, ~35 min, node stopped)
 
-| A/B | Verdict on the deciding measure | Change | Prediction right? | Wins? |
+**In one line:** none of the three settings made a measurable difference, so nothing wins and no
+setup code is written. A trustworthy "no difference" was the goal: every change was read back before
+each round, the GPU log shows what the GPU did under load, and the machine was proven back as found.
+
+| A/B | Verdict on the deciding measure | Change (95% range) | Prediction right? | Wins? |
 |---|---|---|---|---|
-| GPU clock | not run yet | | | |
-| Memory | not run yet | | | |
-| Network | not run yet | | | |
+| GPU clock locked at max | time/token p50: **not sure** | +0.7% (-2.6 .. +4.1) | **no** (predicted steadier and slightly faster) | no |
+| Memory: huge pages "always" (no swap, so huge pages alone) | latency p99: **not sure** | +2.7% (-5.0 .. +10.4) | yes (no difference) | no |
+| Network backlog 16384 | latency p99: **not sure** | +1.2% (-5.9 .. +8.3) | yes (no difference) | no |
+
+6 rounds each (ABBAAB, 30 s warm-up + 60 s), ~205 requests a round, 0 failures. Every other measure
+was "not sure" too.
+
+- **Why the GPU lock changed nothing:** in all 343 samples of `gpu_samples.csv`, **both sides**, the
+  SM clock sat at 2,500-2,599 MHz, with no power-cap, hardware or heat slowdown. Under this steady load
+  the free clock already boosts to its maximum, so locking it has nothing to add. It might matter for
+  light, bursty traffic (idle, the clock drops to 210 MHz): not tested.
+- **`tune.py check` on the real node:** memory, network and GPU available; CPU power "can't run here";
+  **no swap** (so swappiness had nothing to act on, as the prediction warned); NVIDIA's status fields
+  (power, power cap, slowdowns) work on driver 570.
+- **Back as found:** the exit step printed "AS FOUND: memory and network match the start"; the saved
+  originals file was gone (a clean restore); the GPU idled at 210 MHz again (the reset worked).
+- **Before measuring:** the tuning cache survived the node stop (first completion 2.75 s, VM-2: 13.8
+  s); ~197 requests a minute in the 2-min fill. The as-found times match VM-2's quiet rounds (p99 ~5.4
+  s vs 5.5 s), a cross-session sanity check.
+- **Caveat, as in VM-2:** ~205 requests a round, under the runbook's 1,000: each round's p99 is set by
+  its ~2 slowest requests. The steadier time/token and tokens/s measures agree ("not sure", within a
+  few %).
+- **Left as it was:** plain `quiet` on both sides (VM-2 showed pinning helps *with* a neighbour, not
+  whether it helps without one). Raw data on the Mac in `runs/vm3/` (untracked, like the rest of `runs/`).
