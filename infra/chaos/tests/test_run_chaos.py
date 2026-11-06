@@ -253,3 +253,12 @@ def test_a_crash_in_one_experiment_doesnt_hide_the_rows_already_judged(capsys, m
     with pytest.raises(RuntimeError):
         rc.main(["network-delay", "queue-flood", "--out", str(tmp_path)])
     assert "PASS  network-delay" in capsys.readouterr().out
+
+
+def test_the_registration_image_can_be_given_instead_of_asking_airflow(capsys):
+    """kind: no Airflow installed just to read its image name; the real cluster asks Airflow."""
+    lines = dry("mlflow-down", capsys)
+    assert any("get pod airflow-scheduler-0" in line for line in lines)
+    lines = dry("mlflow-down", capsys, register_image="airflow-mlops:local")
+    assert not any("airflow-scheduler-0" in line for line in lines)
+    assert any("run chaos-register --image=airflow-mlops:local" in line for line in lines)

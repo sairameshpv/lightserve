@@ -68,7 +68,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install triton pytest fastapi uvicorn httpx prometheus_client opentelemetry-sdk safetensors numpy
+          pip install triton pytest fastapi uvicorn httpx prometheus_client opentelemetry-sdk safetensors numpy pyyaml  # pyyaml: infra/chaos label test
 
       - name: Lint (ruff, real-mistake checks only)
         # F = pyflakes (unused/undefined names, broken imports), E9 = syntax

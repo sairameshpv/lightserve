@@ -183,6 +183,7 @@ class Opts:
     flood_users: int = 300   # above lightserve's batch of 256 (--max-num-seqs): 40 never queued (kind)
     ready_limit_s: float = 180   # drain: Ready again within this long of the uncordon (GPU: 300)
     batch_limit: int = 256       # lightserve's --max-num-seqs (its default; the chart doesn't set it)
+    register_image: str = ""     # experiment 6's pod image; "" = Airflow's own (the real cluster)
     dry_run: bool = False
 
 
@@ -390,7 +391,8 @@ def run_drain(c):
 
 def run_mlflow_down(c):
     f = FAULT["mlflow-down"]
-    image = c.sh("kubectl -n mlops get pod airflow-scheduler-0 -o jsonpath='{.spec.containers[0].image}'") or "IMAGE"
+    image = c.opts.register_image or c.sh(
+        "kubectl -n mlops get pod airflow-scheduler-0 -o jsonpath='{.spec.containers[0].image}'") or "IMAGE"
     ship_code(c, "mlops")
     c.sh("kubectl -n mlops delete pod chaos-register --ignore-not-found --wait")
     c.sh(f"kubectl apply -f {f}")
@@ -423,10 +425,11 @@ def main(argv=None):
     ap.add_argument("--out", required=True, help="e.g. runs/chaos/kind")
     for k in ("normal_s", "fault_s", "recover_s", "ready_limit_s"):
         ap.add_argument("--" + k.replace("_", "-"), type=float, default=getattr(Opts, k))
+    ap.add_argument("--register-image", default="", help="experiment 6's image (kind: airflow-mlops:local)")
     ap.add_argument("--dry-run", action="store_true", help="print every command, change nothing, judge nothing")
     a = ap.parse_args(argv)
     opts = Opts(out=Path(a.out), normal_s=a.normal_s, fault_s=a.fault_s, recover_s=a.recover_s,
-                ready_limit_s=a.ready_limit_s, dry_run=a.dry_run)
+                ready_limit_s=a.ready_limit_s, register_image=a.register_image, dry_run=a.dry_run)
     rows = []
     for name in (list(RUNNERS) if "all" in a.experiments else a.experiments):
         out = opts.out / name
