@@ -159,6 +159,55 @@ sudo taskset -c <housekeeping> ~/ab/bin/python benchmarks/ab/ab_run.py --host ht
 If a first round has < 1,000 requests, p99 rests on too few slow requests: noted in the results,
 not hidden.
 
+## Session VM-2 retry results (2026-11-07, 02:27-03:07 UTC, ~40 min, node stopped)
+
+**In one line:** a CPU-burning neighbour made lightserve's slowest requests ~17% slower; pinning
+lightserve to its own cores with the neighbour kept off them won back about two thirds of that.
+
+**Before measuring (the go/no-go checks):**
+- **The kernel fix holds on the real L40S:** all 55 kernel tests pass in the image, including both
+  "one tuning per size group" GPU tests (never run on a GPU before).
+- **Pinning:** engine thread alone on core 2, the 5 others on 4-5; interrupts moved, then restored.
+- **Speed under load:** first completion 13.8 s (kernels compiling), then 335 requests in the 2-min
+  cache fill, **~167 a minute** (attempt 1: ~20). At the low end of "hundreds a minute", but the
+  server is no longer stuck tuning; the tuning cache held 11 MB afterwards.
+
+**A/B 1, quiet vs noisy** (6 rounds, ABBAAB, 30 s warm-up + 60 s, 0 failures):
+
+| measure | quiet | noisy | change (95% range) | verdict |
+|---|---|---|---|---|
+| **latency p99 (deciding)** | 5.50 s | 6.42 s | **+16.7%** (+11.6 .. +21.8) | worse |
+| time/token p50 | 24.7 ms | 28.1 ms | +13.8% (+9.8 .. +17.9) | worse |
+| tokens/s | 402 | 352 | -12.6% (-15.7 .. -9.4) | worse |
+
+Every noisy round was slower than every quiet round. Prediction "p99 up by tens of %": right, at
+the low end.
+
+**A/B 2, noisy vs isolated-noisy** (same set-up, 0 failures):
+
+| measure | noisy | isolated-noisy | change (95% range) | verdict |
+|---|---|---|---|---|
+| **latency p99 (deciding)** | 6.43 s | 5.84 s | **-9.3%** (-16.3 .. -2.3) | better |
+| time/token p50 | 28.5 ms | 25.7 ms | -9.8% (-15.6 .. -4.1) | better |
+| tokens/s | 348 | 386 | +10.7% (+3.5 .. +17.9) | better |
+
+latency p50 "not sure" (one isolated round was unusually fast: 3.13 s). Prediction "isolated-noisy
+within a few % of quiet": a little optimistic. Across the two A/Bs (separate runs, so a rough
+reading) quiet 5.50 s, noisy 6.42/6.43 s, isolated-noisy 5.84 s: **~6% above quiet**, i.e. about
+two thirds of the damage taken back.
+
+**Caveats, not hidden:**
+- **~200 requests per round** (177-206), under the runbook's 1,000: each round's p99 is set by its
+  ~2 slowest requests. The verdicts still agree with the steadier time/token and tokens/s measures.
+- **A/B 3 (quiet vs isolated-quiet) dropped for time**, so "does pinning help or hurt with no
+  neighbour" (the Mac hinted ~7% slower) is still open. Lost to: 3.5 min (a zsh mistake: `$SSH`
+  isn't word-split, so the wait-for-ssh loop never ran ssh), and the node's disk being full.
+- **Node disk:** the image pull failed at 6.4 GB free; only the outdated lightserve image was
+  removed (the vLLM, OpenRLHF and NVIDIA PyTorch images kept). 97% full again after the pull: the
+  next session must check `df` first.
+- Attempt 1's results folder on the node is root-owned and was left alone; these went to
+  `runs/vm2r/` there and `runs/vm2_retry/` on the Mac (untracked, like the rest of `runs/`).
+
 ## OS tuning, one setting at a time (8i)
 
 **What it's for:** a careful, repeatable way to test one machine setting at a time. "No
