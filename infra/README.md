@@ -243,6 +243,26 @@ destroy ~14 = ~53 min. Hard stop at start + 55 min: if behind at minute 38, skip
 destroy. On the GPU use `--ready-limit-s 300`. `finish_champion` and the registry fix are on GitHub (the cluster's
 own pipeline reads its code from there; experiment 6 ships its own copy). On kind experiment 6 needs `--register-image airflow-mlops:local`.
 
-| # | Result on the GPU cluster |
-|---|---|
-| 1-6 | not run yet |
+### Session Cluster-2 results (2026-11-06, 17:26-18:17 UTC, ~51 min, all destroyed)
+
+**In one line:** four of six experiments ran and passed on the real GPU cluster (pod kill, network,
+flood, MLflow down); the drain couldn't be judged (its load recorded nothing for 137 s); the noisy
+neighbour was cut for time. Nothing left behind: 18 destroyed, 0 clusters, only the VMs' own boot disks.
+
+**Timings:** apply 961 s (16 min; Cluster-1: 13), shortened smoke check ~1 min (gpu, lightserve,
+prometheus, alert, mlflow, chaos: 6/6 PASS; first completion 7.6 s incl. compiling the kernels; the
+slow Airflow whole-loop check skipped, nothing here needs it), experiments 17:43-18:04, destroy 788 s.
+
+| # | Result on the GPU cluster | What it showed |
+|---|---|---|
+| 1 Pod kill | **PASS** | 30,106 fast refusals while the new pod started; recovery all ok, none hung. LightserveDown never went pending: back before its 30 s wait |
+| 2 Network | **PASS** | first token 24 -> 223 ms (+199) -> 24 ms. Same as kind (+203, +205): the "+100 ms" prediction was wrong everywhere (each request opens a new connection and pays the delay on the handshake too) |
+| 3 Flood | **PASS** | running reached the 256 limit; no restart or out-of-memory kill; every request ended cleanly; queue back to 0. The first trustworthy flood result (the Mac's wasn't) |
+| 4 Noisy neighbour | **not run** | cut at the minute-38 rule; still only kind's "no effect on the fake engine" |
+| 5 Drain | **FAIL: can't judge** | the load pod recorded **no request at all before +137 s**, the moment lightserve came back (10 s after the uncordon), so no normal phase and no traffic during the drain. What could be seen passed: LightserveDown firing after 55 s, human step logged, Ready 10 s after the uncordon, alert cleared, 0 hung. Cause of the gap unknown (the pod went with the cluster). **The kind hang is neither reproduced nor ruled out** |
+| 6 MLflow down | **PASS** | the registration sat out the outage; exactly one new version, champion, all facts: **the registry fix works on the real cluster** |
+
+**Next time for the drain:** run it second, not first (it was the session's first experiment, so
+also the first load pod on a fresh cluster), and keep the load pod's own log (`kubectl logs`) before
+the pod is deleted, to see what it was doing for those 137 s. Raw records: `runs/chaos/cluster2/` on
+the Mac (untracked, like the rest of `runs/`).
