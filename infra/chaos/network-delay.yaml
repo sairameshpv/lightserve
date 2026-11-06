@@ -1,0 +1,19 @@
+# Slow, lossy network to lightserve for 90 s (Phase 4 chaos experiment "network delay/loss").
+# Prediction: first-token p50 rises by about the delay (+100 ms; at least +80 ms to count as
+# caught), more for the unlucky requests whose packets are lost and resent; nothing hangs (the
+# server's own 60 s limit and the load's 90 s limit both hold); after it ends, p50 is back within
+# 20% of normal. No alert is expected: the latency alarms look at a 1-hour window.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: lightserve-network-delay
+  namespace: lightserve
+spec:
+  action: netem
+  mode: all
+  selector:
+    namespaces: [lightserve]
+    labelSelectors: {app: lightserve}
+  delay: {latency: 100ms, jitter: 10ms, correlation: "0"}
+  loss: {loss: "5", correlation: "0"}
+  duration: 90s       # ends on its own even if the runner dies

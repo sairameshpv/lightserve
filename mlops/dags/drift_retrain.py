@@ -78,9 +78,10 @@ def champion() -> dict:
 
 
 def register_once(champion_alias: bool, tags: dict) -> None:
-    """Register this run's candidate (a retry finds it already registered: nothing to do)."""
+    """Register this run's candidate. A retry finds it already registered: it only finishes the
+    champion label, in case the first try was cut off before moving it (8j)."""
     import mlflow
-    from training.qlora_financial.registry import register
+    from training.qlora_financial.registry import finish_champion, register
     mlflow.set_tracking_uri(tracking_uri())
     commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     try:
@@ -91,6 +92,8 @@ def register_once(champion_alias: bool, tags: dict) -> None:
         if "is already" not in str(e):
             raise
         print(f"already registered: {e}")
+        if champion_alias:
+            finish_champion(run_dir().name)
 
 
 def vllm_url() -> str:

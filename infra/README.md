@@ -148,3 +148,86 @@ nebius compute disk list --parent-id <project>          # only the VMs' own boot
   ~11 min) are Nebius's own. Checked after the session: no disks or clusters left.
 - One network-controller pod (`cilium-operator`'s second copy) stays Pending: it wants a second
   node for its backup copy. Harmless on one node.
+
+## Chaos experiments: break it on purpose, check it heals (8j)
+
+**What it's for:** every break should be **caught** (an alert, or a number fixed in advance) and
+**heal on its own** (back to normal with nobody touching it, no request left hanging). The one
+exception is written into its rule: a drain on a one-node cluster needs a person to let the node
+back. Like a fire drill, it only proves something if someone is in the building: a load pod sends
+steady requests the whole time and records every one's fate (`infra/chaos/load.py`: ok, aborted =
+the server's own clean 60 s timeout, error, or hung = no answer within 90 s).
+
+**How one experiment runs** (`infra/chaos/run_chaos.py <name>|all --out runs/chaos/<where>`, from a
+laptop whose `kubectl` points at the cluster): today's code is shipped to the pods in a ConfigMap
+(so it tests uncommitted code too); steady load (4 users); 30 s normal, 90 s fault, 60 s recovery;
+the fault is switched off **at** the end of its phase (every fault file also has a 90 s timer of
+its own, in case the runner dies); then the records, Prometheus (read through the Kubernetes API)
+and Kubernetes give the facts, and a fixed rule gives PASS/FAIL with its reasons. Saved per
+experiment: `commands.log`, `records.jsonl`, `facts.json`, `verdict.json`. `--dry-run` prints
+every command and changes nothing.
+
+### The six experiments, predictions and pass rules (written before running)
+
+| # | Fault | Prediction | Caught if | Healed if |
+|---|---|---|---|---|
+| 1 | Kill lightserve's pod (`pod-kill.yaml`) | a few refused requests; a new pod in seconds, maybe before the down alert's 30 s wait | the load saw failures, or LightserveDown pending/firing | new pod Ready, recovery 100% ok, none hung, in-flight 0 |
+| 2 | +100 ms delay, 5% loss (`network-delay.yaml`) | first token ~100 ms later | first-token p50 up >= 80 ms | p50 within 20% of normal, none hung |
+| 3 | Flood: 300 extra users (above lightserve's batch of 256) | the server fills up; slower; nothing lost | **the server hit its 256 limit** (see "rule changed" below) | no restart or out-of-memory kill, every request served or timed out cleanly, queue 0, latency within 20% |
+| 4 | Noisy neighbour: 20 CPU-burning workers next to lightserve (`noisy-neighbour.yaml`) | GPU: the slowest requests up tens of %; kind's fake engine: meaningless | p99 latency up >= 10% | p99 within 20% of normal |
+| 5 | Drain: evict lightserve, fence off the node | LightserveDown fires (the pod has nowhere to go) | LightserveDown firing within 90 s | **human step** logged (uncordon), Ready again within 3 min (GPU 5), alert clears, none hung |
+| 6 | MLflow down 90 s during a registration (`mlflow-down.yaml`, `register_probe.py`) | the first try fails or waits; the retry finishes | the first try failed or waited > 10 s | exactly one new version, champion label on it, all its facts (a test model, never finance-qa) |
+
+**Found by reading, before any experiment ran:** if MLflow died between "version created" and
+"champion label moved", the pipeline's retry said "already registered" and stopped: a
+half-registered model. Fixed (`registry.finish_champion`, called by the DAG's `register_once`),
+with a test that cuts the registration off at exactly that point. Chaos can't hit that 1-second
+window reliably, so the test, not experiment 6, is the proof.
+
+### Rehearsal on kind (5-6 Nov, fake engine, Mac Docker: 8 CPUs, 4 GB)
+
+| # | Result | What it showed |
+|---|---|---|
+| 1 Pod kill | **PASS** | 176/176 ok before; 7 refused while the new pod came up; recovery 281/281 ok. The down alert never went pending: the pod was back before the 30 s wait, as predicted possible |
+| 2 Network | **PASS**, prediction wrong | first token 39 -> 242 ms (+203, predicted ~+100), back to 39. Probably each request opens a new connection, paying the delay on the handshake too |
+| 3 Flood | **FAIL, untrustworthy on the Mac** | run 1 (300 users): 303 in flight, batch at 256, p50 1.5 s, all ok, but the flood ran ~10 s into recovery (fixed: stopped at fault end). Run 2, same settings: 55 in flight, p50 17 s, 6 refused. The bottleneck moved outside lightserve: kind, monitoring and 300 load threads share the Mac's Docker machine |
+| 4 Noisy neighbour | **PASS**, weak baseline | p99 1.53 -> 3.52 -> 1.03 s; but its normal phase was already slow (0.72 s in an earlier run): it ran right after the flood |
+| 5 Drain | **FAIL: a real finding, open** | caught every time (firing after 40-55 s); human step logged; Ready again in seconds; **but requests hung 90 s**: 1, then 4, then 4 |
+| 6 MLflow down | **not rehearsed yet** | needs a second kind batch (MLflow + the Airflow image) |
+
+**Bugs the rehearsal found in the runner, all fixed with a test first:** the noisy-neighbour file
+lacked the labels the runner selects by (crash); results printed only at the end (a crash hid
+them); the flood and the neighbour's burn weren't stopped at the end of their phase.
+
+**Rule changed after seeing results (flagged):** the flood's first "caught" rule was "the waiting
+queue > 0". On kind the real queue lasted ~50 ms (a slot frees every 20 ms), and Prometheus reads
+that gauge every 5 s, so it read 0 although the server was full. Now: "running reached the 256
+limit". That gauge is also read every 5 s; it works because a sustained flood keeps the server
+full. The size was changed too: the plan's 10x (40 users) never filled a batch of 256.
+
+**The drain hang (open finding).** Timeline of the second run: drain at +30 s; until +39 s the
+shutting-down pod refused new connections cleanly (thousands of fast errors); **at +38.8 s all four
+users' next requests started and hung**, 0.3 s before the old pod and its network address were
+removed. Best explanation, not proven (the address-list recorder logged nothing): for a moment new
+connections were still sent to an address that no longer existed, which never answers, not even
+"refused", so the client waits its full limit (90 s here, ~2 min with Linux defaults). Any real
+client of lightserve without a short connect limit would hang the same way during a drain, restart
+or upgrade. Tried: a 10 s "keep answering before shutting down" pause (`preStop`): run 1 still had
+4 hung, run 2's drain itself timed out, so it was **taken out again**. Kind's network layer isn't
+Nebius's (Cilium), so the race may differ there: **check it first on the real cluster.**
+
+**Known gaps, not fixed:** a run that crashes leaves its load pod behind (removed by hand once);
+experiments run back to back with no settle time, so one can slow the next one's baseline (4 after
+3 above). Fix both before trusting a full `all` run.
+
+### Session Cluster-2 runbook (< 1 h, needs a go-ahead)
+
+apply ~13 min -> smoke test ~5 -> `run_chaos.py drain` first (the open finding), then
+`pod-kill network-delay queue-flood mlflow-down noisy-neighbour --out runs/chaos/cluster2` ~20 ->
+destroy ~14 = ~53 min. Hard stop at start + 55 min: if behind at minute 38, skip the rest and
+destroy. On the GPU use `--ready-limit-s 300`. Before it: experiment 6 rehearsed on kind, the two
+gaps above fixed, and `finish_champion` pushed (experiment 6 ships its own copy; the cluster's own pipeline reads its code from GitHub).
+
+| # | Result on the GPU cluster |
+|---|---|
+| 1-6 | not run yet |

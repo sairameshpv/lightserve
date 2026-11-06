@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from training.qlora_financial.registry import REPO, lineage, register, repo_path, scores
+from training.qlora_financial.registry import REPO, finish_champion, lineage, register, repo_path, scores
 
 
 def row(id, source, greedy, gold):
@@ -75,6 +75,39 @@ def test_register_two_versions_and_move_champion(tmp_path):
     register("rolled-back", git_commit="ddd", tags={"status": "rejected-after-deploy"}, **common)
     assert client.get_model_version("finance-qa", "4").tags["status"] == "rejected-after-deploy"
     assert int(client.get_model_version_by_alias("finance-qa", "champion").version) == 3  # not champion
+
+
+def test_a_registration_cut_off_before_the_champion_label_can_be_finished(tmp_path, monkeypatch):
+    """MLflow dies after the version exists but before the label moves (8j): the retry is refused
+    as "already registered", so it must still finish the label, or the model is half-registered."""
+    mlflow = pytest.importorskip("mlflow")
+    mlflow.set_tracking_uri(f"sqlite:///{tmp_path / 'mlflow.db'}")
+    adapter, data = tmp_path / "adapter", tmp_path / "data"
+    adapter.mkdir(), data.mkdir()
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": "base", "r": 8, "lora_alpha": 16}))
+    for split in ("train", "val", "test"):
+        (data / f"{split}.jsonl").write_text('{"i": 0}\n')
+    samples = tmp_path / "samples.jsonl"
+    samples.write_text(json.dumps(row(1, "FinQA", "Answer: 10.0", "10.0")) + "\n")
+    common = dict(adapter_dir=adapter, samples_path=samples, data_dir=data, artifact_root=tmp_path / "artifacts")
+    register("old", git_commit="aaa", champion=True, **common)
+
+    real = mlflow.MlflowClient.set_registered_model_alias
+    def mlflow_dies(*a, **k):
+        raise ConnectionError("MLflow went away")
+    monkeypatch.setattr(mlflow.MlflowClient, "set_registered_model_alias", mlflow_dies)
+    with pytest.raises(ConnectionError):
+        register("new", git_commit="bbb", champion=True, **common)
+    monkeypatch.setattr(mlflow.MlflowClient, "set_registered_model_alias", real)   # MLflow is back
+
+    client = mlflow.MlflowClient()
+    assert int(client.get_model_version_by_alias("finance-qa", "champion").version) == 1  # half-registered
+    with pytest.raises(ValueError, match="already"):
+        register("new", git_commit="bbb", champion=True, **common)  # the retry is refused...
+    assert finish_champion("new") == 2                              # ...so it finishes the label
+    assert int(client.get_model_version_by_alias("finance-qa", "champion").version) == 2
+    assert finish_champion("new") == 2                              # a second retry: nothing more to do
+    assert len(client.search_model_versions("name='finance-qa'")) == 2
 
 
 def test_repo_path_is_relative_inside_the_repo(tmp_path):

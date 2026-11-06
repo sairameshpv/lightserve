@@ -1,0 +1,20 @@
+# MLflow unavailable for 90 s while a model registration runs (Phase 4 chaos experiment "MLflow down").
+# pod-failure swaps MLflow's container for a do-nothing one, then puts it back (the pod stays, its
+# disk with the database stays).
+# Prediction: the registration's first try fails or waits (MLflow's client retries on its own for
+# a while); with the pipeline's policy (1 retry after 1 min) it ends with exactly ONE new version,
+# carrying the champion label and all its facts. Run against a test model (chaos-<time>), never
+# finance-qa. The narrower cut-off (MLflow dies between "version created" and "label moved")
+# can't be hit reliably by timing: it has its own test (test_registry.py) and fix (finish_champion).
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: mlflow-down
+  namespace: mlops
+spec:
+  action: pod-failure
+  mode: one
+  selector:
+    namespaces: [mlops]
+    labelSelectors: {app.kubernetes.io/name: mlflow}
+  duration: 90s

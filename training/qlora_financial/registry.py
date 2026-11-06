@@ -92,6 +92,21 @@ def register(version_name: str, adapter_dir, samples_path, data_dir, git_commit:
     return int(mv.version)
 
 
+def finish_champion(version_name: str, model: str = "finance-qa") -> int:
+    """Point the champion label at an already registered version (a retry of a registration
+    that was cut off after the version was created but before the label moved). Returns it."""
+    import mlflow
+    client = mlflow.MlflowClient()
+    [mv] = [v for v in client.search_model_versions(f"name='{model}'") if v.tags.get("version_name") == version_name]
+    try:
+        if client.get_model_version_by_alias(model, "champion").version == mv.version:
+            return int(mv.version)
+    except mlflow.exceptions.MlflowException:
+        pass  # no champion yet
+    client.set_registered_model_alias(model, "champion", mv.version)
+    return int(mv.version)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Register a finance-qa adapter version in MLflow.")
     ap.add_argument("--version-name", required=True, help="e.g. v3")

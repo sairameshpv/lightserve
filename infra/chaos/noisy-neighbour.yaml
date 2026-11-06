@@ -1,0 +1,44 @@
+# A CPU-burning neighbour on lightserve's node for 90 s (Phase 4 chaos experiment "noisy neighbour").
+# A tiny idle pod is placed on the same node as lightserve; Chaos Mesh then runs 20 busy workers
+# inside it. No CPU pinning on Kubernetes (8h's isolation was the plain VM), so nothing shields
+# lightserve.
+# Prediction (the GPU cluster): lightserve is "launch-bound" (its GPU waits on Python on the CPU),
+# so the slowest requests suffer: p99 latency up by tens of % (at least +10% to count as caught);
+# back within 20% of normal once the neighbour stops. On kind's fake engine (it sleeps instead of
+# computing) the numbers mean nothing: there it only proves the setup works.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-neighbour
+  namespace: lightserve
+  labels: {chaos-part: setup}      # run_chaos.py places it before the normal phase
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: chaos-neighbour}}
+  template:
+    metadata: {labels: {app: chaos-neighbour}}
+    spec:
+      affinity:
+        podAffinity:          # same node as lightserve
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: {matchLabels: {app: lightserve}}
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: idle          # the stress workers are added by Chaos Mesh, not by this image
+          image: registry.k8s.io/pause:3.10
+          resources: {requests: {cpu: 10m, memory: 16Mi}}   # no limit: free to burn every core
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: lightserve-noisy-neighbour
+  namespace: lightserve
+  labels: {chaos-part: fault}      # ...and starts the burn only at the fault
+spec:
+  mode: one
+  selector:
+    namespaces: [lightserve]
+    labelSelectors: {app: chaos-neighbour}
+  stressors:
+    cpu: {workers: 20, load: 100}
+  duration: 90s
