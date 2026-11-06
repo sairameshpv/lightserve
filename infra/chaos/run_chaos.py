@@ -280,8 +280,20 @@ def load_pod(c, name, users, duration_s, image, mem="256Mi"):
              mem=mem))
 
 
+def wait_done(c, ns, name, timeout_s, every_s=3):
+    """Until the pod has succeeded OR failed (kubectl wait can only wait for one of them: kind's
+    probe failed after 18 s and was waited on for 10 min). Returns its last phase."""
+    phase = ""
+    for _ in range(max(1, int(timeout_s / every_s))):
+        phase = (c.sh(f"kubectl -n {ns} get pod {name} -o jsonpath={{.status.phase}}", check=False) or "").strip()
+        if phase in ("Succeeded", "Failed") or c.opts.dry_run:
+            break
+        c.sleep(every_s)
+    return phase
+
+
 def collect(c, name, wait_s):
-    c.sh(f"kubectl {LS} wait pod/{name} --for=jsonpath='{{.status.phase}}'=Succeeded --timeout={wait_s:.0f}s", check=False)
+    wait_done(c, "lightserve", name, wait_s)
     out = c.sh(f"kubectl {LS} logs {name}") or ""
     c.sh(f"kubectl {LS} delete pod {name} --ignore-not-found")
     return [json.loads(line) for line in out.splitlines() if line.startswith("{")]
@@ -400,14 +412,15 @@ def run_mlflow_down(c):
     model = f"chaos-{int(time.time())}"
     c.sh(pod("chaos-register", "mlops", image, f"python infra/chaos/register_probe.py --tracking-uri http://mlflow.mlops:80 "
                                              f"--model {model} --retry-delay-s 60", mem="1Gi"))
-    c.sh("kubectl -n mlops wait pod/chaos-register --for=jsonpath='{.status.phase}'=Succeeded --timeout=600s", check=False)
+    phase = wait_done(c, "mlops", "chaos-register", 600)
     out = c.sh("kubectl -n mlops logs chaos-register", check=False) or ""
     c.sh("kubectl -n mlops delete pod chaos-register --ignore-not-found")
     c.sh(f"kubectl delete -f {f} --ignore-not-found")
     lines = [line for line in out.splitlines() if line.startswith("{")]
     facts = json.loads(lines[-1]) if lines else {"first_try_failed_or_waited": False, "versions": 0,
                                                  "champion_is_new": False, "facts_complete": False}
-    return [], None, facts
+    # kept either way: on kind the probe died with no answer and its error was thrown away with the pod
+    return [], None, {**facts, "probe_phase": phase, "probe_log": out[-3000:]}
 
 
 RUNNERS = {"pod-kill": run_pod_kill, "network-delay": lambda c: run_simple(c, "network-delay"),

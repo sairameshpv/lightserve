@@ -262,3 +262,43 @@ def test_the_registration_image_can_be_given_instead_of_asking_airflow(capsys):
     lines = dry("mlflow-down", capsys, register_image="airflow-mlops:local")
     assert not any("airflow-scheduler-0" in line for line in lines)
     assert any("run chaos-register --image=airflow-mlops:local" in line for line in lines)
+
+
+class Scripted:
+    """A stand-in Cluster: answers each command from a list, records them, never sleeps."""
+    def __init__(self, answers):
+        import io
+        from infra.chaos.run_chaos import Opts
+        self.answers, self.cmds, self.opts, self.log = answers, [], Opts(out=None), io.StringIO()
+
+    def sh(self, cmd, check=True):
+        self.cmds.append(cmd)
+        for key, out in self.answers:
+            if key in cmd:
+                return out() if callable(out) else out
+        return ""
+
+    def note(self, text):
+        pass
+
+    def sleep(self, s):
+        pass
+
+
+def test_waiting_for_a_pod_stops_as_soon_as_it_fails():
+    """Kind: the probe pod failed after 18 s, but the runner waited 10 min for it to succeed."""
+    from infra.chaos.run_chaos import wait_done
+    phases = iter(["Pending", "Running", "Failed"])
+    c = Scripted([("jsonpath={.status.phase}", lambda: next(phases))])
+    assert wait_done(c, "mlops", "chaos-register", timeout_s=600) == "Failed"
+    assert sum("status.phase" in x for x in c.cmds) == 3
+
+
+def test_mlflow_down_keeps_the_probes_log_when_it_gives_no_answer(tmp_path):
+    from infra.chaos import run_chaos
+    log = "Traceback ...\nmlflow.exceptions.RestException: INVALID_PARAMETER_VALUE: Invalid model version source"
+    c = Scripted([("jsonpath={.status.phase}", "Failed"), ("logs chaos-register", log)])
+    c.opts.register_image = "airflow-mlops:local"
+    records, phases, facts = run_chaos.run_mlflow_down(c)
+    assert facts["versions"] == 0 and "INVALID_PARAMETER_VALUE" in facts["probe_log"]
+    assert facts["probe_phase"] == "Failed"

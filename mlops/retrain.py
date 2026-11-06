@@ -191,6 +191,7 @@ def champion_info(tracking_uri: str, model: str = "finance-qa") -> dict:
     from training.qlora_financial.registry import REPO
     mv = mlflow.MlflowClient(tracking_uri=tracking_uri).get_model_version_by_alias(model, "champion")
     data_dir = str(REPO / mv.tags["data_dir"])  # stored relative to the repo (absolute stays absolute)
-    return {"version": mv.version, "name": mv.tags["version_name"], "adapter": str(REPO / mv.source),
+    adapter = mv.tags.get("adapter_path", mv.source)  # versions before adapter_path: source was the folder
+    return {"version": mv.version, "name": mv.tags["version_name"], "adapter": str(REPO / adapter),
             "data_dir": data_dir, "samples": str(REPO / mv.tags["samples"]),
             "pool_data_dir": str(REPO / mv.tags["pool_data_dir"]) if "pool_data_dir" in mv.tags else data_dir}

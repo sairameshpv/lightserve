@@ -68,10 +68,15 @@ def register(version_name: str, adapter_dir, samples_path, data_dir, git_commit:
         if mv.tags.get("version_name") == version_name:
             raise ValueError(f"'{version_name}' is already {model} version {mv.version}")
     s, lin = scores(load_rows(samples_path)), lineage(adapter_dir, data_dir, git_commit)
-    facts = {"version_name": version_name, "samples": repo_path(samples_path), **lin,
+    facts = {"version_name": version_name, "samples": repo_path(samples_path), "adapter_path": repo_path(adapter_dir), **lin,
              **{f"acc.{k}": v for k, v in s.items() if k != "n"}, "n_scored": s["n"], **(tags or {})}
     if mlflow.get_experiment_by_name("finance-qa-registry") is None:
-        mlflow.create_experiment("finance-qa-registry", artifact_location=Path(artifact_root).resolve().as_uri())
+        if mlflow.get_tracking_uri().startswith(("http://", "https://")):
+            # a server (the cluster's) keeps artifacts on its own disk; a folder named here would be
+            # the client's, e.g. a short-lived Airflow pod's
+            mlflow.create_experiment("finance-qa-registry")
+        else:
+            mlflow.create_experiment("finance-qa-registry", artifact_location=Path(artifact_root).resolve().as_uri())
     mlflow.set_experiment("finance-qa-registry")
     with mlflow.start_run(run_name=f"register-{version_name}") as run:
         mlflow.log_metrics({k: v for k, v in facts.items() if k.startswith("acc.")})
@@ -79,13 +84,16 @@ def register(version_name: str, adapter_dir, samples_path, data_dir, git_commit:
         train = Path(data_dir) / "train.jsonl"  # the dataset field holds 36 chars, so the hash is cut to 32
         mlflow.log_input(MetaDataset(resolve_dataset_source(str(train.resolve())), name=train.name,
                                      digest=lin["data.train.sha256"][:32]), context="training")
+        # The adapter goes with the run and the version points there: an MLflow server refuses a
+        # plain folder as a version's source (8j kind rehearsal). The folder stays in adapter_path.
+        mlflow.log_artifacts(str(adapter_dir), artifact_path="adapter")
     client = mlflow.MlflowClient()
     try:
         client.create_registered_model(model)
     except MlflowException as e:
         if e.error_code != "RESOURCE_ALREADY_EXISTS":
             raise
-    mv = client.create_model_version(model, source=repo_path(adapter_dir), run_id=run.info.run_id,
+    mv = client.create_model_version(model, source=f"{run.info.artifact_uri}/adapter", run_id=run.info.run_id,
                                      tags={k: str(v) for k, v in facts.items()})
     if champion:
         client.set_registered_model_alias(model, "champion", mv.version)

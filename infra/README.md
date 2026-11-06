@@ -193,11 +193,22 @@ window reliably, so the test, not experiment 6, is the proof.
 | 3 Flood | **FAIL, untrustworthy on the Mac** | run 1 (300 users): 303 in flight, batch at 256, p50 1.5 s, all ok, but the flood ran ~10 s into recovery (fixed: stopped at fault end). Run 2, same settings: 55 in flight, p50 17 s, 6 refused. The bottleneck moved outside lightserve: kind, monitoring and 300 load threads share the Mac's Docker machine |
 | 4 Noisy neighbour | **PASS**, weak baseline | p99 1.53 -> 3.52 -> 1.03 s; but its normal phase was already slow (0.72 s in an earlier run): it ran right after the flood |
 | 5 Drain | **FAIL: a real finding, open** | caught every time (firing after 40-55 s); human step logged; Ready again in seconds; **but requests hung 90 s**: 1, then 4, then 4 |
-| 6 MLflow down | **not rehearsed yet** | needs a second kind batch (MLflow + the Airflow image) |
+| 6 MLflow down | **PASS** (2nd try) | 1st try: **every registration failed, fault or not** (below). After the fix: the first try waited 127.5 s (MLflow's client sat out the 90 s outage), then exactly one version, champion, all facts. The pipeline's own retry wasn't needed, so the "cut off before the label" case rests on its test |
 
 **Bugs the rehearsal found in the runner, all fixed with a test first:** the noisy-neighbour file
 lacked the labels the runner selects by (crash); results printed only at the end (a crash hid
-them); the flood and the neighbour's burn weren't stopped at the end of their phase.
+them); the flood and the neighbour's burn weren't stopped at the end of their phase; a pod that
+failed was waited on as if it might still succeed (10 min), and its log was thrown away with it.
+
+**A real bug experiment 6 found, not about chaos:** registering a model against an MLflow
+**server** (the cluster's) always failed: "INVALID_PARAMETER_VALUE: Invalid model version source",
+because the registry gave a plain folder as the version's source, which only a local database file
+accepts. Every test used a local database file; the cluster's smoke test registered differently. So
+the cluster's own pipeline could never have registered a model. Fixed: the adapter is uploaded with
+the registration run, the version points at the upload, the folder stays a fact (`adapter_path`,
+read by the pipeline; old versions fall back to `source`), and against a server MLflow keeps the
+files on its own disk, not the client pod's `/tmp`. A test now starts a real MLflow server and
+registers against it (it failed with the same error before the fix).
 
 **Rule changed after seeing results (flagged):** the flood's first "caught" rule was "the waiting
 queue > 0". On kind the real queue lasted ~50 ms (a slot frees every 20 ms), and Prometheus reads
@@ -225,8 +236,9 @@ experiments run back to back with no settle time, so one can slow the next one's
 apply ~13 min -> smoke test ~5 -> `run_chaos.py drain` first (the open finding), then
 `pod-kill network-delay queue-flood mlflow-down noisy-neighbour --out runs/chaos/cluster2` ~20 ->
 destroy ~14 = ~53 min. Hard stop at start + 55 min: if behind at minute 38, skip the rest and
-destroy. On the GPU use `--ready-limit-s 300`. Before it: experiment 6 rehearsed on kind, the two
-gaps above fixed, and `finish_champion` pushed (experiment 6 ships its own copy; the cluster's own pipeline reads its code from GitHub).
+destroy. On the GPU use `--ready-limit-s 300`. Before it: the two
+gaps above fixed, and `finish_champion` + the registry fix pushed (experiment 6 ships its own copy; the
+cluster's own pipeline reads its code from GitHub). On kind experiment 6 needs `--register-image airflow-mlops:local`.
 
 | # | Result on the GPU cluster |
 |---|---|
