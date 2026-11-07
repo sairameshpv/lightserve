@@ -859,6 +859,53 @@ is written down and the session stops, rather than improvising:
 live-vs-saved difference. VM-1b: the pipeline reaches the gate on real GPU work with a real
 verdict, every box's state recorded, the node back as found, the real registry unchanged.
 
+### Results (2026-11-07: VM-1a 20:47-21:05, ~18 min; VM-1b 21:13-21:42, ~29 min; node stopped)
+
+**In one line:** the whole pipeline ran for real on the GPU, and the gate **rejected** the 100-step
+candidate (slightly worse than v3), so v3 stayed in service: the loop, and its safety check, work.
+
+**VM-1a, every check passed:**
+- `vllm-server` serves Meta-Llama-3-8B-Instruct on vLLM 0.26.0 at its default length (8,192).
+- The pipeline's environment installs on the node's Python 3.12 (the pins were tested on 3.11);
+  `airflow db migrate` ran; the DAG imports with all 11 boxes.
+- vLLM with the v3 adapter up in 125-300 s; **loading and unloading an adapter while it runs works
+  on the GPU** (the swap's runtime calls, first time).
+- **Live vs saved answers:** one canary round gave **0.68 live vs 0.66 saved** on the same 50
+  questions (one question apart): the 10-point rollback margin can stay.
+- **`--init-adapter` works on the GPU** (first time): training loss 0.25 at the start (a fresh adapter
+  starts near 0.6), 7.5 s a step, plus 3.4 min at the end scoring the 475 validation examples.
+- A script gap fixed then: Docker Compose asks for Grafana's password even when Grafana isn't
+  started (a throwaway one now).
+
+**VM-1b, the real run, box by box:**
+
+| box | result |
+|---|---|
+| drift sensor | **fired**: document length, table rows and digit share drifted (3 of 4) |
+| build data | 1,600 rows: 800 like the traffic, 800 replayed |
+| fine-tune | 1st try **failed** after 37 s (below); the pipeline's own retry **succeeded**: 17.5 min for 100 steps, the validation check and vLLM's restart |
+| load candidate | into the running vLLM |
+| score | 300 questions in **33 s** |
+| gate | **REJECT**: candidate **80.3%** (241/300) vs v3 **82.0%** (246); right only for the candidate 8, only for v3 13 (p = 0.38); FinQA -5.5 and ConvFinQA -3.1 points, over the 2-point limit |
+| reject | candidate unloaded; v3 stays the current model |
+| deploy, watch, register, rollback | skipped, as designed after a rejection (proven by the Mac's whole-loop test) |
+
+- **The canary during the pause:** rounds answered nothing while vLLM was stopped for the
+  fine-tune (counted as "no answer", not as a wrong score, as designed).
+- **A real bug the run found:** the registry stored v3's adapter as an **absolute Mac path**
+  (`/Users/...`), a limitation noted when the paths were made relative (MLflow can't edit a version's
+  source), and v3 predates `adapter_path`. On the node that path doesn't exist, so the first
+  fine-tune try failed. Fixed in the session's registry copy during the run (the retry then
+  worked), and afterwards **in the real registry, with your OK:** v3 now has
+  `adapter_path = training/qlora_financial/outputs/v3/adapter` (relative, so it works on any machine
+  with a checkout; backup `outputs/mlflow.db.before_adapter_path`). v2 has the same absolute source
+  but isn't the champion; left as is.
+- **The real registry was not written by the run:** its checksum before and after the sessions
+  matched (the `adapter_path` fact was added afterwards, on purpose).
+- **Disk:** node 0 is 99% full (~2.4 GB free). Deleting the old NVIDIA PyTorch image freed nothing:
+  its layers are shared with the OpenRLHF image.
+- Raw results on the Mac in `runs/vm1b/` (untracked, like the rest of `runs/`).
+
 ## What's next
 
 - **Throughput**: *done for 1 GPU*. Batching + length grouping, bf16 base and
