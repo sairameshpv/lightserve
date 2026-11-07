@@ -227,6 +227,26 @@ def test_watch_waits_inside_the_window():
     assert verdict([(60, 0.80)], now=120)[0] == "wait"
 
 
+def test_watch_without_an_expected_accuracy_cant_pass():
+    """The DAG passed `expected or 0.0`: with no expected-accuracy series, 0.0 made every round
+    "fine" and the watch passed on no evidence (final review). Now: wait, then roll back."""
+    rounds = [(200, 0.10), (400, 0.12), (590, 0.11)]        # terrible rounds
+    common = dict(started=0.0, switched_at=0.0, window=600, stale_after=300)
+    assert watch_verdict(rounds, expected=None, now=500, **common)[0] == "wait"
+    v, why = watch_verdict(rounds, expected=None, now=600, **common)
+    assert v == "rollback" and "expected accuracy" in why
+
+
+def test_watch_window_counts_from_the_canary_switch_not_the_task_start():
+    """Final review: the canary switches at the start of its NEXT round (up to --every 300 s after
+    the deploy). Counting the 10 min from the task start left only 1 round for a late switch:
+    "rollback: only 1 complete round" for a good model."""
+    late = dict(switched_at=290.0)
+    assert verdict([(530, 0.80)], now=620, **late)[0] == "wait"                        # 330 s after the switch
+    assert verdict([(530, 0.80), (830, 0.82)], now=900, **late) == ("pass", "2 rounds, none low twice in a row")
+    assert verdict([(530, 0.80)], now=900, **late)[0] == "rollback"                   # window over, 1 round
+
+
 @pytest.fixture
 def prometheus():
     """A fake Prometheus query API: prometheus.series = {query: [(labels, value as text)]}."""

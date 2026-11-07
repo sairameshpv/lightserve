@@ -19,7 +19,9 @@ Settings (environment variables, read when a task runs):
                         register_champion / rollback
   MLOPS_ARTIFACT_ROOT   where the registry keeps its files (default training/qlora_financial/outputs/mlruns)
   MLOPS_N_LIKE          training rows like the traffic (+ as many replayed; default 800)
-  MLOPS_SENSOR_TIMEOUT  seconds the sensor waits for drift before giving up quietly (default 3600)
+  MLOPS_SENSOR_TIMEOUT  seconds the sensor waits for drift before giving up quietly (default 3600; unlike
+                        the others it is read when the DAG file is parsed: the sensor's decorator needs it.
+                        Its check interval is fixed at 300 s)
   MLOPS_DRY_RUN=1       no GPU: finetune writes a stand-in adapter, score copies MLOPS_DRY_ANSWERS
                         (the vLLM calls still happen: on the Mac, against a fake vLLM)
   MLOPS_FINETUNE_CMD    the real fine-tune, with {data} {init} {out} filled in
@@ -214,7 +216,7 @@ def drift_retrain():
         while True:
             r = canary_reading(setting("MLOPS_PROMETHEUS_URL", "http://localhost:9090"), name)
             rounds = add_round(rounds, r)
-            verdict, why = watch_verdict(rounds, r["expected"] or 0.0, started, r["switched_at"], time.time(),
+            verdict, why = watch_verdict(rounds, r["expected"], started, r["switched_at"], time.time(),
                                          window, float(setting("MLOPS_WATCH_STALE", "900")))
             print(f"watch: {verdict} ({why}); last reading {r}")
             if verdict != "wait":

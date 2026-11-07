@@ -141,15 +141,24 @@ def watch_verdict(rounds: list, expected: float, started: float, switched_at, no
     started asking it (None = not yet). The alert's rules: roll back on 2 rounds in a row more
     than `margin` below normal, or no complete round for `stale_after` s; pass when the window is
     over with at least `min_rounds` rounds. Too few rounds = roll back (not enough evidence)."""
+    if expected is None:  # no "normal" to compare with: the rounds can't count as evidence either way
+        begin = started if switched_at is None else max(started, switched_at)
+        if now - begin >= window:
+            return "rollback", "no expected accuracy from the canary: the rounds can't be judged"
+        return "wait", "no expected accuracy yet"
     low = [round(expected - acc, 9) > margin for _, acc in rounds]  # rounded: 0.80 - 0.70 isn't 0.1 in floats
     for i in range(1, len(rounds)):
         if low[i - 1] and low[i]:
             return "rollback", (f"2 rounds in a row more than {margin * 100:g} points below normal "
                                 f"({rounds[i - 1][1]:.2f}, {rounds[i][1]:.2f} vs {expected:.2f})")
-    since = rounds[-1][0] if rounds else (started if switched_at is None else max(started, switched_at))
+    # The window counts from when the canary switched to the new model (it switches at the start of
+    # its next round, up to --every s after the deploy), not from the task start: counting from the
+    # start left a late switch only 1 round, and a good model rolled back (final review).
+    begin = started if switched_at is None else max(started, switched_at)
+    since = rounds[-1][0] if rounds else begin
     if now - since > stale_after:
         return "rollback", f"no complete round for {now - since:.0f} s (limit {stale_after:g})"
-    if now - started >= window:
+    if now - begin >= window:
         if len(rounds) < min_rounds:
             return "rollback", f"only {len(rounds)} complete round(s) in the watch (needs {min_rounds})"
         return "pass", f"{len(rounds)} rounds, none low twice in a row"
