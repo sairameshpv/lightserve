@@ -20,6 +20,16 @@ def pick(questions: list, n: int = 50, seed: int = 0) -> list:
     return random.Random(seed).sample(questions, n)
 
 
+GATE_N = 300  # the retraining pipeline's scored sample (mlops.retrain.score's default n)
+
+
+def canary_questions(questions: list, n: int = 50, seed: int = 0) -> list:
+    """The canary's n: the FIRST n of the pipeline's scored sample (pick(questions, 300)), so a newly
+    deployed model always has saved answers for them. Two separate draws agreed only by luck of
+    Python's sampling (final review). Fewer questions than the sample: drawn from all of them."""
+    return pick(questions, min(GATE_N, len(questions)), seed)[:n]
+
+
 def grade(questions: list, answers: list) -> float:
     """Share answered right, as the registry scores: the calculator redoes the written steps,
     then the fair checker compares the final number with the gold answer."""
@@ -121,7 +131,7 @@ def main():
     if args.expected_from is None:
         from training.qlora_financial.promote import champion_samples
         args.expected_from = champion_samples(args.tracking_uri)
-    questions = pick(load_questions(args.data_dir))
+    questions = canary_questions(load_questions(args.data_dir))
     expected = expected_accuracy(load_rows(args.expected_from), questions)
     registry = CollectorRegistry()
     metrics = make_metrics(registry, expected)

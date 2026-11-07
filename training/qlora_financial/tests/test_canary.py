@@ -9,12 +9,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from prometheus_client import CollectorRegistry
 
-from training.qlora_financial.canary import (expected_accuracy, follow, grade, make_metrics, pick, record, run_once,
-                                            set_model)
+from training.qlora_financial.canary import (canary_questions, expected_accuracy, follow, grade, make_metrics, pick,
+                                            record, run_once, set_model)
 
 
 def questions(n):
     return [{"id": i, "messages": [{}, {"content": f"q{i}"}], "gold": f"Answer: {i}"} for i in range(n)]
+
+
+def test_canary_questions_are_the_first_50_of_the_gates_300_by_construction():
+    """The canary grades a new model against ITS saved answers, which the gate scored on pick(qs, 300).
+    Two separate draws (pick 50, pick 300) agree only by luck of Python's sampling (final review):
+    with 600 questions they don't, and the canary would ask questions with no saved answer."""
+    qs = questions(600)
+    gate = [q["id"] for q in pick(qs, n=300)]
+    assert [q["id"] for q in canary_questions(qs)] == gate[:50]
+    assert not {q["id"] for q in pick(qs, n=50)} <= set(gate)     # the old way: not all inside
+    assert len(canary_questions(questions(120))) == 50             # fewer than 300: still 50, from all of them
 
 
 def test_pick_is_the_same_50_every_time():
