@@ -707,8 +707,10 @@ drift_sensor -> build_data -> finetune -> load_candidate -> score -> gate -> dep
    publishes which model it asks and since when, `canary_model_info`). Same
    rule as the alert: **2 rounds in a row more than 10 points below** the
    model's own normal, or no complete round for 15 min → roll back. Watch time
-   over (10 min) with at least 2 rounds → pass; fewer → roll back (not enough
-   evidence).
+   over (10 min, **counted from the canary's switch**, not the deploy: the canary
+   switches at the start of its next round) with at least 2 rounds → pass; fewer →
+   roll back (not enough evidence). No expected accuracy from the canary → wait,
+   then roll back (the rounds can't be judged). Both fixed after the final review.
 9. **Register or roll back.** Pass → `register_champion`: registered with the
    champion alias, then the old adapter is unloaded. Fail → `rollback`:
    pointer back to the model before, the candidate unloaded, registered with
