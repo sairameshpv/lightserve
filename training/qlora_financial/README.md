@@ -810,6 +810,55 @@ fired 5 min later, with the email in MailHog. The fake lightserve at 13.4 tokens
 gave $0.021 per 1,000 tokens (= 1000 / (13.4 x 3600)). Grafana 12.1 loaded the
 dashboard (checked in a throwaway Grafana).
 
+## The loop on the real GPU (step 9, sessions VM-1a + VM-1b)
+
+**What it's for:** everything above was checked on the Mac with a fake vLLM and a stand-in
+fine-tune. Step 9 runs the pipeline once for real on node 0: drifted questions -> the drift box
+fires -> a real fine-tune from v3 -> the candidate loaded into the running vLLM -> scored on 300
+questions -> the gate. **Whatever the gate decides is the result**: a 100-step fine-tune will most
+likely tie v3 and be rejected, which is a valid ending (the swap, watch and rollback boxes then stay
+proven by the Mac's whole-loop test).
+
+**How it's set up:**
+- **Everything on node 0, under the repo copy `~/ls_vm2`, at the same paths** for every part:
+  vLLM's container mounts the repo copy at its own path, so it can load each new adapter from where
+  the pipeline writes it.
+- **A throwaway copy of the registry** (`~/s9/mlflow.db`): the real `outputs/mlflow.db` is never
+  written (checked by its checksum before and after).
+- **The v3 files aren't in git** (`data/` and `outputs/` are ignored), so the data (101 MB), the
+  adapter (97 MB) and its saved answers (2 MB) are copied to the same relative paths in the repo copy.
+- **One GPU, two big jobs:** vLLM (the 8B model, ~16 GB plus working memory) and the QLoRA
+  fine-tune (peak ~33 GB) don't fit on the L40S (46 GB) at once. So the fine-tune box is a wrapper
+  (`finetune.sh`): stop vLLM, train from v3, copy the adapter to the pipeline's folder, restart vLLM
+  with v3. **Serving pauses for ~15 min**: the canary's rounds in that time count as "no answer" (not
+  as a wrong score), and its stale alert may fire. That's honest for a one-GPU box.
+- **Checked on the Mac first:** the traffic window (`make_traffic.py --kind source --mix 1.0 --n
+  500`) trips the drift alarm (document length, table rows, digit share drifted); the registry copy's
+  champion is v3 with its adapter, data, answers and pool all found.
+
+**Session VM-1a (~30 min, hard stop start + 40): every piece once, cheaply.** Each check that fails
+is written down and the session stops, rather than improvising:
+1. `df` first (the disk was 97% full); read `vllm-server`'s settings (model, length), then stop it.
+2. The pipeline's Python environment (`mlops/requirements.txt`; the node has Python 3.12, the pins
+   were tested on 3.11), `airflow db migrate`, the DAG imports cleanly.
+3. Copy the v3 files and the session folder. vLLM with the v3 adapter: one question to `v3`, then
+   load the same adapter under a test name and unload it (the swap's runtime calls, first time on GPU).
+4. Prometheus + Alertmanager + MailHog, then one 50-question canary round against v3:
+   `canary_accuracy` in Prometheus, and **how often the live greedy answer differs from the saved
+   one** (it may move the 10-point rollback margin).
+5. A **5-step** fine-tune from v3 through the wrapper: `--init-adapter` on the GPU (first time), the
+   adapter lands in the pipeline's folder, seconds per step (do 100 fit?), vLLM comes back with v3.
+6. Stop everything, restart `vllm-server`, stop the node.
+
+**Session VM-1b (< 1 h, hard stop start + 55): the real run.** vLLM, Prometheus and the canary up
+(rounds every 2 min); the pipeline once with the real settings (real fine-tune, 300 questions,
+10-min watch, the registry copy); every box's end state and the gate's numbers saved; restart
+`vllm-server`, copy the results, stop the node.
+
+**Done when:** VM-1a: every check passes (or has a written reason), with the 5-step timing and the
+live-vs-saved difference. VM-1b: the pipeline reaches the gate on real GPU work with a real
+verdict, every box's state recorded, the node back as found, the real registry unchanged.
+
 ## What's next
 
 - **Throughput**: *done for 1 GPU*. Batching + length grouping, bf16 base and
