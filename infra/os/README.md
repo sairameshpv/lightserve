@@ -162,7 +162,8 @@ not hidden.
 ## Session VM-2 retry results (2026-11-07, 02:27-03:07 UTC, ~40 min, node stopped)
 
 **In one line:** a CPU-burning neighbour made lightserve's slowest requests ~17% slower; pinning
-lightserve to its own cores with the neighbour kept off them won back about two thirds of that.
+lightserve to its own cores with the neighbour kept off them won back about two thirds of that
+(with a caveat: the isolated neighbour was also smaller, below).
 
 **Before measuring (the go/no-go checks):**
 - **The kernel fix holds on the real L40S:** all 55 kernel tests pass in the image, including both
@@ -197,7 +198,11 @@ reading) quiet 5.50 s, noisy 6.42/6.43 s, isolated-noisy 5.84 s: **~6% above qui
 two thirds of the damage taken back.
 
 **Caveats, not hidden:**
-- **~200 requests per round** (177-206), under the runbook's 1,000: each round's p99 is set by its
+- **A/B 2 changed two things at once:** `noisy` burns 22 cores (all but housekeeping), `isolated-noisy`
+  only the 18 "rest" cores (`isolate.py`), so the neighbour was ~18% smaller on the isolated side.
+  "Two thirds won back" is pinning *and* a smaller neighbour together ("carve-out isolation"); A/B 3
+  was dropped, so the two can't be separated. Next time: burn the same 18 cores in both states.
+- **~200 requests per round** (169-209), under the runbook's 1,000: each round's p99 is set by its
   ~2 slowest requests. The verdicts still agree with the steadier time/token and tokens/s measures.
 - **A/B 3 (quiet vs isolated-quiet) dropped for time**, so "does pinning help or hurt with no
   neighbour" (the Mac hinted ~7% slower) is still open. Lost to: 3.5 min (a zsh mistake: `$SSH`
@@ -340,8 +345,8 @@ each round, the GPU log shows what the GPU did under load, and the machine was p
 | A/B | Verdict on the deciding measure | Change (95% range) | Prediction right? | Wins? |
 |---|---|---|---|---|
 | GPU clock locked at max | time/token p50: **not sure** | +0.7% (-2.6 .. +4.1) | **no** (predicted steadier and slightly faster) | no |
-| Memory: huge pages "always" (no swap, so huge pages alone) | latency p99: **not sure** | +2.7% (-5.0 .. +10.4) | yes (no difference) | no |
-| Network backlog 16384 | latency p99: **not sure** | +1.2% (-5.9 .. +8.3) | yes (no difference) | no |
+| Memory: huge pages "always" (no swap, so huge pages alone) | latency p99: **not sure** | +2.7% (-5.0 .. +10.4) | consistent (no difference seen; only effects over ~10% ruled out) | no |
+| Network backlog 16384 | latency p99: **not sure** | +1.2% (-5.9 .. +8.3) | consistent (no difference seen; only effects over ~8% ruled out) | no |
 
 6 rounds each (ABBAAB, 30 s warm-up + 60 s), ~205 requests a round, 0 failures. Every other measure
 was "not sure" too.

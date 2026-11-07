@@ -26,7 +26,7 @@ infra/
 | platform | `monitoring/alerts.yml` + `slo.yml` as Prometheus rules, both dashboards, MailHog, MLflow's disk |
 | tempo, loki, alloy | traces (lightserve sends OTLP) and logs (Alloy ships every pod's log) |
 | mlflow | the registry, its database and artifacts on a disk in the cluster (no managed Postgres or bucket) |
-| airflow | the retraining DAG, straight from GitHub (gitSync), in dry-run (the real fine-tune stays on the VM) |
+| airflow | the retraining DAG, straight from GitHub (gitSync): **parsed, and its whole-loop test run in the Airflow image; not runnable as deployed** (the cluster's MLflow has no champion, no traffic window or vLLM address reaches the pod, and `MLOPS_RUNS` is a pod's `/tmp`). The real run was step 9, on the VM |
 | chaos-mesh | the failure experiments (Phase 4) |
 | lightserve | the server on the L40S: Llama-3-8B's shape with random weights |
 
@@ -188,8 +188,8 @@ window reliably, so the test, not experiment 6, is the proof.
 
 | # | Result | What it showed |
 |---|---|---|
-| 1 Pod kill | **PASS** | 176/176 ok before; 7 refused while the new pod came up; recovery 281/281 ok. The down alert never went pending: the pod was back before the 30 s wait, as predicted possible |
-| 2 Network | **PASS**, prediction wrong | first token 39 -> 242 ms (+203, predicted ~+100), back to 39. Probably each request opens a new connection, paying the delay on the handshake too |
+| 1 Pod kill | **PASS** | 176/176 ok before; 7 refused while the new pod came up; recovery 281/281 ok. The down alert never went pending: the pod was back before the 30 s wait, as predicted possible. "Caught" here = the load saw failures, i.e. the break itself, **not monitoring** (see Cluster-2) |
+| 2 Network | **PASS**, prediction wrong | first token 39 -> 242 ms (+203, predicted ~+100), back to 39. Probably each request opens a new connection, paying the delay on the handshake too (not checked). The plan's "+~100 ms, not more" ceiling isn't in the written rule, which has no upper bound |
 | 3 Flood | **FAIL, untrustworthy on the Mac** | run 1 (300 users): 303 in flight, batch at 256, p50 1.5 s, all ok, but the flood ran ~10 s into recovery (fixed: stopped at fault end). Run 2, same settings: 55 in flight, p50 17 s, 6 refused. The bottleneck moved outside lightserve: kind, monitoring and 300 load threads share the Mac's Docker machine |
 | 4 Noisy neighbour | **FAIL (not caught), as predicted for kind** | first run "PASS" (p99 1.53 -> 3.52 s) was a **false positive**: its normal phase was still slow from the flood just before. Rerun with a settle and the baseline check: 795 -> 708 ms, no effect, although the burn was real (the kind machine's CPU 30% -> 829%, all 8 cores). The fake engine mostly sleeps, so a busy CPU barely touches it: only the GPU cluster can answer this one |
 | 5 Drain | **FAIL: a real finding, open** | caught every time (firing after 40-55 s); human step logged; Ready again in seconds; **but requests hung 90 s**: 1, then 4, then 4 |
@@ -255,8 +255,8 @@ slow Airflow whole-loop check skipped, nothing here needs it), experiments 17:43
 
 | # | Result on the GPU cluster | What it showed |
 |---|---|---|
-| 1 Pod kill | **PASS** | 30,106 fast refusals while the new pod started; recovery all ok, none hung. LightserveDown never went pending: back before its 30 s wait |
-| 2 Network | **PASS** | first token 24 -> 223 ms (+199) -> 24 ms. Same as kind (+203, +205): the "+100 ms" prediction was wrong everywhere (each request opens a new connection and pays the delay on the handshake too) |
+| 1 Pod kill | **PASS** by the written rule, but **monitoring didn't notice**: 30,106 fast refusals while the new pod started, recovery all ok, none hung, and **no alert at all** (LightserveDown never went pending: back before its 30 s wait). The rule counts the load's own failures as "caught", which is the break itself. There is no error-rate alert: a crash loop that recovers fast would page nobody (open item) |
+| 2 Network | **PASS** | first token 24 -> 223 ms (+199) -> 24 ms. Same as kind (+203, +205): the "+100 ms" prediction was wrong everywhere (probably: each request opens a new connection and pays the delay on the handshake too; not checked) |
 | 3 Flood | **PASS** | running reached the 256 limit; no restart or out-of-memory kill; every request ended cleanly; queue back to 0. The first trustworthy flood result (the Mac's wasn't) |
 | 4 Noisy neighbour | **not run** | cut at the minute-38 rule; still only kind's "no effect on the fake engine" |
 | 5 Drain | **FAIL: can't judge** | the load pod recorded **no request at all before +137 s**, the moment lightserve came back (10 s after the uncordon), so no normal phase and no traffic during the drain. What could be seen passed: LightserveDown firing after 55 s, human step logged, Ready 10 s after the uncordon, alert cleared, 0 hung. Cause of the gap unknown (the pod went with the cluster). **The kind hang is neither reproduced nor ruled out** |

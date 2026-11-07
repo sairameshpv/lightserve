@@ -642,8 +642,10 @@ answers, and the local monitoring stack (`--every 60`):
 | Switched to wrong answers | 0.00 from the next round | pending after 24 s, firing 7 min later; email in MailHog |
 | Switched back | 0.66 | `[RESOLVED]` email within 30 s |
 
-Not yet measured: how much a live model's greedy answers differ from its
-saved ones (GPU, the end-to-end run). That may move the 10-point margin.
+Measured in step 9 (VM-1a), as a **net** number only: one live round scored 0.68 vs 0.66 for the
+saved answers on the same 50 questions, so the 10-point margin stays. Per-answer agreement (how
+many answers changed, in both directions) wasn't recorded: a net number can hide changes that
+cancel out.
 
 ```
 mlops/.venv/bin/python -m training.qlora_financial.canary --url http://localhost:8000 --model v3 --every 300 --port 9101
@@ -681,7 +683,7 @@ drift_sensor -> build_data -> finetune -> load_candidate -> score -> gate -> dep
 3. **Fine-tune from the champion** (`finetune`): `train.py --init-adapter
    <champion's adapter> --max-steps N` copies the champion's adapter weights
    into the fresh one TRL builds, so the QLoRA set-up is exactly that of a
-   normal run. Not yet run on the GPU.
+   normal run. Run on the GPU in step 9 (5 and 100 steps).
 4. **Load into vLLM** (`load_candidate`): the new adapter joins the running
    vLLM next to the current model, under the run's name (vLLM's runtime
    LoRA loading). Already loaded = nothing to do, so a retry doesn't fail.
@@ -768,7 +770,7 @@ airflow standalone   # the web page on http://localhost:8080 (needs the venv on 
 ```
 All settings (`MLOPS_*`) are listed at the top of the DAG file. A dry run
 still talks to vLLM (`MLOPS_VLLM_URL`; on the Mac, a fake one: the checks
-above used a scratch fake; the whole-loop test will bring one into the repo). A real run sets
+above used a scratch fake; the whole-loop test has its own in `mlops/tests/test_drift_loop.py`). A real run sets
 `MLOPS_FINETUNE_CMD` (`{data}`, `{init}`, `{out}` filled in), and vLLM must
 be started with `VLLM_ALLOW_RUNTIME_LORA_UPDATING=True`, `--max-loras 2`
 (old + new in one batch), `--max-lora-rank 16`, and the run folders mounted
@@ -793,8 +795,10 @@ GPU-hour> --budget <$ a month>` serves the totals to Prometheus (job `cost`, por
   top (that would count the same hours twice). A job counts in the calendar month
   (UTC) it ended; a session still running counts up to now, so the cost is visible
   live during a session.
-- **The rate is a setting, not guessed:** step 9 compares a session's GPU-hours with
-  the Nebius bill and sets it.
+- **The rate is a setting, not guessed:** comparing a session's GPU-hours with the Nebius
+  bill, to set it, is **still open** (it needs the billing console; step 9's plan moved it out).
+  Step 9's sessions weren't written to the ledger as sessions either (only its fine-tune and
+  scoring jobs were), so they count as $0 in the month's total.
 - **GpuBudgetExceeded** (5 min over the budget; runbook
   `monitoring/runbooks/gpu-budget.md`), tested with promtool.
 - **Cost dashboard** (Grafana): this month vs budget, GPU-hours by kind, cost per
@@ -862,7 +866,9 @@ verdict, every box's state recorded, the node back as found, the real registry u
 ### Results (2026-11-07: VM-1a 20:47-21:05, ~18 min; VM-1b 21:13-21:42, ~29 min; node stopped)
 
 **In one line:** the whole pipeline ran for real on the GPU, and the gate **rejected** the 100-step
-candidate (slightly worse than v3), so v3 stayed in service: the loop, and its safety check, work.
+candidate, so v3 stayed in service: the loop, and its safety check, work. The candidate wasn't
+measurably worse (8 vs 13, p = 0.38); it was rejected by the rules: not more right answers, and two
+sources down more than 2 points.
 
 **VM-1a, every check passed:**
 - `vllm-server` serves Meta-Llama-3-8B-Instruct on vLLM 0.26.0 at its default length (8,192).
@@ -891,7 +897,19 @@ candidate (slightly worse than v3), so v3 stayed in service: the loop, and its s
 | deploy, watch, register, rollback | skipped, as designed after a rejection (proven by the Mac's whole-loop test) |
 
 - **The canary during the pause:** rounds answered nothing while vLLM was stopped for the
-  fine-tune (counted as "no answer", not as a wrong score, as designed).
+  fine-tune (counted as "no answer", not as a wrong score, as designed). The last complete round
+  was at 21:19:46 and none followed until vLLM was back (~21:39), over CanaryStale's 15 min +
+  2 min, so **that alert should have fired; it wasn't checked** (neither Alertmanager nor MailHog
+  was looked at during the run).
+- **Two known limits of the gate, documented, not changed** (your call): (1) it compares the
+  candidate's *live* answers with the champion's *saved* ones, so "the model changed" and "live
+  serving differs from saved" are mixed in its 8-vs-13 count (scoring the champion live too would
+  take ~33 s more); (2) its "no source drops more than 2 points" rule was sized for all 1,404
+  questions, and on the 300-question sample it is close to a random veto: 10-K has only 9 questions
+  there (one lost = -11 points), FinQA 73 (two lost = -2.7). Step 9's verdict stands either way:
+  the first rule alone rejects it.
+- **Accuracy numbers in the registry aren't all on the same questions:** a champion registered by
+  the pipeline gets its `acc.*` on the 300-question sample; v3's are on all 1,404.
 - **A real bug the run found:** the registry stored v3's adapter as an **absolute Mac path**
   (`/Users/...`), a limitation noted when the paths were made relative (MLflow can't edit a version's
   source), and v3 predates `adapter_path`. On the node that path doesn't exist, so the first

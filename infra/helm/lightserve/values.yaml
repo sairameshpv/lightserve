@@ -1,5 +1,5 @@
 image:
-  repository: lightserve        # CI pushes <registry_url>/lightserve:<git sha> (target gpu)
+  repository: lightserve        # CI pushes ghcr.io/sairameshpv/lightserve:<target>-<git sha> / -latest; Terraform sets it
   tag: fake
   pullPolicy: IfNotPresent
 
