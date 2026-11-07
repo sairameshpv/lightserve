@@ -1,86 +1,89 @@
 # lightserve
 
-**lightserve** is an LLM inference server built from scratch to learn how serving works and what
-makes it fast: GPU kernels, a scheduler with a paged KV cache, an OpenAI-style HTTP server, and a
-long list of performance experiments. Around it sits a **finance question-answering model**
-(Llama-3-8B fine-tuned with QLoRA) and, most recently, the **MLOps work** that watches, retrains
-and deploys that model safely, summarised below.
+**lightserve** is a project for learning how large-language-model serving works and what makes it
+fast. It has four parts, each with its own README:
+1. **The server:** an inference server built from scratch.
+2. **Performance experiments:** run on it and on vLLM.
+3. **A finance model:** a question-answering model trained and evaluated end to end.
+4. **The MLOps work:** watches, retrains and safely deploys that model.
 
-Where things are (each folder's README goes into detail):
+Every result below was measured on real GPUs (Nebius L40S) against a prediction written before
+the run, and failures are reported as failures.
 
-| Folder | What's in it |
+## 1. The server
+
+An LLM inference server written from the ground up, so every layer can be read, measured and
+changed:
+
+- **GPU kernels** ([`kernels/`](kernels/README.md)): Triton kernels for matrix multiply, fused
+  bias + activation, and FlashAttention (forward and backward), each tested against PyTorch. The
+  matrix-multiply and attention kernels tune themselves once per size group.
+- **The model** ([`model/`](model/README.md)): a Llama-3-8B-shaped transformer that runs on those
+  kernels.
+- **The engine** ([`engine/`](engine/README.md)): a scheduler with a paged KV cache (memory handed
+  out in blocks, like vLLM's). It also handles chunked prefill (long prompts split so they don't
+  stall everyone else), prefix caching (shared prompt beginnings computed once) and preemption.
+- **The HTTP front end** ([`server/`](server/README.md)): an OpenAI-style `/v1/completions` API
+  with streaming, a request queue, timeouts and Prometheus metrics. It also reports a crashed
+  engine as unhealthy instead of hanging.
+
+## 2. Performance experiments
+
+Questions about speed, each answered with a benchmark ([`benchmarks/`](benchmarks/README.md)):
+
+| Experiment | Finding |
 |---|---|
-| [`kernels/`](kernels/README.md), [`model/`](model/README.md), [`engine/`](engine/README.md), [`server/`](server/README.md) | the server itself: Triton kernels, the model, the scheduler and KV cache, the HTTP front end |
-| [`benchmarks/`](benchmarks/README.md) | performance experiments (speculative decoding, prefill/decode disaggregation, KV-cache and weight quantization, prefix caching, profiling) and the [A/B tool](benchmarks/ab/README.md) |
-| [`training/`](training/qlora_financial/README.md) | the finance model: data, QLoRA fine-tuning, evaluation, the model registry, drift, the canary, the retraining pipeline |
-| [`mlops/`](mlops/dags/drift_retrain.py) | the retraining pipeline (Airflow) and the GPU cost ledger |
-| [`monitoring/`](monitoring/) | Prometheus rules (alerts, SLOs), Grafana dashboards, [runbooks](monitoring/runbooks/) |
-| [`infra/`](infra/README.md) | the platform as code (Terraform + Helm), the Mac rehearsal, [OS tuning and CPU isolation](infra/os/README.md), [chaos experiments](infra/README.md#chaos-experiments-break-it-on-purpose-check-it-heals-8j) |
+| [Prefix caching](benchmarks/prefix_caching/README.md) | time to first token **-68%** when requests share a 2,048-token beginning; no gain below ~256 shared tokens |
+| [Chunked prefill](benchmarks/chunked_prefill/README.md) | with 128-token chunks, a long prompt arriving slows everyone else's tokens by only **15%** (20.2 to 23.1 ms) |
+| [Speculative decoding](benchmarks/speculative_decoding/README.md) | **+22-29%** tokens/s for a single user, **none** at 5 users, on both lightserve and vLLM |
+| [Prefill/decode split](benchmarks/pd_disaggregation/README.md) | on one GPU a long prompt stalls everyone's tokens (+42%); on two GPUs the stall disappears (a 1-vs-2-GPU comparison, as the README notes) |
+| [KV-cache compression](benchmarks/kv_int8_compression/README.md), [vLLM fp8](benchmarks/vllm_pd_kv_quant/README.md) | lightserve's own int8 version made decoding **slower** (+13%); vLLM's fp8 gave a real **~13%** win past ~7k tokens, so the idea works and the first version didn't |
+| [4-bit weights (AWQ)](benchmarks/vllm_awq_weight_quant/README.md) | per-token time **2.8x faster** for one user, fading to **1.17x** under heavy load |
+| [Roofline](benchmarks/profiling/roofline/README.md) | where each kernel sits between memory-bound and compute-bound; the LM head is memory-bound at batch 1 |
 
-## The MLOps project (Oct-Nov 2026): what was built and what it showed
+## 3. The finance model
 
-**What it's for:** a model that's fine on the day it ships can quietly get worse as the questions
-people ask change. This project wraps the finance model in the machinery a real team would use to
-notice that, retrain it, check the new version is really better, ship it without downtime, and
-undo it if it misbehaves, plus the platform to run it all and experiments to make it fast and
-tough. The goal throughout was learning, so every result was measured against a prediction
-written *before* the run, and failures are reported as failures.
+A Llama-3-8B fine-tuned (QLoRA) to answer financial questions from documents and tables
+([`training/`](training/qlora_financial/README.md)):
 
-**How it was built and checked:** in small steps, each tested first on the Mac (with fakes where a
-GPU was needed), then proven in short GPU sessions on Nebius, each under an hour, each torn down
-or stopped afterwards. An independent review at the end checked every published number against
-the raw data.
+- **Fine-tuning:** accuracy on numeric test questions went from **31.5% to 74.5%**.
+- **A stricter, fairer checker:** the official 1% tolerance hid arithmetic slips; graded fairly, the
+  model scores **60.5%**. A calculator that redoes the model's written steps raised it to **73.8%**,
+  and a retrain on step-by-step data (v3) to **81.2%**.
+- **Training speed:** the GPU was half idle, waiting on Python to launch work. Batching, bf16
+  adapters, fused kernels and FlashAttention-2 took training from 1,343 to **2,579 tokens/s**. A full
+  retrain took 3 h instead of 4 h 52 with the same accuracy, and two GPUs gave **1.86x**.
+- **Reading 10-K reports first** ([continued pretraining](training/cpt_financial/README.md), on a
+  [1.75-billion-token corpus](training/corpus_prep/README.md)): perplexity on financial text
+  **-22.7%**, but no accuracy gain once fine-tuned on top (74.0% vs 75.0%).
+- **Reinforcement learning** (PPO vs DPO vs GRPO): built and tuned; the full comparison is parked.
 
-### What was built
+## 4. MLOps: watch, retrain, deploy safely
 
-1. **Watch it (Phase 1).** lightserve's own metrics, a Grafana dashboard, GPU metrics, request
-   traces (Tempo) and logs (Loki), alerts that arrive as email, service-level objectives (SLOs)
-   with burn-rate alerts, runbooks, and CI: lint, tests, a smoke test, a security scan.
-2. **Retrain it safely (Phase 2).** A model registry with lineage (MLflow); a **promotion gate**
-   (a new model must win more questions than it loses, not by luck, with no topic falling more
-   than 2 points); **query drift** detection (Evidently); a **canary** asking the served model the
-   same 50 questions every few minutes; and a **retraining pipeline** (Airflow): drift detected ->
-   build data -> fine-tune from the champion -> load it into the running vLLM -> score -> gate ->
-   switch -> watch the canary -> keep it, or roll back and raise an alert. Plus a GPU cost ledger.
-3. **The platform as code (Phase 3).** A one-node Kubernetes cluster on Nebius (Terraform) running
-   monitoring, MLflow, Airflow, Chaos Mesh and lightserve (Helm), rehearsed for free on the Mac
-   (kind) with a smoke test, and images built by CI.
-4. **Make it fast and tough (Phase 4).** An A/B tool (alternating rounds, an honest "not sure"); a
-   hardware report; CPU isolation against a noisy neighbour; OS tuning one setting at a time; and
-   six chaos experiments (kill the pod, slow the network, flood it, a noisy neighbour, drain the
-   node, take MLflow down).
+The machinery a team would wrap around that model, so it can notice, fix and undo problems on its
+own ([`training/`](training/qlora_financial/README.md#retraining-pipeline-from-changed-questions-to-a-new-champion-or-a-rollback),
+[`mlops/`](mlops/dags/drift_retrain.py), [`monitoring/`](monitoring/), [`infra/`](infra/README.md)):
 
-### What the real GPU sessions showed
+- **Watch it:** metrics, dashboards, traces, logs, email alerts, service-level objectives,
+  runbooks, and CI with a security scan.
+- **Retrain it safely:**
+  - a model registry and a promotion gate
+  - query-drift detection and a canary
+  - an Airflow pipeline: drift detected, retrain from the champion, score, gate, switch, watch,
+    keep or roll back
 
-| Session | Finding |
-|---|---|
-| **Kernel tuning fix** (VM-2) | under real traffic the GPU kernels re-tuned themselves almost every step (~1 token/s); tuning once per size group fixed it: ~167 requests/min instead of ~20 |
-| **Noisy neighbour** (VM-2) | a CPU-burning neighbour made the slowest requests **~17% slower**; pinning lightserve to its own cores won back about two thirds (with a smaller neighbour on that side, so not pinning alone) |
-| **OS tuning** (VM-3) | GPU clock lock, huge pages, network backlog: **no measurable difference** for any of them; the GPU already runs at full clock under load, so no setting was kept |
-| **Chaos on the real cluster** (Cluster-2) | pod kill, network delay, a 300-user flood and MLflow down **all healed on their own**; but the pod kill **paged nobody** (there's no error-rate alert), and the drain couldn't be judged (its load recorded nothing for 137 s) |
-| **The retraining pipeline, end to end** (step 9) | ran for real on the GPU: drift detected, a 100-step fine-tune from v3, the candidate loaded into the running vLLM, 300 questions scored in 33 s, and the gate **rejected** it (80.3% vs v3's 82.0%), so v3 stayed in service |
-
-**Bugs that only showed up for real**, each fixed with a test:
-- a cut-off registration could leave the model half-registered
-- the registry couldn't register against an MLflow *server* at all
-- v3's adapter path was a Mac path
-- a dead engine thread left `/health` saying "ok" while requests hung forever
-- the watch could roll back a good model if the canary switched late
-
-### Still open
-
-Logged with the plan, not hidden:
-- check the GPU cost against Nebius's bill
-- add an error-rate alert
-- re-run the drain experiment
-- the noisy neighbour on the real cluster
-- the "pinning without a neighbour" comparison
-- Kubernetes CPU pinning
-- make the cluster's Airflow actually runnable (today it only parses the pipeline)
-- two known limits of the gate: it compares the new model's live answers with the champion's
-  saved ones, and its per-topic rule is too strict for a 300-question sample
-
-Details, with every number and caveat:
-[training README](training/qlora_financial/README.md) (registry, drift, canary, pipeline, step 9),
-[infra README](infra/README.md) (cluster, chaos), [infra/os README](infra/os/README.md) (isolation,
-tuning), [A/B tool](benchmarks/ab/README.md).
+  **Run for real on the GPU:** the pipeline rejected a weaker candidate (80.3% vs 82.0%), and the
+  champion stayed in service.
+- **The platform as code:** a Kubernetes cluster on Nebius (Terraform + Helm), rehearsed for free on
+  the Mac.
+- **Fast and tough:**
+  - a busy neighbour made requests **~17% slower**; pinning CPU cores won back about two thirds
+  - OS tuning made **no measurable difference**
+  - in [chaos tests](infra/README.md#chaos-experiments-break-it-on-purpose-check-it-heals-8j), a
+    pod kill, network delay, a flood and an MLflow outage all **healed on their own**, but the pod
+    kill paged nobody
+- **Found only on the real hardware, each fixed with a test:** the registry couldn't register
+  against an MLflow server; a crashed engine looked healthy; the canary watch could roll back a good
+  model. Open items (an error-rate alert, a drain re-run, the cost check against the bill, and
+  others) are listed in the [infra](infra/README.md) and [training](training/qlora_financial/README.md)
+  READMEs.
