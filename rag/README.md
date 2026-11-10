@@ -38,12 +38,16 @@ end to end against a scripted fake model before any GPU time.
    page still shows the whole reply), which keeps the worst case inside vLLM's 8,192-token limit.
 4. **Answer 5 times and vote** (`best_of_n.py`). Seeds 0-4, temperature 0.7, all sent at once so
    vLLM batches them. Answers count as the same number when within 1% or equal once rounded
-   ("-2%", "-2.0%" and "-2.04%" are one answer).
+   ("-2%", "-2.0%" and "-2.04%" are one answer; so are "-0.02" and "-2%"). A year said after the
+   answer is ignored ("$641 million in fiscal 2019"), and years must match exactly. The rounding
+   rule is lenient on purpose, since reports round: anything that rounds to "-2%" (from -1.5% to
+   -2.5%) counts as "-2%".
 5. **Show it** (`app.py`, `static/index.html`). What was understood ("Apple Inc. (AAPL), fiscal
    2019"), a verdict ("Both models give the same answer" / "The models disagree: ..."), each model's
    answer with its count ("3 of 5 runs agree") and sentence, the sources, and every run's steps. For
    the demo questions (`demo_questions.json`), the correct answer from the report and a ✓ or ✗ per
-   model.
+   model. A model whose runs all fail (vLLM down, the adapter not loaded) is shown as **failed**
+   with the error, never as "no answer"; a question stops after 180 s in all (`--time-limit`).
 
 ## What the data can and can't answer
 
@@ -80,12 +84,13 @@ Five questions, their answers looked up by hand in the indexed text and written 
 | How much did Microsoft's Azure revenue grow in fiscal 2019? | 72% | a trap: the same sentence says 25% for the wider group |
 | According to NVIDIA's fiscal 2019 report, what was its automotive revenue in the previous year? | $557 million | the calculator: "$641 million, up 15%" -> 641 / 1.15 (the common slip, 641 x 0.85 = $545 million, is wrong) |
 
-Every answer passage is in the 5 passages both models start with (ranks 1, 1, 5, 3, 2). Dropped: Coca-Cola's operating margin (operating income / revenue): its revenue passage ranks 18th, out of reach
+Every answer passage is in the 5 passages both models start with (ranks 1, 1, 5, 3, 2; for
+Microsoft the start of the sentence is also in the 1st, as passages overlap). Dropped: Coca-Cola's operating margin (operating income / revenue): its revenue passage ranks 18th, out of reach
 of the follow-up searches, so it would test the search, not the models.
 
 ## How it was built and checked
 
-All on the Mac first, test-first, with fakes; 93 tests (`rag/tests`, also in CI):
+All on the Mac first, test-first, with fakes; 105 tests (`rag/tests`, also in CI):
 
 | Piece | Checked by |
 |---|---|
@@ -110,6 +115,10 @@ RAG_PASSWORD=... python -m rag.app --vllm http://127.0.0.1:8000 --rehearsal   # 
 ```
 The page then says "Rehearsal: scripted fake models, not real answers" at the top.
 
+The password is checked on every request, but over plain HTTP it crosses the network unencrypted.
+That is acceptable for a throwaway password on a page that is up for under an hour; anything longer
+would need HTTPS.
+
 On the node, during a GPU session: vLLM with the base model and the v3 adapter (step 9's
 `vllm_up.sh`), Qdrant on the stored index, then:
 ```bash
@@ -117,6 +126,9 @@ RAG_PASSWORD=... python -m rag.app --device cuda --host 0.0.0.0 --workload runs/
 python -m rag.workload runs/rag/workload.jsonl runs/rag/prompts.jsonl        # the log -> a prompt file
 python benchmarks/ab/ab_run.py ... --target vllm --prompts runs/rag/prompts.jsonl   # replay it as load
 ```
+The replay keeps the demo's real prompts and reply lengths, not its exact traffic: Locust picks the
+prompts at random rather than in call order, sends them all to one `--model` (not the mix of base
+model and v3), and uses vLLM's default sampling.
 
 ## Later: lightserve
 
