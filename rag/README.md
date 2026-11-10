@@ -34,7 +34,8 @@ end to end against a scripted fake model before any GPU time.
 3. **Let the model work in rounds** (`agent.py`). The first search is done for it (the same 5
    passages for both models). Each reply is one line: a tool (`search` for 2 more passages, or
    `calculate` for exact arithmetic) or `Answer: -2% | <one short sentence>`. At most 5 rounds and
-   3,600 words of passages, which keeps even the worst case inside vLLM's 8,192-token limit.
+   3,600 words of passages, and only each earlier reply's tool line stays in the conversation (the
+   page still shows the whole reply), which keeps the worst case inside vLLM's 8,192-token limit.
 4. **Answer 5 times and vote** (`best_of_n.py`). Seeds 0-4, temperature 0.7, all sent at once so
    vLLM batches them. Answers count as the same number when within 1% or equal once rounded
    ("-2%", "-2.0%" and "-2.04%" are one answer).
@@ -84,14 +85,14 @@ of the follow-up searches, so it would test the search, not the models.
 
 ## How it was built and checked
 
-All on the Mac first, test-first, with fakes; 79 tests (`rag/tests`, also in CI):
+All on the Mac first, test-first, with fakes; 86 tests (`rag/tests`, also in CI):
 
 | Piece | Checked by |
 |---|---|
 | chunking, names, the index build | 8 tests; a 50-report sample, then the full year on the GPU |
 | finding company and year | 17 tests; 20 of 20 large companies right on the real SEC list, 0 of 68 ordinary words mistaken for a company at a question's start |
 | search | 3 tests on in-memory Qdrant: the company/year filter holds; on the real index Apple's answer passage ranks 1st for 3 phrasings |
-| the agent | a scripted fake model: tools, a garbled reply, too many rounds, bad arithmetic; the real worst case measured with the Llama-3 tokenizer: 5,169 tokens + a 512-token reply, of 8,192 |
+| the agent | a scripted fake model: tools, a garbled reply, too many rounds, bad arithmetic; the worst case measured with the Llama-3 tokenizer, a model rambling ~380 tokens before each of 4 searches: 5,481 tokens + a 512-token reply = 5,993, of 8,192 |
 | the vote | rounding, scale words, ties, no-answer runs; a barrier proves the 5 runs are sent at once |
 | the page | password (none / wrong / right), notes, verdict, ✓/✗, every demo answer readable as a number; a full rehearsal against a fake vLLM |
 | the workload log | thread-safe lines; the chat template matches the real tokenizer's token for token; a 4-second replay through Locust (4,256 requests, all from the log) |

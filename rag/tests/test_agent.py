@@ -125,3 +125,24 @@ def test_answer_splits_into_number_and_explanation():
 def test_prompt_asks_for_a_short_explanation_after_the_number():
     from rag.agent import SYSTEM
     assert "Answer: -2.0% | " in SYSTEM and "one short sentence" in SYSTEM
+
+
+@pytest.mark.parametrize("reply", [
+    "Let me think. " + "blah " * 2000 + '\n{"tool": "search", "query": "' + "more " * 300 + '"}',   # rambling, then a long query
+    "blah " * 2000,                                                                                   # garbled every round
+])
+def test_long_replies_dont_pile_up_past_the_context_limit(reply):
+    """Review finding 3: replies (up to 512 tokens each) were kept whole, so 4 earlier ones plus a
+    full passage budget could pass vLLM's 8,192. Only each reply's essential line is kept; the page
+    still gets the full reply."""
+    model = Script(*[reply] * 5)
+    r = run(QUESTION, model, fake_search, max_steps=5)
+    words = sum(len(m["content"].split()) for m in model.sent[-1])
+    assert words * 1.77 + 512 <= 8192
+    assert all(s["reply"] == reply for s in r["steps"][1:])                 # full reply kept for the page
+
+
+def test_the_kept_line_is_the_tool_call():
+    model = Script('I will look.\n{"tool": "search", "query": "net sales"}\nResult: invented', "Answer: -2%")
+    run(QUESTION, model, fake_search)
+    assert model.sent[1][2] == {"role": "assistant", "content": '{"tool": "search", "query": "net sales"}'}

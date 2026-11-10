@@ -52,6 +52,15 @@ def calculate(expression: str) -> str:
     return f"{value:.6g}" if value is not None else "error: not plain arithmetic (use numbers, + - * / and brackets)"
 
 
+def _kept(kind: str, value: str, reply: str) -> str:
+    """What stays in the conversation of a reply: its tool call as one clean JSON line (the field
+    capped at 250 characters), or the first 200 characters of a garbled one. A reply can be up to
+    512 tokens; kept whole, 4 of them plus the passage budget could pass the 8,192-token limit."""
+    if kind in TOOLS:
+        return json.dumps({"tool": kind, TOOLS[kind]: value[:250]})
+    return reply.strip()[:200]
+
+
 def _key(p: dict) -> tuple:
     return p.get("cik"), p.get("year"), p.get("section"), p.get("chunk")
 
@@ -71,8 +80,8 @@ def run(question: str, chat_fn, search_fn, max_steps: int = 5, first_k: int = 5,
                 {"role": "user", "content": f"Question: {question}\n\nPassages:\n{steps[0]['output']}"}]
     for _ in range(max_steps):
         reply = chat_fn(messages)
-        messages.append({"role": "assistant", "content": reply})
         kind, value = parse_step(reply)
+        messages.append({"role": "assistant", "content": _kept(kind, value, reply)})
         if kind == "answer":
             number, _, why = value.partition("|")
             steps.append({"kind": kind, "input": value, "output": value, "reply": reply})
