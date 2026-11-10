@@ -143,6 +143,19 @@ function card(label, m) {
   return c;
 }
 
+// The reply as JSON, or a readable error whatever came back: {"detail": "text"}, a list of
+// problems (a 422), or plain text ("Internal Server Error").
+async function readReply(res) {
+  const raw = await res.text();
+  let body = null;
+  try { body = JSON.parse(raw); } catch (e) { body = null; }
+  if (res.ok && body) return body;
+  const d = body && body.detail;
+  const msg = Array.isArray(d) ? d.map((x) => x.msg || JSON.stringify(x)).join("; ")
+            : (d || raw.slice(0, 200) || res.statusText);
+  throw new Error(`${res.status}: ${msg}`);
+}
+
 async function ask(question) {
   $("go").disabled = true; $("results").replaceChildren(); $("about").replaceChildren(); $("verdict").replaceChildren();
   $("status").className = ""; const t0 = Date.now();
@@ -151,8 +164,7 @@ async function ask(question) {
   try {
     const res = await fetch("/ask", { method: "POST", headers: { "Content-Type": "application/json" },
                                       body: JSON.stringify({ question }) });
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.detail || res.statusText);
+    const body = await readReply(res);
     $("status").textContent = `Answered in ${body.seconds} s`;
     $("about").append(el("div", {}, el("span", { text: "Reading: " }),
       el("span", { class: "who", text: body.company ? `${body.company}${body.ticker ? " (" + body.ticker + ")" : ""}` : "any company" }),

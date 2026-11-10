@@ -96,6 +96,12 @@ def create_app(client, embedder, lookup: dict, chat, password: str, models: dict
         q = body.question.strip()
         if not q or len(q) > MAX_QUESTION:
             raise HTTPException(400, f"ask a question of 1-{MAX_QUESTION} characters")
+        try:
+            return answer(q)
+        except Exception as e:   # e.g. Qdrant down: a readable error for the page, not a bare 500
+            raise HTTPException(503, f"the search or the server failed: {type(e).__name__}: {e}"[:300]) from e
+
+    def answer(q: str) -> dict:
         start = time.time()
         cik, year = retrieve.find_company(q, lookup), retrieve.find_year(q)
         who = lookup["names"].get(cik, {}) if cik is not None else {}

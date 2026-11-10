@@ -250,3 +250,16 @@ def test_no_open_api_pages(app):
     """Review finding 8: FastAPI's /docs, /redoc and /openapi.json opened without the password."""
     for path in ("/docs", "/redoc", "/openapi.json"):
         assert app[0].get(path).status_code == 404, path
+
+
+def test_a_broken_search_gives_a_readable_error(tmp_path):
+    """Review finding 10: Qdrant down gave a plain-text "Internal Server Error" the page couldn't read."""
+    class DeadQdrant:
+        def query_points(self, *a, **k):
+            raise ConnectionError("Qdrant is not reachable")
+
+    path = tmp_path / "tickers.json"
+    path.write_text(json.dumps({"0": {"cik_str": APPLE, "ticker": "AAPL", "title": "Apple Inc."}}))
+    web = TestClient(create_app(DeadQdrant(), FakeEmbedder(), load_lookup(path), FakeModels(), password=AUTH[1]))
+    r = web.post("/ask", json={"question": "What was Apple's revenue growth in 2019?"}, auth=AUTH)
+    assert r.status_code == 503 and "Qdrant is not reachable" in r.json()["detail"]
