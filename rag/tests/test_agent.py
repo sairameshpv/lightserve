@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from rag.agent import parse_step, run
@@ -108,7 +110,7 @@ def test_prompt_asks_for_one_signed_number():
     """The vote reads the final number as written, so the prompt asks for just that number, negative
     for a decrease (both models get the same prompt)."""
     from rag.agent import SYSTEM
-    assert "Answer: -2.0%" in SYSTEM and "negative" in SYSTEM
+    assert "Answer: -3.5%" in SYSTEM and "negative" in SYSTEM
 
 
 def test_answer_splits_into_number_and_explanation():
@@ -124,7 +126,7 @@ def test_answer_splits_into_number_and_explanation():
 
 def test_prompt_asks_for_a_short_explanation_after_the_number():
     from rag.agent import SYSTEM
-    assert "Answer: -2.0% | " in SYSTEM and "one short sentence" in SYSTEM
+    assert "Answer: -3.5% | " in SYSTEM and "one short sentence" in SYSTEM
 
 
 @pytest.mark.parametrize("reply", [
@@ -161,9 +163,24 @@ def test_calculate_reads_percents_and_brackets_as_a_person_would(expression, res
     assert calculate(expression) == result
 
 
+def test_prompt_examples_share_nothing_with_the_demo_questions():
+    """Found in the first GPU run: the examples were the Apple demo answer and Apple's real net
+    sales, so the Apple question was given away and v3 copied 260174 / 265595 into other companies'
+    answers. The examples must use a made-up company and numbers from no demo answer or quote."""
+    import json
+    from pathlib import Path
+    from rag.agent import SYSTEM
+    demos = json.loads((Path(__file__).parents[1] / "demo_questions.json").read_text())
+    numbers = lambda text: {float(n.replace(",", "")) for n in re.findall(r"\d[\d,]*\.?\d*", text)} - {10.0} - set(range(1990, 2031))
+    leaked = numbers(SYSTEM) & set().union(*(numbers(d["answer"] + " " + d["source"]) for d in demos))
+    assert not leaked
+    for company in ("Apple", "Netflix", "NVIDIA", "Microsoft"):
+        assert company.lower() not in SYSTEM.lower()
+
+
 def test_prompt_asks_for_percents_as_decimals():
     from rag.agent import SYSTEM
-    assert "0.15" in SYSTEM
+    assert "8% as 0.08" in SYSTEM
 
 
 @pytest.mark.parametrize("reply, step", [               # review finding 5: real Llama-3 styles

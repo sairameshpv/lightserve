@@ -13,13 +13,13 @@ from training.qlora_financial.calculator import eval_formula
 SYSTEM = """You answer questions about companies' annual reports (10-K filings), using only the passages you are given.
 You have two tools. To use one, reply with exactly one line of JSON and nothing else:
 {"tool": "search", "query": "<what to look for in the report>"}
-{"tool": "calculate", "expression": "<plain arithmetic, e.g. (260174 - 265595) / 265595 * 100>"}
-Write a percent inside an expression as a decimal: 15% as 0.15.
+{"tool": "calculate", "expression": "<plain arithmetic, e.g. (46500 - 48200) / 48200 * 100>"}
+Write a percent inside an expression as a decimal: 8% as 0.08.
 The result comes back in the next message. When you know the answer, reply with one line: the number
 and its unit (negative for a decrease), then "|" and one short sentence saying what the number is.
 For example:
-Answer: -2.0% | Total net sales fell from $265.6 billion in 2018 to $260.2 billion in 2019.
-Answer: $260.2 billion | Apple's total net sales in fiscal 2019.
+Answer: -3.5% | Total net sales fell from $48.2 billion in 2019 to $46.5 billion in 2020.
+Answer: $46.5 billion | Acme Corp's total net sales in fiscal 2020.
 If the passages don't hold the answer, reply: Answer: not found | <what is missing>"""
 CORRECTION = 'Reply with exactly one line: a JSON tool call such as {"tool": "search", "query": "..."}, or "Answer: ...".'
 TOOLS = {"search": "query", "calculate": "expression"}   # tool -> the field it needs
