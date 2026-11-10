@@ -1,11 +1,13 @@
 # lightserve
 
 **lightserve** is a project for learning how large-language-model serving works and what makes it
-fast. It has four parts, each with its own README:
+fast. It has five parts, each with its own README:
 1. **The server:** an inference server built from scratch.
 2. **Performance experiments:** run on it and on vLLM.
 3. **A finance model:** a question-answering model trained and evaluated end to end.
 4. **The MLOps work:** watches, retrains and safely deploys that model.
+5. **A RAG demo:** the original model and the fine-tuned one answer questions about 10-K reports
+   side by side, with search, tools and voting.
 
 Every result below was measured on real GPUs (Nebius L40S) against a prediction written before
 the run, and failures are reported as failures.
@@ -87,3 +89,24 @@ own ([`training/`](training/qlora_financial/README.md#retraining-pipeline-from-c
   model. Open items (an error-rate alert, a drain re-run, the cost check against the bill, and
   others) are listed in the [infra](infra/README.md) and [training](training/qlora_financial/README.md)
   READMEs.
+
+## 5. A RAG demo: the original model vs the fine-tuned one
+
+A password-protected web page, live during a GPU session, where a question about a company's annual
+report ("What was Apple's revenue growth in 2019?") gets two answers side by side: the original
+Llama-3-8B-Instruct and the fine-tuned v3 ([`rag/`](rag/README.md)). Both get the same passages,
+tools and random seeds, so any difference comes from the fine-tuning:
+
+- **Search** ("retrieval-augmented generation", RAG): every 2019 10-K's written discussion (6,693
+  reports, 291,759 passages) in a vector database (Qdrant), searched within the company and year the
+  question names.
+- **Tools and voting:** the model works in rounds, asking for more passages or for exact arithmetic,
+  then answers 5 times; the answers are voted on.
+- **Result on 5 hand-checked questions: the original model 3 of 5, v3 0 of 5.** v3 answers every
+  question in its training format, never uses the tools, and copies the prompt's example numbers:
+  its 81.2% holds only in the format it was trained on. The first run also found a leak in our own
+  prompt (its example was the Apple answer), fixed with a test.
+- **The demo's traffic as a benchmark:** every model call is logged and replays through the A/B tool
+  (3,438 requests, none failed).
+- **Possible next steps:** training the model on this setup itself (passages, tool calls, an answer
+  with a sentence), and serving the demo through lightserve.
