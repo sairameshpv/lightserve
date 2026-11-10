@@ -37,7 +37,8 @@ def _same(a: tuple, b: tuple) -> bool:
         return a[0] * a[1] == b[0] * b[1]
     if math.isclose(a[0] * a[1], b[0] * b[1], rel_tol=0.01, abs_tol=1e-6):
         return True
-    return a[1] == b[1] and round(a[0], min(a[2], b[2])) == round(b[0], min(a[2], b[2]))
+    d = min(a[2], b[2])                     # rounding to 0 says nothing: "0" is not a rounded 28%
+    return a[1] == b[1] and round(a[0], d) == round(b[0], d) != 0
 
 
 def same_answer(a, b) -> bool:

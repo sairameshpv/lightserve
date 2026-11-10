@@ -86,3 +86,14 @@ def test_a_percent_and_its_fraction_are_the_same_answer():
     assert same_answer("-0.0204", "-2%")                    # rounding still forgiven
     assert same_answer("-2.04%", "-2%") and not same_answer("-2%", "-3%")
     assert not same_answer("2", "2%")                       # a bare 2 is not read as 2%
+
+
+def test_zero_is_not_a_rounded_answer():
+    """Found re-checking v3's real replies: its "0" for Netflix (worked out from "subtract 2,887 and
+    2,887") was marked right against 28%: 0 has no decimals, and 0.28 rounded to none is 0. Rounding
+    to 0 says nothing, so 0 must match within 1% like any number."""
+    from rag.best_of_n import same_answer
+    assert not same_answer("0", "28%") and not same_answer("0.0", "0.28") and not same_answer("0", "-0.4")
+    assert vote(["0", "0.28", "0", "0"])["votes"] == 3
+    assert same_answer("0", "0.0") and same_answer("0%", "0")
+    assert same_answer("-2.04%", "-2%") and same_answer("3", "2.6")       # the rounding rule otherwise stands
