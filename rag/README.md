@@ -88,9 +88,61 @@ Every answer passage is in the 5 passages both models start with (ranks 1, 1, 5,
 Microsoft the start of the sentence is also in the 1st, as passages overlap). Dropped: Coca-Cola's operating margin (operating income / revenue): its revenue passage ranks 18th, out of reach
 of the follow-up searches, so it would test the search, not the models.
 
+## Results on the GPU (2026-11-10)
+
+Two runs of the 5 questions, with fixes in between, then the demo's traffic replayed as load. Each
+question took 2-11 s for both models' 10 runs; most of each session was starting the node and
+loading vLLM (~5 min). **The final result: the original model 3 of 5, the fine-tuned v3 0 of 5.**
+In this setup (passages, tools, a new answer format), the original model is clearly better.
+
+| Question | Correct | Original, run 2 (runs agreeing) | v3, run 2 (runs agreeing) |
+|---|---|---|---|
+| Apple's revenue growth in 2019 | -2% | ✗ 4.96% (1 of 5) | ✗ -0.0353 (4 of 5) |
+| Netflix's revenue growth | 28% | ✓ 28% (1 of 5) | ✗ -1475 (1 of 5) |
+| NVIDIA's revenue growth, fiscal 2019 | 21% | ✓ 21% (3 of 5) | ✗ -0.0353 (1 of 5) |
+| Microsoft Azure's growth | 72% | ✓ 72% (3 of 5) | ✗ -0.0353 (2 of 5) |
+| NVIDIA's automotive revenue, previous year | $557 million | ✗ $641 million (5 of 5) | ✗ 640.04 (2 of 5) |
+
+**Run 1 found three problems on our side, all fixed before run 2:**
+1. **The prompt gave the Apple answer away.** Its example answer was the Apple demo answer ("-2.0% |
+   Total net sales fell from $265.6 billion to $260.2 billion") and its calculator example used
+   Apple's real net sales. Now a made-up company and numbers, with a test that the prompt shares no
+   number or company with the demo questions. The original model's Apple ✓ (2 of 5) in run 1 came
+   from this: in run 2 it got Apple wrong, though the answer sentence is the top passage it reads.
+2. **v3's own arithmetic went unchecked.** v3 answers in its training format ("Step 1: subtract A
+   and B. Step 2: divide ... Answer: x"), and its evaluation always ran those steps through the
+   calculator. Now the demo does too, for any model that answers that way; the page says so ("Worked
+   out from its own steps (it said -0.02168)").
+3. **The vote counted "0" as a rounded 28%** (0.28 rounded to no decimals is 0), which made v3's
+   wrong Netflix answer a ✓ once its steps were worked out exactly. Rounding to 0 no longer counts.
+
+**What v3 does, both runs (50 of 50 runs):**
+- **It never follows the instructions:** every reply is in its training format, in one round; it
+  never searches, never calls the calculator, never writes a sentence.
+- **It copies the prompt's example numbers:** Apple's net sales in run 1 (10 of 25 runs), the made-up
+  example's 46500 / 48200 in run 2 (11 of 25, the -0.0353 answers), on every company's question.
+- **Otherwise it picks numbers from the passages, but the wrong ones** ("subtract 2,887 and 4,362"
+  for Netflix). The calculator fixes the sum, not the choice of numbers.
+
+**The original model** uses the tools (46 calls in run 2, 5 of them calculations) but is unsteady:
+Netflix right in 1 run of 5, the Azure trap (91%, the year before) in 2 of 5, and this year's $641
+million instead of the previous year's in 5 of 5.
+
+**What it means:** fine-tuning made v3 good at one fixed task (81.2% with a question and a table in,
+steps and an answer out) at the cost of following anything else; its score holds only in that
+format. Making v3 useful here needs training on this setup itself (examples with passages, tool calls
+and an answer with a sentence, mixed with its old data), not prompting. Five questions show a clear
+pattern, not a precise measure.
+
+**The replay through the A/B tool:** both runs' 205 model calls (`python -m rag.workload`) sent by
+Locust to the node's usual vLLM server (base model), 10 users, as an A/A run (nothing changed between
+sides, 2 rounds each, 60 s): 3,438 requests, 0 failed; latency median 0.56 s, p99 ~3.0-3.4 s, time to
+first token 0.087 s, 29 ms per token, ~320 tokens/s; every measure "not sure", as it should be with
+no change. So the recorded workload replays cleanly and can be the load for later A/B tests.
+
 ## How it was built and checked
 
-All on the Mac first, test-first, with fakes; 105 tests (`rag/tests`, also in CI):
+All on the Mac first, test-first, with fakes; 110 tests (`rag/tests`, also in CI):
 
 | Piece | Checked by |
 |---|---|
