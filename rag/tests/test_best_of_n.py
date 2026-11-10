@@ -77,3 +77,12 @@ def test_a_year_after_the_answer_is_not_the_answer():
     assert same_answer("-2% in 2019", "-2%") and same_answer("21% in FY2019", "21%")
     assert vote(["$641 million in fiscal 2019", "$641 million", "$641 million during 2019"])["votes"] == 3
     assert same_answer("2019", "2019") and not same_answer("2019", "2018")     # a year alone stays a year
+
+
+def test_a_percent_and_its_fraction_are_the_same_answer():
+    """Review finding 7: -0.02 and -2% never matched."""
+    from rag.best_of_n import same_answer
+    assert same_answer("-0.02", "-2%") and same_answer("0.72", "72%") and same_answer("0.08", "8 percent")
+    assert same_answer("-0.0204", "-2%")                    # rounding still forgiven
+    assert same_answer("-2.04%", "-2%") and not same_answer("-2%", "-3%")
+    assert not same_answer("2", "2%")                       # a bare 2 is not read as 2%

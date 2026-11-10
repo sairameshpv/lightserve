@@ -19,10 +19,14 @@ _YEAR = re.compile(r"\b(?:(?:in|for|during)\s+(?:fiscal\s+(?:year\s+)?)?|fiscal\
 def _read(text):
     """(number, scale, decimals) of an answer, or None. The finance checker reads the LAST number,
     so a year said after the answer is dropped first ("$641 million in fiscal 2019" is $641
-    million), unless nothing else is left ("2019" stays 2019)."""
+    million), unless nothing else is left ("2019" stays 2019). A percent is read as its fraction."""
     if not text:
         return None
-    return _parts(_YEAR.sub("", text)) or _parts(text)
+    stripped = _YEAR.sub("", text)
+    parts = _parts(stripped) or _parts(text)
+    if parts and re.search(r"\d\s*(%|percent)", stripped, re.I):   # 2% is 0.02, so "-0.02" and "-2%" agree
+        parts = (parts[0] / 100, parts[1], parts[2] + 2)
+    return parts
 
 
 def _same(a: tuple, b: tuple) -> bool:
