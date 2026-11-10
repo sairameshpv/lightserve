@@ -202,3 +202,45 @@ def test_follow_up_searches_stay_in_the_questions_company_and_year(app, monkeypa
         for r in m["runs"]:
             assert r["steps"][1]["kind"] == "search" and len(r["passages"]) == 7
             assert {(p["cik"], p["year"]) for p in r["passages"]} == {(APPLE, 2019)}
+
+
+def _failing(fail):
+    """FakeModels that raises a server error when fail(model, seed) says so."""
+    real = FakeModels.__call__
+
+    def call(self, model, messages, temperature, top_p, seed):
+        if fail(model, seed):
+            raise RuntimeError(f"{model}: server answered 404: b'The model `{model}` does not exist.'")
+        return real(self, model, messages, temperature, top_p, seed)
+    return call
+
+
+def test_a_model_that_fails_is_reported_as_failed_not_as_no_answer(app, monkeypatch):
+    """Review finding 2: the adapter not loading must not read as "the fine-tuned model found nothing"."""
+    web, _ = app
+    monkeypatch.setattr(FakeModels, "__call__", _failing(lambda model, seed: model == "v3"))
+    web.app.state.expected = {"what was apple s revenue growth in 2019": {"question": "q", "answer": "-2%", "source": "s"}}
+    body = web.post("/ask", json={"question": "What was Apple's revenue growth in 2019?"}, auth=AUTH).json()
+    ft = body["models"]["fine-tuned"]
+    assert ft["failed"] is True and ft["errors"] == 5 and "404" in ft["error"]
+    assert ft["correct"] is None and body["models"]["original"]["correct"] is True
+    assert body["verdict"]["agree"] is False
+    assert body["verdict"]["text"].startswith("The fine-tuned model failed, so there's nothing to compare. Error: v3: server answered 404")
+
+
+def test_both_models_failing(app, monkeypatch):
+    web, _ = app
+    monkeypatch.setattr(FakeModels, "__call__", _failing(lambda model, seed: True))
+    body = web.post("/ask", json={"question": "What was Apple's revenue growth in 2019?"}, auth=AUTH).json()
+    assert body["verdict"]["text"].startswith("Both models failed, so there's nothing to compare. Error:")
+    assert all(m["failed"] for m in body["models"].values())
+
+
+def test_some_failed_runs_are_counted(app, monkeypatch):
+    web, _ = app
+    monkeypatch.setattr(FakeModels, "__call__", _failing(lambda model, seed: model == "v3" and seed == 1))
+    body = web.post("/ask", json={"question": "What was Apple's revenue growth in 2019?"}, auth=AUTH).json()
+    ft = body["models"]["fine-tuned"]
+    assert (ft["failed"], ft["errors"], ft["vote"]["votes"], ft["vote"]["n"]) == (False, 1, 4, 5)
+    assert "404" in ft["error"]
+    assert body["models"]["original"]["errors"] == 0 and body["models"]["original"]["error"] is None

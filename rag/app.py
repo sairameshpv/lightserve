@@ -42,6 +42,12 @@ def load_expected(path) -> dict:
 def verdict(models_out: dict) -> dict:
     """One line comparing the two models' voted answers (same number by the vote's rule = agree)."""
     (a, ma), (b, mb) = models_out.items()
+    failed = [(label, m["error"]) for label, m in models_out.items() if m.get("failed")]
+    if len(failed) == 2:   # a server problem, not the models' answers (review finding 2)
+        return {"agree": False, "text": f"Both models failed, so there's nothing to compare. Error: {failed[0][1]}"}
+    if failed:
+        return {"agree": False, "text": f"The {failed[0][0]} model failed, so there's nothing to compare. "
+                                        f"Error: {failed[0][1]}"}
     va, vb = ma["vote"], mb["vote"]
     said = lambda v: f"{v['answer']} ({v['votes']} of {v['n']} runs)"
     if va["answer"] is None and vb["answer"] is None:
@@ -116,14 +122,16 @@ def create_app(client, embedder, lookup: dict, chat, password: str, models: dict
         def one(label):
             t = time.time()
             r = best_of_n.best_of_n(q, lambda m, **s: chat(models[label], m, **s), search, n=n)
-            return label, {"model": models[label], **r, "seconds": round(time.time() - t, 2)}
+            errs = [run["error"] for run in r["runs"] if run["stopped"] == "error"]
+            return label, {"model": models[label], **r, "seconds": round(time.time() - t, 2),
+                           "errors": len(errs), "failed": len(errs) == n, "error": errs[0][:300] if errs else None}
 
         with ThreadPoolExecutor(max_workers=len(models)) as pool:   # both models at once
             out["models"] = dict(pool.map(one, models))
         out["verdict"] = verdict(out["models"])
         for m in out["models"].values():         # right or wrong against the checked answer, if any
             m["correct"] = (best_of_n.same_answer(m["vote"]["answer"], out["expected"]["answer"])
-                            if out["expected"] else None)
+                            if out["expected"] and not m["failed"] else None)
         out["seconds"] = round(time.time() - start, 2)
         return out
 

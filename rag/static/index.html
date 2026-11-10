@@ -110,7 +110,8 @@ function card(label, m) {
        m.correct === true ? el("span", { class: "mark right", text: "✓ matches the report" }) :
        m.correct === false ? el("span", { class: "mark wrong", text: "✗ doesn't match the report" }) : null),
     el("div", { class: "model", text: m.model }),
-    el("div", { class: "answer" + (v.answer ? "" : " none"), text: v.answer ?? "no answer" }),
+    el("div", { class: "answer" + (v.answer ? "" : " none"), text: m.failed ? "failed" : (v.answer ?? "no answer") }),
+    m.error ? el("div", { class: "note", text: (m.failed ? "Every run failed: " : `${m.errors} of ${v.n} runs failed: `) + m.error }) : null,
     winnerWhy(m) ? el("div", { class: "why", text: winnerWhy(m) }) : null,
     el("div", {}, el("span", { class: "votes", text: `${v.votes} of ${v.n} runs agree` }),
        el("span", { class: "meta", text: `  ·  ${m.seconds} s` })));
