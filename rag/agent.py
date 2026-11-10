@@ -24,23 +24,27 @@ CORRECTION = 'Reply with exactly one line: a JSON tool call such as {"tool": "se
 TOOLS = {"search": "query", "calculate": "expression"}   # tool -> the field it needs
 
 
+_ANSWER = re.compile(r"^[\s*_#>`]*answer[\s*_]*:[\s*_]*(.*)$", re.I | re.M)   # "**Answer:** x", "answer: x"
+
+
 def parse_step(reply: str) -> tuple:
-    """The first "Answer:" line or JSON line in a reply -> ("answer"|"search"|"calculate", text),
-    or ("error", why). Anything after it (e.g. a made-up "Result:") is ignored."""
-    for line in reply.splitlines():
-        line = line.strip()
-        if m := re.match(r"Answer:\s*(.*)", line):
-            return "answer", m[1].strip()
-        if line.startswith("{"):
-            try:
-                call = json.loads(line)
-            except json.JSONDecodeError:
-                return "error", "not valid JSON"
-            tool = call.get("tool") if isinstance(call, dict) else None
-            if tool not in TOOLS or not isinstance(call.get(TOOLS[tool]), str):
-                return "error", f"unknown tool or missing field: {line[:80]}"
-            return tool, call[TOOLS[tool]]
-    return "error", "no tool call and no answer"
+    """A reply -> ("answer"|"search"|"calculate", text), or ("error", why). Whichever comes first:
+    an "Answer:" line (any case, markdown stars ignored) or a JSON object (wherever it starts, even
+    spread over lines or after some text; the first of several). Anything after it, e.g. a made-up
+    "Result:", is ignored."""
+    answer, brace = _ANSWER.search(reply), reply.find("{")
+    if answer and (brace < 0 or answer.start() < brace):
+        return "answer", answer[1].strip()
+    if brace < 0:
+        return "error", "no tool call and no answer"
+    try:
+        call, _ = json.JSONDecoder().raw_decode(reply[brace:])
+    except json.JSONDecodeError:
+        return ("answer", answer[1].strip()) if answer else ("error", "not valid JSON")
+    tool = call.get("tool") if isinstance(call, dict) else None
+    if tool not in TOOLS or not isinstance(call.get(TOOLS[tool]), str):
+        return "error", f"unknown tool or missing field: {json.dumps(call)[:80]}"
+    return tool, call[TOOLS[tool]]
 
 
 def format_passages(passages: list) -> str:

@@ -164,3 +164,15 @@ def test_calculate_reads_percents_and_brackets_as_a_person_would(expression, res
 def test_prompt_asks_for_percents_as_decimals():
     from rag.agent import SYSTEM
     assert "0.15" in SYSTEM
+
+
+@pytest.mark.parametrize("reply, step", [               # review finding 5: real Llama-3 styles
+    ("**Answer:** -2% | Net sales fell.", ("answer", "-2% | Net sales fell.")),
+    ("answer: -2%", ("answer", "-2%")),
+    ('{\n  "tool": "search",\n  "query": "net sales"\n}', ("search", "net sales")),          # spread over lines
+    ('I will search: {"tool": "search", "query": "iPhone"}', ("search", "iPhone")),         # text first
+    ('{"tool": "search", "query": "a"} {"tool": "search", "query": "b"}', ("search", "a")),  # two: the first
+    ('```json\n{"tool": "calculate", "expression": "1 + 1"}\n```', ("calculate", "1 + 1")),
+])
+def test_parse_step_reads_common_llama_styles(reply, step):
+    assert parse_step(reply) == step
