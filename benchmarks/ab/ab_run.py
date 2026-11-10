@@ -57,7 +57,7 @@ def run_round(args, side, rnd, out):
                         "--users", str(args.users), "--spawn-rate", str(args.users),
                         "--run-time", f"{args.warmup_s + args.round_s}s", "--stop-timeout", str(args.stop_timeout_s),
                         "--target", args.target, "--model", args.model, "--stream", "--samples-out", str(raw),
-                        "--seed", str(args.seed), "--only-summary"],
+                        "--seed", str(args.seed), "--only-summary"] + (["--prompts", args.prompts] if args.prompts else []),
                        check=True, stdout=log, stderr=subprocess.STDOUT)
     rows = [json.loads(line) for line in raw.open()]
     lo = t0 + args.warmup_s
@@ -79,6 +79,7 @@ def main():
     ap.add_argument("--model", default="meta-llama/Meta-Llama-3-8B-Instruct")
     ap.add_argument("--health-timeout-s", type=float, default=300)
     ap.add_argument("--seed", type=int, default=0, help="same prompts in the same order every round")
+    ap.add_argument("--prompts", help="the locustfile's --prompts: a prompt file to send instead of its default")
     ap.add_argument("--primary", default=PRIMARY, choices=[m[0] for m in MEASURES],
                     help="the one measure whose verdict decides; name it before the run")
     args = ap.parse_args()

@@ -1,0 +1,6 @@
+qdrant-client==1.15.1   # matches the server image qdrant/qdrant:v1.15.5
+sentence-transformers==6.2.0   # the node runs it on the GPU (torch 2.15.0 here, CPU)
+pytest
+fastapi==0.141.1   # the page's server: same versions as lightserve's own server
+uvicorn==0.52.4
+httpx==0.28.1      # the tests' client

@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Original vs Fine-tuned</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --card: #ffffff; --ink: #1d1d1b; --muted: #6b6b66; --line: #e2e2dc;
+    --accent: #2f5bd3; --accent-ink: #ffffff; --ok: #1f7a4d; --warn: #9a5b00; --chip: #eef1fb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --card: #1f1f1d; --ink: #ecece8; --muted: #a1a19a; --line: #34342f;
+      --accent: #7c9cff; --accent-ink: #10131c; --ok: #5ccf94; --warn: #e6a74a; --chip: #262b3a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  form { display: flex; gap: 10px; flex-wrap: wrap; }
+  textarea { flex: 1 1 420px; min-height: 52px; padding: 12px; font: inherit; color: var(--ink);
+             background: var(--card); border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
+  button { padding: 0 22px; min-height: 52px; font: inherit; font-weight: 600; border: 0; border-radius: 8px;
+           background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+  button:disabled { opacity: .5; cursor: wait; }
+  .examples { margin: 10px 0 0; display: flex; gap: 8px; flex-wrap: wrap; }
+  .examples a { background: var(--chip); color: var(--ink); padding: 4px 10px; border-radius: 999px;
+                font-size: 13px; text-decoration: none; cursor: pointer; }
+  .banner { background: var(--warn); color: var(--bg); font-weight: 700; padding: 10px 14px;
+            border-radius: 8px; margin: 0 0 16px; }
+  #status { color: var(--muted); margin: 18px 0 0; min-height: 1.5em; }
+  #status.error { color: var(--warn); }
+  #about { margin: 8px 0 0; }
+  #about .who { font-weight: 600; }
+  .note { color: var(--warn); font-size: 14px; margin: 4px 0 0; }
+  .verdict { margin: 16px 0 0; padding: 12px 14px; border-radius: 8px; font-weight: 600;
+             border: 1px solid var(--line); background: var(--card); border-left: 5px solid var(--warn); }
+  .verdict.agree { border-left-color: var(--ok); }
+  .expected { margin: 8px 0 0; font-size: 14px; }
+  .expected .src { color: var(--muted); }
+  .mark { font-size: 14px; font-weight: 700; margin-left: 8px; text-transform: none; letter-spacing: 0; }
+  .mark.right { color: var(--ok); } .mark.wrong { color: var(--warn); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px; min-width: 0; }
+  .label { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .model { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .answer { font-size: 30px; font-weight: 700; margin: 10px 0 2px; overflow-wrap: anywhere; }
+  .answer.none { font-size: 20px; color: var(--muted); }
+  .why { margin: 2px 0 8px; }
+  .votes { color: var(--ok); font-weight: 600; }
+  .meta { color: var(--muted); font-size: 13px; }
+  h3 { font-size: 14px; margin: 18px 0 6px; }
+  ul { margin: 0; padding-left: 18px; }
+  details { margin: 4px 0; }
+  summary { cursor: pointer; overflow-wrap: anywhere; }
+  .step { font-size: 13px; margin: 6px 0 6px 4px; padding-left: 10px; border-left: 2px solid var(--line); }
+  .step .kind { font-weight: 600; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 ui-monospace, Menlo, monospace;
+        background: var(--bg); padding: 8px; border-radius: 6px; margin: 4px 0; max-height: 260px; overflow: auto; }
+</style>
+</head>
+<body>
+<main>
+  <!--BANNER-->
+  <h1>Original vs fine-tuned, on 10-K reports</h1>
+  <p class="sub">Each model answers 5 times from the same fiscal-2019 passages, with the same tools and seeds, and the answers are voted on.</p>
+  <form id="ask">
+    <textarea id="q" placeholder="Ask about a company's fiscal-2019 annual report" required maxlength="1000"></textarea>
+    <button id="go" type="submit">Ask</button>
+  </form>
+  <div class="examples"><a data-q="What was Apple's revenue growth in 2019?">Apple's revenue growth in 2019</a></div>
+  <p id="status"></p>
+  <div id="about"></div>
+  <div id="verdict"></div>
+  <div class="grid" id="results"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+// Build elements with textContent only: model replies and passages are never treated as HTML.
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) k === "text" ? (e.textContent = v) : e.setAttribute(k, v);
+  for (const k of kids) if (k) e.append(k);
+  return e;
+}
+const short = (s, n = 140) => (s.length > n ? s.slice(0, n) + "…" : s);
+
+function sources(runs) {
+  const seen = new Map();
+  for (const r of runs) for (const p of r.passages || []) {
+    const key = `${p.company}|${p.year}|${p.section}|${p.chunk}`;
+    if (!seen.has(key)) seen.set(key, p);
+  }
+  return [...seen.values()];
+}
+
+// The sentence of the first run in the winning group ("Answer: -2.0% | <this>"); with no winning
+// number ("not found"), the first run that said why.
+const winnerWhy = (m) => (m.vote.groups.length ? m.runs[m.vote.groups[0].runs[0]].explanation
+                                               : (m.runs.find((r) => r.explanation) || {}).explanation);
+
+function card(label, m) {
+  const v = m.vote;
+  const c = el("section", { class: "card" },
+    el("div", { class: "label" }, el("span", { text: label }),
+       m.correct === true ? el("span", { class: "mark right", text: "✓ matches the report" }) :
+       m.correct === false ? el("span", { class: "mark wrong", text: "✗ doesn't match the report" }) : null),
+    el("div", { class: "model", text: m.model }),
+    el("div", { class: "answer" + (v.answer ? "" : " none"), text: v.answer ?? "no answer" }),
+    winnerWhy(m) ? el("div", { class: "why", text: winnerWhy(m) }) : null,
+    el("div", {}, el("span", { class: "votes", text: `${v.votes} of ${v.n} runs agree` }),
+       el("span", { class: "meta", text: `  ·  ${m.seconds} s` })));
+  if (v.groups.length > 1)
+    c.append(el("div", { class: "meta", text: "Other answers: " +
+      v.groups.slice(1).map((g) => `${g.answer} (${g.votes})`).join(", ") }));
+
+  c.append(el("h3", { text: "Sources" }));
+  const ul = el("ul");
+  for (const p of sources(m.runs))
+    ul.append(el("li", {}, el("details", {}, el("summary", { text: `${p.company} · ${p.year} · Item ${p.section} · part ${p.chunk}` }),
+                                          el("pre", { text: p.text }))));
+  c.append(ul);
+
+  c.append(el("h3", { text: "Each run" }));
+  for (const r of m.runs) {
+    const head = `Run ${r.seed + 1}: ${r.answer ?? (r.stopped === "error" ? "error" : "no answer")}` +
+                 (r.explanation ? ` | ${short(r.explanation, 90)}` : "") +
+                 `  (${Math.max(r.steps.length - 1, 0)} model turns)`;
+    const d = el("details", {}, el("summary", { text: head }));
+    if (r.error) d.append(el("pre", { text: r.error }));
+    for (const s of r.steps)
+      d.append(el("div", { class: "step" }, el("span", { class: "kind", text: s.kind + ": " }),
+        el("span", { text: short(s.input) }),
+        s.kind === "answer" ? null : el("details", {}, el("summary", { text: "result" }), el("pre", { text: s.output })),
+        s.reply && s.kind !== "answer" ? el("details", {}, el("summary", { text: "model's reply" }), el("pre", { text: s.reply })) : null));
+    c.append(d);
+  }
+  return c;
+}
+
+async function ask(question) {
+  $("go").disabled = true; $("results").replaceChildren(); $("about").replaceChildren(); $("verdict").replaceChildren();
+  $("status").className = ""; const t0 = Date.now();
+  const tick = setInterval(() => ($("status").textContent =
+    `Asking both models, 5 runs each… ${Math.round((Date.now() - t0) / 1000)} s`), 250);
+  try {
+    const res = await fetch("/ask", { method: "POST", headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ question }) });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.statusText);
+    $("status").textContent = `Answered in ${body.seconds} s`;
+    $("about").append(el("div", {}, el("span", { text: "Reading: " }),
+      el("span", { class: "who", text: body.company ? `${body.company}${body.ticker ? " (" + body.ticker + ")" : ""}` : "any company" }),
+      el("span", { text: body.year ? ` · fiscal ${body.year}` : " · any year" })));
+    for (const n of body.notes) $("about").append(el("p", { class: "note", text: n }));
+    if (body.verdict)
+      $("verdict").append(el("div", { class: "verdict" + (body.verdict.agree ? " agree" : ""), text: body.verdict.text }));
+    if (Object.keys(body.models).length)
+      $("verdict").append(body.expected
+        ? el("div", { class: "expected" }, el("b", { text: `Correct answer (from the report): ${body.expected.answer}` }),
+             el("div", { class: "src", text: body.expected.source }))
+        : el("div", { class: "expected src", text: "No checked answer for this question." }));
+    for (const [label, m] of Object.entries(body.models)) $("results").append(card(label, m));
+  } catch (e) {
+    $("status").className = "error"; $("status").textContent = "Something went wrong: " + e.message;
+  } finally {
+    clearInterval(tick); $("go").disabled = false;
+  }
+}
+
+$("ask").addEventListener("submit", (e) => { e.preventDefault(); ask($("q").value.trim()); });
+for (const a of document.querySelectorAll(".examples a"))
+  a.addEventListener("click", () => { $("q").value = a.dataset.q; ask(a.dataset.q); });
+</script>
+</body>
+</html>

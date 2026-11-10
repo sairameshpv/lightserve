@@ -76,6 +76,11 @@ def _add_args(parser):
              "benchmarks/ab/: every request's own timings, not just Locust's percentiles. Needs --stream.",
     )
     parser.add_argument(
+        "--prompts",
+        help="A prompt file in the same format ({prompt, max_tokens} per line) instead of the default one, "
+             "e.g. a recorded workload (rag/workload.py's to_prompts). Default: by --target, as below.",
+    )
+    parser.add_argument(
         "--seed", type=int,
         help="Each simulated user picks prompts from its own random generator (seed + its number), so every "
              "run sends the same prompts in the same order -- for benchmarks/ab/'s rounds. Default: unseeded.",
@@ -112,7 +117,7 @@ class CompletionsUser(HttpUser):
         CompletionsUser._started += 1
         target = self.environment.parsed_options.target
         prompts_file = "token_prompts.jsonl" if target == "lightserve" else "baseline_prompts.jsonl"
-        self.records = _load_jsonl(_DIR / prompts_file)
+        self.records = _load_jsonl(Path(self.environment.parsed_options.prompts or _DIR / prompts_file))
         self.model = self.environment.parsed_options.model
         self.stream = self.environment.parsed_options.stream
 

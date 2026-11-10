@@ -27,3 +27,6 @@ infra/terraform/terraform.tfstate
 infra/terraform/terraform.tfstate.backup
 infra/terraform/terraform.tfvars
 infra/terraform/tfplan
+
+# rag demo: the Qdrant index, downloaded filings and ticker list (rebuilt by rag/ingest.py)
+rag/data/
