@@ -146,3 +146,21 @@ def test_the_kept_line_is_the_tool_call():
     model = Script('I will look.\n{"tool": "search", "query": "net sales"}\nResult: invented', "Answer: -2%")
     run(QUESTION, model, fake_search)
     assert model.sent[1][2] == {"role": "assistant", "content": '{"tool": "search", "query": "net sales"}'}
+
+
+@pytest.mark.parametrize("expression, result", [
+    ("641 / (1 + 15%)", "557.391"),                       # review finding 4: was 40.0625 (% dropped)
+    ("641 * (1 - 15%)", "544.85"),
+    ("12.5% * 80", "10"),
+    ("(5,421) / 265,595", "0.0204108"),                   # brackets, not an accounting negative
+    ("(260,174 - 265,595) / 265,595 * 100", "-2.04108"),  # unchanged
+    ("-(5421) / 265595", "-0.0204108"),
+])
+def test_calculate_reads_percents_and_brackets_as_a_person_would(expression, result):
+    from rag.agent import calculate
+    assert calculate(expression) == result
+
+
+def test_prompt_asks_for_percents_as_decimals():
+    from rag.agent import SYSTEM
+    assert "0.15" in SYSTEM

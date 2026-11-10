@@ -13,6 +13,7 @@ SYSTEM = """You answer questions about companies' annual reports (10-K filings),
 You have two tools. To use one, reply with exactly one line of JSON and nothing else:
 {"tool": "search", "query": "<what to look for in the report>"}
 {"tool": "calculate", "expression": "<plain arithmetic, e.g. (260174 - 265595) / 265595 * 100>"}
+Write a percent inside an expression as a decimal: 15% as 0.15.
 The result comes back in the next message. When you know the answer, reply with one line: the number
 and its unit (negative for a decrease), then "|" and one short sentence saying what the number is.
 For example:
@@ -48,6 +49,11 @@ def format_passages(passages: list) -> str:
 
 
 def calculate(expression: str) -> str:
+    """Exact arithmetic, read as a person writes it: "15%" is 0.15 (the finance calculator drops "%",
+    TAT-QA's convention, so "641 / (1 + 15%)" gave 40.06), and "(5,421)" is just a bracket, not an
+    accounting negative."""
+    expression = re.sub(r"\((\s*\d[\d,]*(?:\.\d+)?\s*)\)", r"\1", expression)
+    expression = re.sub(r"(\d[\d,]*(?:\.\d+)?)\s*%", r"(\1/100)", expression)
     value = eval_formula(expression)
     return f"{value:.6g}" if value is not None else "error: not plain arithmetic (use numbers, + - * / and brackets)"
 

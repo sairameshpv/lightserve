@@ -85,7 +85,7 @@ of the follow-up searches, so it would test the search, not the models.
 
 ## How it was built and checked
 
-All on the Mac first, test-first, with fakes; 86 tests (`rag/tests`, also in CI):
+All on the Mac first, test-first, with fakes; 93 tests (`rag/tests`, also in CI):
 
 | Piece | Checked by |
 |---|---|
