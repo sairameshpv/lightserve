@@ -54,8 +54,10 @@ Items 7 (management's discussion) and 8 (financial statements) of **6,693 report
   missing (Apple's $260.2 billion of 2019 net sales is not there). What companies *write* is there:
   "Total net sales decreased 2% or $5.4 billion during 2019 compared to 2018". Questions about
   changes, rates and reasons work best; exact totals often get "not found".
-- **"2019" is the fiscal year** the report covers (checked: Exxon's 2019 report ends December
-  2019, Apple's September 2019).
+- **"2019" is the fiscal year that ends in 2019** (checked: Exxon's 2019 report ends December
+  2019, Apple's September 2019). One catch: a few retailers name a year that ends in early 2019
+  after the year before (Home Depot's "fiscal 2018" ended February 3, 2019), so for them the page's
+  "fiscal 2019" is their own fiscal 2018. NVIDIA and Walmart name it by the end, so they match.
 - **About 3,160 companies can be asked about**: named in today's SEC ticker list, with at least 5
   passages of management's discussion. Missing: some large companies that the dataset lacks for
   2019 (GE, Citigroup, Verizon, McDonald's, Morgan Stanley); some present with empty sections
@@ -64,9 +66,25 @@ Items 7 (management's discussion) and 8 (financial statements) of **6,693 report
   (a different form); ~3,200 companies renamed or delisted since 2019 (their text is indexed, but
   today's list has no name for them).
 
+## The demo questions
+
+Five questions, their answers looked up by hand in the indexed text and written down
+(`demo_questions.json`, with each quote) before any GPU run. Each tests one thing:
+
+| Question | Answer | Tests |
+|---|---|---|
+| What was Apple's revenue growth in 2019? | -2% | reading a decrease as a negative number |
+| By how much did Netflix's revenue grow in 2019? | 28% | a direct lookup |
+| What was NVIDIA's revenue growth in fiscal 2019? | 21% | a fiscal year ending in January (2019) |
+| How much did Microsoft's Azure revenue grow in fiscal 2019? | 72% | a trap: the same sentence says 25% for the wider group |
+| According to NVIDIA's fiscal 2019 report, what was its automotive revenue in the previous year? | $557 million | the calculator: "$641 million, up 15%" -> 641 / 1.15 (the common slip, 641 x 0.85 = $545 million, is wrong) |
+
+Every answer passage is in the 5 passages both models start with (ranks 1, 1, 5, 3, 2). Dropped: Coca-Cola's operating margin (operating income / revenue): its revenue passage ranks 18th, out of reach
+of the follow-up searches, so it would test the search, not the models.
+
 ## How it was built and checked
 
-All on the Mac first, test-first, with fakes; 78 tests (`rag/tests`, also in CI):
+All on the Mac first, test-first, with fakes; 79 tests (`rag/tests`, also in CI):
 
 | Piece | Checked by |
 |---|---|
@@ -75,7 +93,7 @@ All on the Mac first, test-first, with fakes; 78 tests (`rag/tests`, also in CI)
 | search | 3 tests on in-memory Qdrant: the company/year filter holds; on the real index Apple's answer passage ranks 1st for 3 phrasings |
 | the agent | a scripted fake model: tools, a garbled reply, too many rounds, bad arithmetic; the real worst case measured with the Llama-3 tokenizer: 5,169 tokens + a 512-token reply, of 8,192 |
 | the vote | rounding, scale words, ties, no-answer runs; a barrier proves the 5 runs are sent at once |
-| the page | password (none / wrong / right), notes, verdict, ✓/✗; a full rehearsal against a fake vLLM |
+| the page | password (none / wrong / right), notes, verdict, ✓/✗, every demo answer readable as a number; a full rehearsal against a fake vLLM |
 | the workload log | thread-safe lines; the chat template matches the real tokenizer's token for token; a 4-second replay through Locust (4,256 requests, all from the log) |
 
 One bug found by the rehearsal: a burst of 10 connections at a fresh server dropped 4 (a small

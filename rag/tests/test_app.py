@@ -172,3 +172,15 @@ def test_other_questions_have_no_checked_answer(checked):
 def test_missing_demo_file_means_no_checked_answers(tmp_path):
     from rag.app import load_expected
     assert load_expected(tmp_path / "nope.json") == {}
+
+
+def test_the_demo_questions_file_is_usable():
+    """Every checked answer must be a number the vote can read (else every model gets ✗), with
+    its source quoted; no question listed twice (case and punctuation ignored)."""
+    from rag.app import EXPECTED, _normal, load_expected
+    from training.qlora_financial.sample_eval import _parts
+    rows = json.loads(EXPECTED.read_text())
+    assert len(rows) == 5 and len(load_expected(EXPECTED)) == len({_normal(r["question"]) for r in rows}) == 5
+    for r in rows:
+        assert _parts(r["answer"]) is not None, r
+        assert '"' in r["source"] and "10-K" in r["source"], r

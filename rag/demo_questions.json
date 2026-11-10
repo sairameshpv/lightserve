@@ -1,5 +1,17 @@
 [
   {"question": "What was Apple's revenue growth in 2019?",
    "answer": "-2%",
-   "source": "Apple Inc. fiscal 2019 10-K, Item 7: \"Total net sales decreased 2% or $5.4 billion during 2019 compared to 2018\""}
+   "source": "Apple Inc. fiscal 2019 10-K, Item 7: \"Total net sales decreased 2% or $5.4 billion during 2019 compared to 2018\""},
+  {"question": "By how much did Netflix's revenue grow in 2019?",
+   "answer": "28%",
+   "source": "Netflix 2019 10-K, Item 7: \"Consolidated revenues for the year ended December 31, 2019 increased 28% as compared to the year ended December 31, 2018\""},
+  {"question": "What was NVIDIA's revenue growth in fiscal 2019?",
+   "answer": "21%",
+   "source": "NVIDIA fiscal 2019 10-K (year ended January 27, 2019), Item 7: \"Revenue for fiscal year 2019 increased 21% year over year\""},
+  {"question": "How much did Microsoft's Azure revenue grow in fiscal 2019?",
+   "answer": "72%",
+   "source": "Microsoft fiscal 2019 10-K, Item 7: \"Server products and cloud services revenue, including GitHub, increased 25%, driven by Azure growth of 72%\" (the 25% is the wider group, not Azure)"},
+  {"question": "According to NVIDIA's fiscal 2019 report, what was its automotive revenue in the previous year?",
+   "answer": "$557 million",
+   "source": "NVIDIA fiscal 2019 10-K, Item 7: \"Automotive revenue of $641 million was up 15% from a year earlier\", so the year before = 641 / 1.15 = $557 million (NVIDIA reported $558 million; 15% is rounded)"}
 ]
