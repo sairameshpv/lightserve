@@ -184,3 +184,21 @@ def test_the_demo_questions_file_is_usable():
     for r in rows:
         assert _parts(r["answer"]) is not None, r
         assert '"' in r["source"] and "10-K" in r["source"], r
+
+
+def test_follow_up_searches_stay_in_the_questions_company_and_year(app, monkeypatch):
+    """A model searching "AMAZON net sales 2018" while answering about Apple 2019 still gets Apple
+    2019 passages (review finding 1)."""
+    web, _ = app
+    turns = {}
+
+    def wanderer(self, model, messages, temperature, top_p, seed):
+        n = turns[model, seed] = turns.get((model, seed), 0) + 1
+        return '{"tool": "search", "query": "AMAZON net sales 2018"}' if n == 1 else "Answer: -2%"
+
+    monkeypatch.setattr(FakeModels, "__call__", wanderer)
+    body = web.post("/ask", json={"question": "What was Apple's revenue growth in 2019?"}, auth=AUTH).json()
+    for m in body["models"].values():
+        for r in m["runs"]:
+            assert r["steps"][1]["kind"] == "search" and len(r["passages"]) == 7
+            assert {(p["cik"], p["year"]) for p in r["passages"]} == {(APPLE, 2019)}

@@ -87,10 +87,13 @@ def find_year(question: str):
 
 def search(client, embedder, question: str, lookup: dict, k: int = 5, collection: str = COLLECTION,
            cik=None, year=None) -> dict:
-    """The company and year read from the question (shown on the page) and the top-k passages.
-    `cik`/`year` are used when the text names none (the agent's follow-up searches)."""
+    """The company and year (shown on the page) and the top-k passages. `cik`/`year`, when given,
+    hold whatever the text says: the agent's follow-up searches stay inside the question's company
+    and year ("Operating Income" is also a company's name; "2018" isn't in the index). Only when
+    they're None are they read from the text."""
     from qdrant_client import models
-    cik, year = find_company(question, lookup) or cik, find_year(question) or year
+    cik = cik if cik is not None else find_company(question, lookup)
+    year = year if year is not None else find_year(question)
     must = [models.FieldCondition(key=f, match=models.MatchValue(value=v))
             for f, v in (("cik", cik), ("year", year)) if v is not None]
     vector = [float(x) for x in embedder.embed([QUERY_PREFIX + question])[0]]

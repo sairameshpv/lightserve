@@ -93,10 +93,12 @@ def test_search_without_company_or_year_searches_all(index, lookup):
     assert len(r["passages"]) == 4
 
 
-def test_search_falls_back_to_the_questions_company_and_year(index, lookup):
+def test_search_keeps_the_questions_company_and_year(index, lookup):
     """The agent's follow-up search ("net sales") still searches the question's company and year."""
     r = search(index, FakeEmbedder(), "total net sales", lookup, k=5, collection="t", cik=APPLE, year=2019)
     assert {(p["cik"], p["year"]) for p in r["passages"]} == {(APPLE, 2019)}
     assert r["company"] == "Apple Inc."
+    # The question's company and year hold even when the text names others (review: "Operating
+    # Income" is a company's name, and "2018" isn't in the index).
     r = search(index, FakeEmbedder(), "AMAZON net sales in 2018", lookup, k=5, collection="t", cik=APPLE, year=2019)
-    assert {(p["cik"], p["year"]) for p in r["passages"]} == {(AMAZON, 2018)}   # named in the text: that wins
+    assert {(p["cik"], p["year"]) for p in r["passages"]} == {(APPLE, 2019)}
