@@ -67,3 +67,13 @@ def test_same_answer_uses_the_votes_rule():
     assert same_answer("-2%", "-2.0%") and same_answer("$260.2 billion", "260,174 million")
     assert not same_answer("-2%", "-3%")
     assert not same_answer(None, "-2%") and not same_answer("not found", "not found")
+
+
+def test_a_year_after_the_answer_is_not_the_answer():
+    """Review finding 6: the last number was read, so "$641 million in fiscal 2019" read as 2019."""
+    from rag.best_of_n import same_answer
+    assert same_answer("$641 million in fiscal 2019", "$641 million")
+    assert same_answer("$557 million for fiscal year 2018", "$557 million")
+    assert same_answer("-2% in 2019", "-2%") and same_answer("21% in FY2019", "21%")
+    assert vote(["$641 million in fiscal 2019", "$641 million", "$641 million during 2019"])["votes"] == 3
+    assert same_answer("2019", "2019") and not same_answer("2019", "2018")     # a year alone stays a year

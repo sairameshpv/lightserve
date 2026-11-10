@@ -5,15 +5,32 @@ All N agent runs are sent at once, so vLLM serves them as one batch. Each run us
 The vote is on each run's final number, read the way the finance model's checker reads it.
 """
 import math
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 from rag import agent
 from training.qlora_financial.sample_eval import _parts
 
 
+# "in fiscal 2019", "for fiscal year 2018", "during 2019", "FY2019": a year said after the answer.
+_YEAR = re.compile(r"\b(?:(?:in|for|during)\s+(?:fiscal\s+(?:year\s+)?)?|fiscal\s+(?:year\s+)?|FY\s*)(?:19|20)\d\d\b", re.I)
+
+
+def _read(text):
+    """(number, scale, decimals) of an answer, or None. The finance checker reads the LAST number,
+    so a year said after the answer is dropped first ("$641 million in fiscal 2019" is $641
+    million), unless nothing else is left ("2019" stays 2019)."""
+    if not text:
+        return None
+    return _parts(_YEAR.sub("", text)) or _parts(text)
+
+
 def _same(a: tuple, b: tuple) -> bool:
     """Two (number, scale, decimals): within 1%, or equal once the more precise is rounded to the
-    coarser one's decimals (-2.04% and -2%: the report rounds, the calculator doesn't)."""
+    coarser one's decimals (-2.04% and -2%: the report rounds, the calculator doesn't). Years (whole,
+    1900-2100, no scale word) must be equal: 2018 is within 1% of 2019 (the finance checker's rule)."""
+    if any(x[1] == 1 and x[0].is_integer() and 1900 <= x[0] <= 2100 for x in (a, b)):
+        return a[0] * a[1] == b[0] * b[1]
     if math.isclose(a[0] * a[1], b[0] * b[1], rel_tol=0.01, abs_tol=1e-6):
         return True
     return a[1] == b[1] and round(a[0], min(a[2], b[2])) == round(b[0], min(a[2], b[2]))
@@ -21,7 +38,7 @@ def _same(a: tuple, b: tuple) -> bool:
 
 def same_answer(a, b) -> bool:
     """Do two answers give the same number, by the vote's rule? No number on either side: no."""
-    pa, pb = (_parts(a) if a else None), (_parts(b) if b else None)
+    pa, pb = _read(a), _read(b)
     return pa is not None and pb is not None and _same(pa, pb)
 
 
@@ -31,7 +48,7 @@ def vote(answers: list) -> dict:
     "n", "groups": [{"answer", "value", "votes", "runs"}] biggest first}."""
     groups = []
     for i, text in enumerate(answers):
-        parts = _parts(text) if text else None
+        parts = _read(text)
         if parts is None:
             continue
         for g in groups:
