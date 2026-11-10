@@ -74,7 +74,9 @@ def create_app(client, embedder, lookup: dict, chat, password: str, models: dict
     says the models are scripted fakes."""
     if not password:
         raise ValueError("set a password (RAG_PASSWORD): the page is on a public address")
-    app, basic = FastAPI(title="RAG demo"), HTTPBasic(auto_error=False)
+    # No /docs, /redoc or /openapi.json: they would open without the password.
+    app = FastAPI(title="RAG demo", docs_url=None, redoc_url=None, openapi_url=None)
+    basic = HTTPBasic(auto_error=False)
     app.state.expected = expected or {}
 
     def check(creds: HTTPBasicCredentials = Depends(basic)):

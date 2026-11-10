@@ -244,3 +244,9 @@ def test_some_failed_runs_are_counted(app, monkeypatch):
     assert (ft["failed"], ft["errors"], ft["vote"]["votes"], ft["vote"]["n"]) == (False, 1, 4, 5)
     assert "404" in ft["error"]
     assert body["models"]["original"]["errors"] == 0 and body["models"]["original"]["error"] is None
+
+
+def test_no_open_api_pages(app):
+    """Review finding 8: FastAPI's /docs, /redoc and /openapi.json opened without the password."""
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert app[0].get(path).status_code == 404, path
