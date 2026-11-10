@@ -8,6 +8,7 @@ import json
 import re
 import time
 
+from training.qlora_financial.calculator import calculate as work_out_steps
 from training.qlora_financial.calculator import eval_formula
 
 SYSTEM = """You answer questions about companies' annual reports (10-K filings), using only the passages you are given.
@@ -98,6 +99,9 @@ def run(question: str, chat_fn, search_fn, max_steps: int = 5, first_k: int = 5,
         messages.append({"role": "assistant", "content": _kept(kind, value, reply)})
         if kind == "answer":
             number, _, why = value.partition("|")
+            if (worked := work_out_steps(reply)) is not None:     # v3's "Step 1: subtract A and B" format,
+                said, number = number.strip(), f"{worked[0]:.6g}"  # as its own evaluation scored it
+                why = why or f"Worked out from its own steps (it said {said})."
             steps.append({"kind": kind, "input": value, "output": value, "reply": reply})
             return {"answer": number.strip(), "explanation": why.strip() or None, "stopped": "answer",
                     "steps": steps, "passages": passages}

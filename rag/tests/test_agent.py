@@ -178,6 +178,28 @@ def test_prompt_examples_share_nothing_with_the_demo_questions():
         assert company.lower() not in SYSTEM.lower()
 
 
+V3_STEPS = "Step 1: subtract 260174 and 265595.\nStep 2: divide the result of step 1 and 265595.\nAnswer: -0.02168"
+
+
+def test_an_answer_with_steps_is_worked_out_by_the_calculator():
+    """Found in the first GPU run: v3 answers in its training format (Step lines, then Answer) and
+    its head arithmetic slips (-0.02168 for -5421 / 265595 = -0.0204108). Its evaluation ran the
+    steps through the calculator; so does the demo, for any model that answers this way."""
+    r = run(QUESTION, Script(V3_STEPS), fake_search)
+    assert r["answer"] == "-0.0204108"
+    assert r["explanation"] == "Worked out from its own steps (it said -0.02168)."
+    r = run(QUESTION, Script("Step 1: compute (46500 - 48200) / 48200.\nAnswer: -0.04 | Sales fell."), fake_search)
+    assert (r["answer"], r["explanation"]) == ("-0.0352697", "Sales fell.")
+
+
+@pytest.mark.parametrize("reply, answer", [
+    ("Step 1: take the max of 5 and 7.\nAnswer: 7", "7"),           # not arithmetic: the model's own answer
+    ("Answer: -3.5% | Sales fell.", "-3.5%"),                        # no steps: unchanged
+])
+def test_steps_the_calculator_cant_read_leave_the_answer_alone(reply, answer):
+    assert run(QUESTION, Script(reply), fake_search)["answer"] == answer
+
+
 def test_prompt_asks_for_percents_as_decimals():
     from rag.agent import SYSTEM
     assert "8% as 0.08" in SYSTEM
