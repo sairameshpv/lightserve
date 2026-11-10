@@ -69,7 +69,8 @@ BANNER = '<div class="banner">Rehearsal: scripted fake models, not real answers<
 
 
 def create_app(client, embedder, lookup: dict, chat, password: str, models: dict = MODELS, n: int = 5,
-               collection: str = COLLECTION, rehearsal: bool = False, expected: dict = None) -> FastAPI:
+               collection: str = COLLECTION, rehearsal: bool = False, expected: dict = None,
+               time_limit: float = 180) -> FastAPI:
     """`chat(model, messages, temperature, top_p, seed) -> reply text`. `rehearsal`: every page
     says the models are scripted fakes."""
     if not password:
@@ -77,7 +78,7 @@ def create_app(client, embedder, lookup: dict, chat, password: str, models: dict
     # No /docs, /redoc or /openapi.json: they would open without the password.
     app = FastAPI(title="RAG demo", docs_url=None, redoc_url=None, openapi_url=None)
     basic = HTTPBasic(auto_error=False)
-    app.state.expected = expected or {}
+    app.state.expected, app.state.time_limit = expected or {}, time_limit
 
     def check(creds: HTTPBasicCredentials = Depends(basic)):
         if creds is None or not secrets.compare_digest(creds.password.encode(), password.encode()):
@@ -103,6 +104,8 @@ def create_app(client, embedder, lookup: dict, chat, password: str, models: dict
 
     def answer(q: str) -> dict:
         start = time.time()
+        limit = app.state.time_limit
+        deadline = start + limit          # every run stops here; each call gets only the time left
         cik, year = retrieve.find_company(q, lookup), retrieve.find_year(q)
         who = lookup["names"].get(cik, {}) if cik is not None else {}
         cache, lock = {}, threading.Lock()
@@ -129,8 +132,11 @@ def create_app(client, embedder, lookup: dict, chat, password: str, models: dict
 
         def one(label):
             t = time.time()
-            r = best_of_n.best_of_n(q, lambda m, **s: chat(models[label], m, **s), search, n=n)
-            errs = [run["error"] for run in r["runs"] if run["stopped"] == "error"]
+            r = best_of_n.best_of_n(q, lambda m, **s: chat(models[label], m, **s,
+                                                           timeout=max(0.1, deadline - time.time())),
+                                    search, n=n, deadline=deadline)
+            errs = [run.get("error") or f"stopped at the {limit:g} s time limit"
+                    for run in r["runs"] if run["stopped"] in ("error", "time_limit")]
             return label, {"model": models[label], **r, "seconds": round(time.time() - t, 2),
                            "errors": len(errs), "failed": len(errs) == n, "error": errs[0][:300] if errs else None}
 
@@ -167,13 +173,14 @@ def main():
     ap.add_argument("--n", type=int, default=5, help="runs per model for the vote")
     ap.add_argument("--rehearsal", action="store_true", help="--vllm is a scripted fake: say so on the page")
     ap.add_argument("--workload", help="log every model call here (JSONL), for replay with the A/B tool")
+    ap.add_argument("--time-limit", type=float, default=180, help="seconds per question, all runs included")
     a = ap.parse_args()
 
     log = WorkloadLog(a.workload) if a.workload else None
 
-    def chat(model, messages, temperature, top_p, seed):
+    def chat(model, messages, temperature, top_p, seed, timeout=120):
         reply = llm.chat(messages, model=model, base_url=a.vllm, temperature=temperature, top_p=top_p,
-                         seed=seed, max_tokens=512)
+                         seed=seed, max_tokens=512, timeout=timeout)
         if log:
             log.record(engine="vllm", model=model, messages=messages, reply=reply, temperature=temperature,
                        top_p=top_p, seed=seed, max_tokens=512)
@@ -181,7 +188,7 @@ def main():
 
     app = create_app(QdrantClient(url=a.qdrant, timeout=60), Embedder(a.device), retrieve.load_lookup(a.names),
                      chat, password=os.environ.get("RAG_PASSWORD", ""), n=a.n, collection=a.collection,
-                     rehearsal=a.rehearsal, expected=load_expected(EXPECTED))
+                     rehearsal=a.rehearsal, expected=load_expected(EXPECTED), time_limit=a.time_limit)
     uvicorn.run(app, host=a.host, port=a.port)
 
 

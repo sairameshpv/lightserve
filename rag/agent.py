@@ -6,6 +6,7 @@ treats both the same. Each reply is one JSON line (a tool) or "Answer: ...".
 """
 import json
 import re
+import time
 
 from training.qlora_financial.calculator import eval_formula
 
@@ -76,12 +77,13 @@ def _key(p: dict) -> tuple:
 
 
 def run(question: str, chat_fn, search_fn, max_steps: int = 5, first_k: int = 5, more_k: int = 2,
-        word_budget: int = 3600) -> dict:
+        word_budget: int = 3600, deadline: float = None) -> dict:
     """`chat_fn(messages) -> reply text` (one model, its sampling settings fixed by the caller);
     `search_fn(query, k) -> the top-k passages`. The question's own search (first_k passages) is
     done first, for both models alike; each follow-up adds up to more_k passages not shown before.
     At most `word_budget` words of passages per run: at the worst measured 1.77 Llama-3 tokens per
     word, everything still fits vLLM's 8,192-token limit with room for the reply.
+    `deadline` (a time.time()): no new round after it; the run stops with "time_limit".
     Returns {"answer" (the number part, None if none), "explanation" (after "|"), "stopped" ("answer"|"max_steps"), "steps", "passages"}."""
     passages = search_fn(question, first_k)
     seen, used = {_key(p) for p in passages}, sum(len(p["text"].split()) for p in passages)
@@ -89,6 +91,8 @@ def run(question: str, chat_fn, search_fn, max_steps: int = 5, first_k: int = 5,
     messages = [{"role": "system", "content": SYSTEM},
                 {"role": "user", "content": f"Question: {question}\n\nPassages:\n{steps[0]['output']}"}]
     for _ in range(max_steps):
+        if deadline is not None and time.time() >= deadline:
+            return {"answer": None, "explanation": None, "stopped": "time_limit", "steps": steps, "passages": passages}
         reply = chat_fn(messages)
         kind, value = parse_step(reply)
         messages.append({"role": "assistant", "content": _kept(kind, value, reply)})

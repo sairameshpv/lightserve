@@ -176,3 +176,18 @@ def test_prompt_asks_for_percents_as_decimals():
 ])
 def test_parse_step_reads_common_llama_styles(reply, step):
     assert parse_step(reply) == step
+
+
+def test_a_run_stops_at_the_deadline():
+    """Review finding 11: no overall limit, so a stuck vLLM kept the page spinning ~10 minutes."""
+    import time
+    model = Script(*['{"tool": "search", "query": "x"}'] * 5)
+    r = run(QUESTION, model, fake_search, deadline=time.time() - 1)
+    assert (r["stopped"], r["answer"], len(model.sent)) == ("time_limit", None, 0)
+
+    def slow(messages):
+        time.sleep(0.2)
+        return '{"tool": "search", "query": "x"}'
+    t = time.time()
+    r = run(QUESTION, slow, fake_search, deadline=time.time() + 0.3)
+    assert r["stopped"] == "time_limit" and time.time() - t < 0.7

@@ -30,7 +30,7 @@ class FakeModels:
     def __init__(self):
         self.calls, self.lock = [], threading.Lock()
 
-    def __call__(self, model, messages, temperature, top_p, seed):
+    def __call__(self, model, messages, temperature, top_p, seed, timeout=None):
         with self.lock:
             self.calls.append({"model": model, "seed": seed, "temperature": temperature, "top_p": top_p,
                                "first": messages[1]["content"]})
@@ -192,7 +192,7 @@ def test_follow_up_searches_stay_in_the_questions_company_and_year(app, monkeypa
     web, _ = app
     turns = {}
 
-    def wanderer(self, model, messages, temperature, top_p, seed):
+    def wanderer(self, model, messages, temperature, top_p, seed, timeout=None):
         n = turns[model, seed] = turns.get((model, seed), 0) + 1
         return '{"tool": "search", "query": "AMAZON net sales 2018"}' if n == 1 else "Answer: -2%"
 
@@ -208,7 +208,7 @@ def _failing(fail):
     """FakeModels that raises a server error when fail(model, seed) says so."""
     real = FakeModels.__call__
 
-    def call(self, model, messages, temperature, top_p, seed):
+    def call(self, model, messages, temperature, top_p, seed, timeout=None):
         if fail(model, seed):
             raise RuntimeError(f"{model}: server answered 404: b'The model `{model}` does not exist.'")
         return real(self, model, messages, temperature, top_p, seed)
@@ -263,3 +263,25 @@ def test_a_broken_search_gives_a_readable_error(tmp_path):
     web = TestClient(create_app(DeadQdrant(), FakeEmbedder(), load_lookup(path), FakeModels(), password=AUTH[1]))
     r = web.post("/ask", json={"question": "What was Apple's revenue growth in 2019?"}, auth=AUTH)
     assert r.status_code == 503 and "Qdrant is not reachable" in r.json()["detail"]
+
+
+def test_a_question_stops_at_the_time_limit(app, monkeypatch):
+    """Every call gets only the time left; runs past the limit stop and are counted as failed."""
+    import time
+    timeouts = []
+
+    def slow(self, model, messages, temperature, top_p, seed, timeout=None):
+        timeouts.append(timeout)
+        time.sleep(0.3)
+        return '{"tool": "search", "query": "more"}'
+
+    monkeypatch.setattr(FakeModels, "__call__", slow)
+    web = app[0]
+    web.app.state.time_limit = 0.5
+    t = time.time()
+    body = web.post("/ask", json={"question": "What was Apple's revenue growth in 2019?"}, auth=AUTH).json()
+    assert time.time() - t < 3
+    assert all(0 < x <= 0.5 for x in timeouts)
+    for m in body["models"].values():
+        assert m["failed"] and "time limit" in m["error"]
+        assert {r["stopped"] for r in m["runs"]} == {"time_limit"}

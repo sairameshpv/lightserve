@@ -128,7 +128,7 @@ function card(label, m) {
 
   c.append(el("h3", { text: "Each run" }));
   for (const r of m.runs) {
-    const head = `Run ${r.seed + 1}: ${r.answer ?? (r.stopped === "error" ? "error" : "no answer")}` +
+    const head = `Run ${r.seed + 1}: ${r.answer ?? ({ error: "error", time_limit: "time limit" }[r.stopped] || "no answer")}` +
                  (r.explanation ? ` | ${short(r.explanation, 90)}` : "") +
                  `  (${Math.max(r.steps.length - 1, 0)} model turns)`;
     const d = el("details", {}, el("summary", { text: head }));
